@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+test-results/
+playwright-report/
+*.log
+.DS_Store
+
+# local app data folder if created at the repo root
+/data/

@@ -1,0 +1,12 @@
+appId: com.tradingjournal.app
+productName: TradingJournal
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+win:
+  target: dir
