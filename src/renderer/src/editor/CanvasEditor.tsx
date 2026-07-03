@@ -4,6 +4,7 @@ import { CanvasController } from './canvasController';
 interface Props {
   entryId: string;
   onReady: (controller: CanvasController) => void;
+  onLoaded?: () => void;
 }
 
 function isTextTarget(target: EventTarget | null): boolean {
@@ -13,7 +14,7 @@ function isTextTarget(target: EventTarget | null): boolean {
   );
 }
 
-export function CanvasEditor({ entryId, onReady }: Props): JSX.Element {
+export function CanvasEditor({ entryId, onReady, onLoaded }: Props): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -35,6 +36,7 @@ export function CanvasEditor({ entryId, onReady }: Props): JSX.Element {
       const entry = await window.api.getEntry(entryId);
       if (!entry || disposed) return;
       await controller.loadEntry(entry.canvasJson, entry.image ? `tj-image://${entry.image.hash}` : null);
+      if (!disposed) onLoaded?.();
     })();
 
     const resizeObs = new ResizeObserver(() => measure());
@@ -53,7 +55,7 @@ export function CanvasEditor({ entryId, onReady }: Props): JSX.Element {
       window.removeEventListener('keydown', onKey);
       controller.dispose();
     };
-  }, [entryId, onReady]);
+  }, [entryId, onReady, onLoaded]);
 
   return (
     <div className="editor" ref={stageRef} data-testid="editor">

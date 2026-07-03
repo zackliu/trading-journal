@@ -1,5 +1,6 @@
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import type {
+  Annotation,
   AnnotationHit,
   CreateEntryInput,
   Entry,
@@ -42,10 +43,10 @@ export const store = {
       { id, input },
     ),
 
-  updateEntryCanvas: (page: Page, id: string, canvasJson: string): Promise<Entry> =>
+  updateEntryCanvas: (page: Page, id: string, canvasJson: string, annotations: Annotation[] = []): Promise<Entry> =>
     page.evaluate(
-      (arg) => (globalThis as unknown as WindowWithApi).api.updateEntryCanvas(arg.id, arg.canvasJson),
-      { id, canvasJson },
+      (arg) => (globalThis as unknown as WindowWithApi).api.updateEntryCanvas(arg.id, arg.canvasJson, arg.annotations),
+      { id, canvasJson, annotations },
     ),
 
   getEntry: (page: Page, id: string): Promise<Entry | null> =>
@@ -84,4 +85,7 @@ export const store = {
 
   deleteEntry: (page: Page, id: string): Promise<void> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteEntry(x), id),
+
+  locateAnnotation: (page: Page, annotationId: string): Promise<{ entryId: string } | null> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.locateAnnotation(x), annotationId),
 };

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db';
-import type { CreateEntryInput, Entry, EntrySummary, Tag } from '../../shared/domain';
+import type { Annotation, CreateEntryInput, Entry, EntrySummary, Tag } from '../../shared/domain';
 import { projectEntryAnnotations, readAnnotationResult, readAnnotationTags } from './annotationIndex';
 
 interface EntryRow {
@@ -95,14 +95,26 @@ export function getEntry(db: Db, id: string): Entry | null {
   };
 }
 
-/** Update only the canvas JSON of an entry — the annotation editor's save path. */
-export function updateEntryCanvas(db: Db, id: string, canvasJson: string): Entry {
+/** Update the canvas JSON of an entry and re-project its annotation index (the editor's save path). */
+export function updateEntryCanvas(db: Db, id: string, canvasJson: string, annotations: Annotation[]): Entry {
   const exists = db.prepare('SELECT id FROM entries WHERE id = ?').get(id);
   if (!exists) {
     throw new Error(`entry not found: ${id}`);
   }
-  db.prepare('UPDATE entries SET canvas_json = ?, updated_at = ? WHERE id = ?').run(canvasJson, Date.now(), id);
+  const write = db.transaction(() => {
+    db.prepare('UPDATE entries SET canvas_json = ?, updated_at = ? WHERE id = ?').run(canvasJson, Date.now(), id);
+    projectEntryAnnotations(db, id, annotations);
+  });
+  write();
   return requireEntry(db, id);
+}
+
+/** Resolve which entry an annotation belongs to — used to follow a cross-entry link. */
+export function locateAnnotation(db: Db, annotationId: string): { entryId: string } | null {
+  const row = db.prepare('SELECT entry_id FROM annotations WHERE id = ?').get(annotationId) as
+    | { entry_id: string }
+    | undefined;
+  return row ? { entryId: row.entry_id } : null;
 }
 
 /** Set (or replace) an entry's background image reference — the editor's paste-in path. */

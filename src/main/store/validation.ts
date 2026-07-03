@@ -47,4 +47,6 @@ export const createEntryInputSchema = z.object({
 
 export const canvasJsonSchema = z.string();
 
+export const annotationsSchema = z.array(annotation);
+
 export const imageHashSchema = z.string().regex(/^[a-f0-9]{64}$/);

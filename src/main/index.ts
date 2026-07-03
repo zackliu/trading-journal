@@ -3,10 +3,11 @@ import { join } from 'node:path';
 import { ensureDataFolder, type DataFolder } from './dataFolder';
 import { openDatabase, type Db } from './db';
 import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
-import { createEntry, deleteEntry, getEntry, listEntries, setEntryImage, updateEntry, updateEntryCanvas } from './store/entryStore';
+import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, setEntryImage, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
 import { listResultDimensions, upsertResultDimension } from './store/resultDimensions';
 import {
+  annotationsSchema,
   canvasJsonSchema,
   createEntryInputSchema,
   idSchema,
@@ -118,12 +119,20 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.updateEntry, (_event, id: unknown, raw: unknown) =>
     updateEntry(requireDb(), idSchema.parse(id), createEntryInputSchema.parse(raw)),
   );
-  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown) =>
-    updateEntryCanvas(requireDb(), idSchema.parse(id), canvasJsonSchema.parse(canvasJson)),
+  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown, annotations: unknown) =>
+    updateEntryCanvas(
+      requireDb(),
+      idSchema.parse(id),
+      canvasJsonSchema.parse(canvasJson),
+      annotationsSchema.parse(annotations),
+    ),
   );
   ipcMain.handle(IpcChannel.getEntry, (_event, id: unknown) => getEntry(requireDb(), idSchema.parse(id)));
   ipcMain.handle(IpcChannel.queryAnnotationsByTag, (_event, raw: unknown) =>
     queryAnnotationsByTag(requireDb(), tagSchema.parse(raw)),
+  );
+  ipcMain.handle(IpcChannel.locateAnnotation, (_event, annotationId: unknown) =>
+    locateAnnotation(requireDb(), idSchema.parse(annotationId)),
   );
 }
 

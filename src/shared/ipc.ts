@@ -1,6 +1,7 @@
 // Typed IPC contract shared by main (handler), preload (bridge) and renderer (caller).
 import type {
   AnnotationHit,
+  Annotation,
   CreateEntryInput,
   Entry,
   EntrySummary,
@@ -28,9 +29,10 @@ export interface IpcApi {
   listResultDimensions(): Promise<ResultDimension[]>;
   createEntry(input: CreateEntryInput): Promise<Entry>;
   updateEntry(id: string, input: CreateEntryInput): Promise<Entry>;
-  updateEntryCanvas(id: string, canvasJson: string): Promise<Entry>;
+  updateEntryCanvas(id: string, canvasJson: string, annotations: Annotation[]): Promise<Entry>;
   getEntry(id: string): Promise<Entry | null>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
+  locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;
 }
 
 export const IpcChannel = {
@@ -48,4 +50,5 @@ export const IpcChannel = {
   updateEntryCanvas: 'store:update-entry-canvas',
   getEntry: 'store:get-entry',
   queryAnnotationsByTag: 'store:query-annotations-by-tag',
+  locateAnnotation: 'store:locate-annotation',
 } as const;

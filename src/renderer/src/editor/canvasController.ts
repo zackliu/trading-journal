@@ -13,6 +13,7 @@ import {
   type TPointerEvent,
   type TPointerEventInfo,
 } from 'fabric';
+import type { Annotation, Result, Tag } from '../../../shared/domain';
 
 export type Tool = 'select' | 'rect' | 'line' | 'arrow' | 'hline' | 'text' | 'draw';
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
@@ -35,6 +36,14 @@ export interface EditorState {
   hasSelection: boolean;
 }
 
+/** The annotation data the right-click “Tags & result…” popover edits. */
+export interface AnnotationSelection {
+  id: string;
+  tags: Tag[];
+  result: Result;
+  links: string[];
+}
+
 /** A right-click on the canvas, asking the shell to open the canvas context menu. */
 export interface CanvasContextRequest {
   x: number;
@@ -42,6 +51,8 @@ export interface CanvasContextRequest {
   hasSelection: boolean;
   isImage: boolean;
   isLocked: boolean;
+  /** The right-clicked taggable annotation (id/tags/result/links), or null for a screenshot / empty space. */
+  annotation: AnnotationSelection | null;
 }
 
 const MIN_DRAG = 3;
@@ -66,6 +77,31 @@ interface LockFlag {
 
 function isLocked(o: FabricObject): boolean {
   return (o as unknown as LockFlag).tjLocked === true;
+}
+
+/** Annotation payload carried by any drawable object (screenshots carry none). */
+interface TjAnnotated {
+  tjId?: string;
+  tjTags?: Tag[];
+  tjResult?: Result;
+  tjLinks?: string[];
+}
+
+function annData(o: FabricObject): TjAnnotated {
+  return o as unknown as TjAnnotated;
+}
+
+function isAnnotation(o: FabricObject): boolean {
+  return typeof annData(o).tjId === 'string';
+}
+
+/** Stamp a fresh annotation identity on a newly drawn object (id + empty tag list). */
+function ensureAnnotation(o: FabricObject): void {
+  const a = annData(o);
+  if (!a.tjId) {
+    a.tjId = crypto.randomUUID();
+    a.tjTags = [];
+  }
 }
 
 /** Arrow = a two-point polyline that also renders an arrowhead at its end point. */
@@ -225,7 +261,11 @@ export class CanvasController {
     this.canvas.on('mouse:down', (opt) => this.onDown(opt));
     this.canvas.on('mouse:move', (opt) => this.onMove(opt));
     this.canvas.on('mouse:up', () => this.onUp());
-    this.canvas.on('path:created', () => this.pushHistory());
+    this.canvas.on('path:created', (e) => {
+      const path = (e as unknown as { path?: FabricObject }).path;
+      if (path) ensureAnnotation(path);
+      this.pushHistory();
+    });
     this.canvas.on('object:modified', () => this.pushHistory());
     this.canvas.on('selection:created', () => this.emit());
     this.canvas.on('selection:updated', () => this.emit());
@@ -572,10 +612,17 @@ export class CanvasController {
   }
 
   serialize(): string {
-    const data = this.canvas.toObject(['tjLocked', 'boxStroke', 'boxStrokeWidth', 'boxFill', 'boxDash']) as Record<
-      string,
-      unknown
-    >;
+    const data = this.canvas.toObject([
+      'tjLocked',
+      'boxStroke',
+      'boxStrokeWidth',
+      'boxFill',
+      'boxDash',
+      'tjId',
+      'tjTags',
+      'tjResult',
+      'tjLinks',
+    ]) as Record<string, unknown>;
     data.tjPage = { width: this.pageW, height: this.pageH };
     return JSON.stringify(data);
   }
@@ -653,6 +700,7 @@ export class CanvasController {
       hasSelection: target !== null || this.canvas.getActiveObjects().length > 0,
       isImage: target instanceof FabricImage,
       isLocked: locked,
+      annotation: target && isAnnotation(target) ? this.readAnnotation(target) : null,
     });
   }
 
@@ -693,6 +741,7 @@ export class CanvasController {
     if (this.tool === 'rect') {
       const rect = draft as Rect;
       if ((rect.width ?? 0) >= MIN_DRAG || (rect.height ?? 0) >= MIN_DRAG) {
+        ensureAnnotation(rect);
         created = rect;
       } else {
         this.canvas.remove(rect);
@@ -733,6 +782,7 @@ export class CanvasController {
     };
     const seg = arrow ? new ArrowPoly(points, options) : new Polyline(points, options);
     attachSegmentControls(seg);
+    ensureAnnotation(seg);
     return seg;
   }
 
@@ -755,6 +805,7 @@ export class CanvasController {
     tb.boxFill = this.style.fill;
     tb.boxDash = dashArray(this.style.dash, this.style.strokeWidth);
     attachTextControls(tb);
+    ensureAnnotation(tb);
     return tb;
   }
 
@@ -788,6 +839,61 @@ export class CanvasController {
     this.canvas.requestRenderAll();
     this.restoring = false;
     this.emit();
+  }
+
+  // ---- Annotation data: any drawable object carries id + tags + result + links. ----
+
+  /** The annotations on this page, projected for the index (screenshots are excluded). */
+  extractAnnotations(): Annotation[] {
+    const out: Annotation[] = [];
+    for (const obj of this.canvas.getObjects()) {
+      const a = annData(obj);
+      if (typeof a.tjId !== 'string') continue; // images (screenshots) are not annotations
+      obj.setCoords();
+      const box = obj.getBoundingRect();
+      const ann: Annotation = {
+        id: a.tjId,
+        bounds: { x: box.left, y: box.top, width: box.width, height: box.height },
+        tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
+      };
+      if (a.tjResult && Object.keys(a.tjResult).length > 0) ann.result = { ...a.tjResult };
+      if (a.tjLinks && a.tjLinks.length > 0) ann.links = [...a.tjLinks];
+      out.push(ann);
+    }
+    return out;
+  }
+
+  /** Read an annotation object's tag / result / link data (a snapshot for the popover). */
+  private readAnnotation(obj: FabricObject): AnnotationSelection {
+    const a = annData(obj);
+    return {
+      id: a.tjId as string,
+      tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
+      result: { ...(a.tjResult ?? {}) },
+      links: [...(a.tjLinks ?? [])],
+    };
+  }
+
+  /** Select an annotation by id (following a link); false if it is not on this page. */
+  selectAnnotationById(annotationId: string): boolean {
+    const obj = this.canvas.getObjects().find((o) => annData(o).tjId === annotationId);
+    if (!obj) return false;
+    this.applyTool('select');
+    this.canvas.setActiveObject(obj);
+    this.canvas.requestRenderAll();
+    return true;
+  }
+
+  /** Commit the popover's edits onto an annotation (whole-value replace), then it can be saved. */
+  applyAnnotationEdits(id: string, tags: Tag[], result: Result, links: string[]): void {
+    const obj = this.canvas.getObjects().find((o) => annData(o).tjId === id);
+    if (!obj) return;
+    const a = annData(obj);
+    a.tjTags = tags.map((t) => ({ group: t.group, value: t.value }));
+    a.tjResult = Object.keys(result).length > 0 ? { ...result } : undefined;
+    a.tjLinks = links.length > 0 ? [...links] : undefined;
+    this.canvas.requestRenderAll();
+    this.pushHistory();
   }
 
   private emit(): void {

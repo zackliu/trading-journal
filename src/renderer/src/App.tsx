@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
-import type { EntrySummary } from '../../shared/domain';
+import type { EntrySummary, ResultDimension } from '../../shared/domain';
 import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
-import type { CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
+import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
 import { StatusBar } from './shell/StatusBar';
+import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
 import { Thumbnails } from './shell/Thumbnails';
 
 type Health = 'ok' | 'pending' | 'error';
@@ -43,7 +44,11 @@ export function App(): JSX.Element {
   const [style, setStyle] = useState<DrawStyle>(DEFAULT_STYLE);
   const [editorState, setEditorState] = useState<EditorState>(EMPTY_EDITOR);
   const [zoom, setZoom] = useState<{ percent: number; fitMode: boolean }>({ percent: 100, fitMode: true });
+  const [popover, setPopover] = useState<{ annotation: AnnotationSelection; x: number; y: number } | null>(null);
+  const [dimensions, setDimensions] = useState<ResultDimension[]>([]);
+  const [linkClipboard, setLinkClipboard] = useState<{ entryId: string; annotationId: string } | null>(null);
   const controllerRef = useRef<CanvasController | null>(null);
+  const pendingSelectRef = useRef<string | null>(null);
   const styleRef = useRef(style);
   const saveRef = useRef<() => Promise<void>>(async () => {});
 
@@ -51,8 +56,13 @@ export function App(): JSX.Element {
     setEntries(await window.api.listEntries());
   }, []);
 
+  const refreshDimensions = useCallback(async () => {
+    setDimensions(await window.api.listResultDimensions());
+  }, []);
+
   useEffect(() => {
     void refresh();
+    void refreshDimensions();
     window.api
       .ping()
       .then((res: PingResult) => {
@@ -65,14 +75,14 @@ export function App(): JSX.Element {
         setStoreHealth('error');
         setStoreLabel('unavailable');
       });
-  }, [refresh]);
+  }, [refresh, refreshDimensions]);
 
   const entryOpen = selectedEntryId !== null;
 
   const saveCanvas = useCallback(async () => {
     const controller = controllerRef.current;
     if (!controller || !selectedEntryId) return;
-    await window.api.updateEntryCanvas(selectedEntryId, controller.serialize());
+    await window.api.updateEntryCanvas(selectedEntryId, controller.serialize(), controller.extractAnnotations());
     controller.markSaved();
   }, [selectedEntryId]);
 
@@ -90,6 +100,7 @@ export function App(): JSX.Element {
       setSelectedEntryId(nextId);
       setTool('select');
       setEditorState(EMPTY_EDITOR);
+      setPopover(null);
       await refresh();
     },
     [editorState.dirty, saveCanvas, refresh],
@@ -141,6 +152,7 @@ export function App(): JSX.Element {
         controllerRef.current = null;
         setSelectedEntryId(null);
         setEditorState(EMPTY_EDITOR);
+        setPopover(null);
       }
       await refresh();
     },
@@ -182,6 +194,17 @@ export function App(): JSX.Element {
     controller.onToolChange(setTool);
     controller.onContext((r) => {
       const items: MenuItem[] = [];
+      if (r.annotation) {
+        const ann = r.annotation;
+        const px = r.x;
+        const py = r.y;
+        items.push({
+          label: 'Tags & result…',
+          icon: 'tag',
+          testId: 'menu-tags',
+          onClick: () => setPopover({ annotation: ann, x: px, y: py }),
+        });
+      }
       if (r.isLocked) {
         items.push({
           label: 'Unlock',
@@ -288,6 +311,51 @@ export function App(): JSX.Element {
     [removeEntry],
   );
 
+  const onDefineDimension = useCallback(
+    async (dim: ResultDimension) => {
+      await window.api.defineResultDimension(dim);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  const onCopyLinkTarget = useCallback(
+    (annotationId: string) => {
+      if (selectedEntryId) setLinkClipboard({ entryId: selectedEntryId, annotationId });
+    },
+    [selectedEntryId],
+  );
+  const onPopoverSave = useCallback(
+    (edits: AnnotationEdits) => {
+      if (popover) {
+        controllerRef.current?.applyAnnotationEdits(popover.annotation.id, edits.tags, edits.result, edits.links);
+        void saveCanvas();
+      }
+      setPopover(null);
+    },
+    [popover, saveCanvas],
+  );
+  const jumpToAnnotation = useCallback(
+    async (annotationId: string) => {
+      setPopover(null);
+      const loc = await window.api.locateAnnotation(annotationId);
+      if (!loc) return;
+      if (loc.entryId === selectedEntryId) {
+        controllerRef.current?.selectAnnotationById(annotationId);
+      } else {
+        pendingSelectRef.current = annotationId;
+        await switchTo(loc.entryId);
+      }
+    },
+    [selectedEntryId, switchTo],
+  );
+  const onEditorLoaded = useCallback(() => {
+    const pending = pendingSelectRef.current;
+    if (pending) {
+      controllerRef.current?.selectAnnotationById(pending);
+      pendingSelectRef.current = null;
+    }
+  }, []);
+
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <Ribbon
@@ -355,7 +423,12 @@ export function App(): JSX.Element {
           ) : null}
           {busy ? <div className="notice">Working…</div> : null}
           {selectedEntryId ? (
-            <CanvasEditor key={selectedEntryId} entryId={selectedEntryId} onReady={onReady} />
+            <CanvasEditor
+              key={selectedEntryId}
+              entryId={selectedEntryId}
+              onReady={onReady}
+              onLoaded={onEditorLoaded}
+            />
           ) : (
             <div className="empty-state" data-testid="empty-state">
               <div className="empty-state__card">
@@ -375,13 +448,9 @@ export function App(): JSX.Element {
           )}
         </main>
 
-        <aside className="inspector">
-          <div className="rail__title">Inspector</div>
-          <div className="placeholder">
-            {entryOpen
-              ? 'tag & result for the selected annotation (Slice 4)'
-              : 'entry details (Slice 4 / 5)'}
-          </div>
+        <aside className="inspector" data-testid="stamp-rail">
+          <div className="rail__title">Stamps</div>
+          <div className="placeholder">Your reusable stamp palette lives here · Slice 5</div>
         </aside>
       </div>
 
@@ -400,6 +469,20 @@ export function App(): JSX.Element {
       />
 
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
+      {popover ? (
+        <TagPopover
+          x={popover.x}
+          y={popover.y}
+          annotation={popover.annotation}
+          dimensions={dimensions}
+          linkClipboard={linkClipboard}
+          onDefineDimension={onDefineDimension}
+          onCopyLinkTarget={onCopyLinkTarget}
+          onJumpLink={jumpToAnnotation}
+          onSave={onPopoverSave}
+          onCancel={() => setPopover(null)}
+        />
+      ) : null}
     </div>
   );
 }

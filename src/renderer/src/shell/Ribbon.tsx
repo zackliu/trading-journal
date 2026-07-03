@@ -92,6 +92,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             type="button"
             key={tab}
             className={`ribbon__tab${i === active ? ' is-active' : ''}`}
+            data-testid={`tab-${tab.toLowerCase()}`}
             onClick={() => setActive(i)}
           >
             {tab}
