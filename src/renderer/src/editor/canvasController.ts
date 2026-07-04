@@ -23,6 +23,7 @@ import {
   isChrome,
   isGhost,
   isLocked,
+  isTitle,
   reattachControls,
   tjMeta,
 } from './annotations';
@@ -78,6 +79,10 @@ const STRIP_W = 760; // scene px width of the stamp strip
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const THUMB_W = 400; // list-thumbnail width in px; the review page is captured at this size
+const TITLE_H = 150; // scene px: a title band carved from the page top; the work area is below it
+const TITLE_FONT = 36;
+const TITLE_PAD = 32; // left/right inset of the title text within the band
+const TITLE_INK = '#33302a';
 
 function dashArray(dash: DashStyle, width: number): number[] | null {
   if (dash === 'dashed') return [width * 4, width * 3];
@@ -238,9 +243,33 @@ export class CanvasController {
     return obj.getCenterPoint().x >= this.pageW + GAP / 2 ? 'strip' : 'page';
   }
 
-  /** The (non-serialized) seam between the two white papers: a soft warm light-shadow groove, not a hard line. */
+  /** The (non-serialized) page chrome: the title band + its hairline, and the soft groove between page and strip. */
   private addChrome(): void {
     for (const o of this.canvas.getObjects()) if (isChrome(o)) this.canvas.remove(o);
+    // Title band: a soft warm strip across the page top (the review's title lives here), set off from
+    // the white work area below by a hairline. Chrome — rendered + in the thumbnail, never serialized.
+    const band = new Rect({
+      left: 0,
+      top: 0,
+      width: this.pageW,
+      height: TITLE_H,
+      fill: '#f8f4ec',
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+    tjMeta(band).tjChrome = true;
+    const hairline = new Rect({
+      left: 0,
+      top: TITLE_H - 1.5,
+      width: this.pageW,
+      height: 1.5,
+      fill: 'rgba(74, 63, 44, 0.16)',
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
+    tjMeta(hairline).tjChrome = true;
     const divider = new Rect({
       left: this.pageW,
       top: 0,
@@ -265,8 +294,37 @@ export class CanvasController {
       }),
     });
     tjMeta(divider).tjChrome = true;
-    this.canvas.add(divider);
+    this.canvas.add(band, hairline, divider);
+    // All chrome sits at the very back: band, then hairline, then divider, then real content on top.
     this.canvas.sendObjectToBack(divider);
+    this.canvas.sendObjectToBack(hairline);
+    this.canvas.sendObjectToBack(band);
+  }
+
+  private makeTitleBox(): TextBoxAnnotation {
+    const tb = new TextBoxAnnotation('', {
+      left: TITLE_PAD,
+      top: TITLE_H / 2,
+      originY: 'center',
+      width: this.pageW - TITLE_PAD * 2,
+      fontSize: TITLE_FONT,
+      fill: TITLE_INK,
+      textAlign: 'left',
+      padding: 6,
+      objectCaching: false,
+      splitByGrapheme: true,
+    });
+    tb.tjRole = 'title';
+    tb.boxFill = 'transparent';
+    tb.boxStrokeWidth = 0;
+    attachTextControls(tb);
+    return tb;
+  }
+
+  /** Every review has exactly one structural title box in the band; create it if the page lacks one. */
+  private ensureTitleBox(): void {
+    if (this.canvas.getObjects().some((o) => isTitle(o))) return;
+    this.canvas.add(this.makeTitleBox());
   }
 
   async loadEntry(canvasJson: string, coverUrl: string | null, stampJson: string): Promise<void> {
@@ -309,6 +367,7 @@ export class CanvasController {
       this.canvas.sendObjectToBack(img);
     }
 
+    this.ensureTitleBox();
     this.addChrome();
     this.fitMode = true;
     this.refreshZoom();
@@ -392,20 +451,21 @@ export class CanvasController {
   }
 
   /**
-   * Center an image on the page. `fillPage` scales it to fill the page as much
-   * as possible (may upscale); otherwise it comes in at ≤60% of the page, never
-   * upscaled. The page size itself is never changed by an image.
+   * Center an image in the work area **below the title band**. `fillPage` scales it to fill that area
+   * as much as possible (may upscale); otherwise it comes in at ≤60% of it, never upscaled. The page
+   * size itself is never changed by an image.
    */
   private placeContained(img: FabricImage, fillPage: boolean): void {
     const iw = img.width || 1;
     const ih = img.height || 1;
+    const areaH = this.pageH - TITLE_H;
     const frac = fillPage ? 1 : 0.6;
     const cap = fillPage ? Infinity : 1;
-    const scale = Math.min(cap, (this.pageW * frac) / iw, (this.pageH * frac) / ih);
+    const scale = Math.min(cap, (this.pageW * frac) / iw, (areaH * frac) / ih);
     img.scale(scale);
     img.set({
       left: (this.pageW - iw * scale) / 2,
-      top: (this.pageH - ih * scale) / 2,
+      top: TITLE_H + (areaH - ih * scale) / 2,
       selectable: true,
       evented: true,
     });
@@ -425,18 +485,19 @@ export class CanvasController {
     return { isFirst };
   }
 
-  /** Scale the selected image to fill the page as much as possible, preserving aspect. */
+  /** Scale the selected image to fill the work area below the title band, preserving aspect. */
   fitActiveToCanvas(): void {
     const obj = this.canvas.getActiveObject();
     if (!(obj instanceof FabricImage)) return;
     const iw = obj.width || 1;
     const ih = obj.height || 1;
-    const scale = Math.min(this.pageW / iw, this.pageH / ih);
+    const areaH = this.pageH - TITLE_H;
+    const scale = Math.min(this.pageW / iw, areaH / ih);
     obj.set({
       scaleX: scale,
       scaleY: scale,
       left: (this.pageW - iw * scale) / 2,
-      top: (this.pageH - ih * scale) / 2,
+      top: TITLE_H + (areaH - ih * scale) / 2,
     });
     obj.setCoords();
     this.canvas.requestRenderAll();
@@ -608,7 +669,8 @@ export class CanvasController {
   }
 
   deleteSelected(): void {
-    const active = this.canvas.getActiveObjects();
+    // The title box is structural — never deletable, even inside a multi-selection.
+    const active = this.canvas.getActiveObjects().filter((o) => !isTitle(o));
     if (active.length === 0) return;
     this.canvas.remove(...active);
     this.canvas.discardActiveObject();
@@ -1038,7 +1100,7 @@ export class CanvasController {
   /** On exit: discard an empty box (Office-style — no text means it was never created); else commit. */
   private onTextEditExit(target: FabricObject | null): void {
     if (target instanceof TextBoxAnnotation) {
-      if ((target.text ?? '').trim() === '') {
+      if ((target.text ?? '').trim() === '' && !isTitle(target)) {
         this.canvas.remove(target);
         this.canvas.requestRenderAll();
         if (this.newTextBox !== target) this.pushHistory();

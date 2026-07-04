@@ -324,6 +324,7 @@ test('the text tool makes an Office-style text box (types text; empty is discard
   const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
     objects?: {
       type?: string;
+      tjRole?: string;
       text?: string;
       fontSize?: number;
       boxStroke?: string;
@@ -331,7 +332,7 @@ test('the text tool makes an Office-style text box (types text; empty is discard
       splitByGrapheme?: boolean;
     }[];
   };
-  const tb = (parsed.objects ?? []).find((o) => o.type === 'TextBoxAnnotation');
+  const tb = (parsed.objects ?? []).find((o) => o.type === 'TextBoxAnnotation' && o.tjRole !== 'title');
   expect(tb?.text).toBe('Hi');
   // Font size comes from the Office-style control; the box border is its own property.
   expect(tb?.fontSize).toBe(40);
@@ -346,9 +347,11 @@ test('the text tool makes an Office-style text box (types text; empty is discard
   await page.mouse.click(box.x + box.width * 0.75, box.y + box.height * 0.6);
   await page.mouse.click(box.x + 6, box.y + 6); // exit without typing → discarded, nothing changed
   const after = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
-    objects?: { type?: string }[];
+    objects?: { type?: string; tjRole?: string }[];
   };
-  expect((after.objects ?? []).filter((o) => o.type === 'TextBoxAnnotation')).toHaveLength(1);
+  expect(
+    (after.objects ?? []).filter((o) => o.type === 'TextBoxAnnotation' && o.tjRole !== 'title'),
+  ).toHaveLength(1);
 
   // Reopen — the text-box subclass revives without error.
   await page.reload();

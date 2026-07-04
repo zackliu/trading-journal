@@ -45,7 +45,11 @@ export const TJ_PROPS = [
   'tjTags',
   'tjResult',
   'tjLinks',
+  'tjRole',
 ] as const;
+
+/** Placeholder shown in an empty title text box — a hint, never stored as the title's content. */
+export const TITLE_PLACEHOLDER = '点击添加标题';
 
 /**
  * Every custom field we stash on a Fabric object goes here, read through one typed door.
@@ -61,6 +65,8 @@ export interface TjMeta {
   tjLocked?: boolean;
   tjChrome?: boolean;
   tjGhost?: boolean;
+  /** Structural role marker; `'title'` = the review's title text box (not a queryable annotation). */
+  tjRole?: string;
 }
 
 export function tjMeta(o: FabricObject): TjMeta {
@@ -84,6 +90,11 @@ export function isChrome(o: FabricObject): boolean {
 /** The translucent clone that tracks the cursor during a locked drag-out. */
 export function isGhost(o: FabricObject): boolean {
   return tjMeta(o).tjGhost === true;
+}
+
+/** The review's structural title text box: kept even when empty, never a queryable annotation. */
+export function isTitle(o: FabricObject): boolean {
+  return tjMeta(o).tjRole === 'title';
 }
 
 /** Stamp a fresh annotation identity on a newly drawn object (id + empty tag list). */
@@ -138,6 +149,7 @@ export class TextBoxAnnotation extends Textbox {
   declare boxStrokeWidth?: number;
   declare boxFill?: string;
   declare boxDash?: number[] | null;
+  declare tjRole?: string;
 
   override _render(ctx: CanvasRenderingContext2D): void {
     const pad = 6;
@@ -155,6 +167,16 @@ export class TextBoxAnnotation extends Textbox {
       ctx.strokeRect(-w / 2, -h / 2, w, h);
     }
     ctx.restore();
+    // An empty title shows a faint placeholder hint (never stored as content; gone once you type).
+    if (this.tjRole === 'title' && (this.text ?? '') === '' && !this.isEditing) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(60, 54, 44, 0.34)';
+      ctx.font = `${this.fontSize}px ${this.fontFamily}`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(TITLE_PLACEHOLDER, -this.width / 2, 0);
+      ctx.restore();
+    }
     super._render(ctx);
   }
 }
