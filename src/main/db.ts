@@ -14,6 +14,8 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   migration001Initial,
   migration002StampLibrary,
   migration003EntryThumbnail,
+  migration004TagRegistry,
+  migration005TagSort,
 ];
 
 /** Open (creating if missing) the SQLite database and run pending migrations. */
@@ -120,4 +122,37 @@ function migration002StampLibrary(db: Db): void {
 // page, not a frozen cover screenshot.
 function migration003EntryThumbnail(db: Db): void {
   db.exec(`ALTER TABLE entries ADD COLUMN thumbnail TEXT NOT NULL DEFAULT '';`);
+}
+
+// The vocabulary registry: user-declared classification groups and their values, existing
+// independently of whether any review uses them. Feeds the pivot browse dropdown, the
+// Review/Annotation quick-pick, and Settings. `date` is NOT stored here — it stays a structural,
+// system-maintained entry tag and is never a tagging option. Insertion order (rowid) is the display
+// order. Deleting a group cascades its values; deleting a registry row never touches entry_tags /
+// annotation_tags (those are the actual usage, reconciled by the vocabulary-evolution slice).
+function migration004TagRegistry(db: Db): void {
+  db.exec(`
+    CREATE TABLE tag_groups (
+      id     TEXT PRIMARY KEY,
+      label  TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE tag_values (
+      group_id TEXT NOT NULL REFERENCES tag_groups(id) ON DELETE CASCADE,
+      value    TEXT NOT NULL,
+      label    TEXT,
+      PRIMARY KEY (group_id, value)
+    );
+  `);
+}
+
+// User-controllable display order for groups and for the values within a group. The Settings window
+// drags to reorder; the ribbon quick-pick renders in this order. New rows append (max+1); reordering
+// rewrites the whole scope's sort to 0..n-1.
+function migration005TagSort(db: Db): void {
+  db.exec(`
+    ALTER TABLE tag_groups ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tag_values ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+  `);
 }

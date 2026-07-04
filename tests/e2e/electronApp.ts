@@ -7,6 +7,9 @@ import type {
   EntrySummary,
   ResultDimension,
   Tag,
+  TagGroup,
+  TagGroupView,
+  TagValue,
 } from '../../src/shared/domain';
 import type { IpcApi } from '../../src/shared/ipc';
 
@@ -66,6 +69,42 @@ export const store = {
 
   queryByTag: (page: Page, tag: Tag): Promise<AnnotationHit[]> =>
     page.evaluate((t) => (globalThis as unknown as WindowWithApi).api.queryAnnotationsByTag(t), tag),
+
+  queryEntriesByTag: (page: Page, tag: Tag): Promise<EntrySummary[]> =>
+    page.evaluate((t) => (globalThis as unknown as WindowWithApi).api.queryEntriesByTag(t), tag),
+
+  setEntryTags: (page: Page, id: string, tags: Tag[]): Promise<Entry> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.setEntryTags(a.id, a.tags), { id, tags }),
+
+  listGroups: (page: Page): Promise<TagGroupView[]> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listGroups()),
+
+  defineGroup: (page: Page, group: TagGroup): Promise<void> =>
+    page.evaluate((g) => (globalThis as unknown as WindowWithApi).api.defineGroup(g), group),
+
+  deleteGroup: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteGroup(x), id),
+
+  defineValue: (page: Page, value: TagValue): Promise<void> =>
+    page.evaluate((v) => (globalThis as unknown as WindowWithApi).api.defineValue(v), value),
+
+  deleteValue: (page: Page, groupId: string, value: string): Promise<void> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.deleteValue(a.groupId, a.value), {
+      groupId,
+      value,
+    }),
+
+  setGroupPinned: (page: Page, id: string, pinned: boolean): Promise<void> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.setGroupPinned(a.id, a.pinned), { id, pinned }),
+
+  reorderGroups: (page: Page, ids: string[]): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.reorderGroups(x), ids),
+
+  reorderValues: (page: Page, groupId: string, values: string[]): Promise<void> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.reorderValues(a.groupId, a.values), {
+      groupId,
+      values,
+    }),
 
   ingestImage: (page: Page, base64Png: string): Promise<Entry> =>
     page.evaluate((b64) => {

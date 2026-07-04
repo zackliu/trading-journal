@@ -22,6 +22,7 @@ export type IconName =
   | 'tag'
   | 'browse'
   | 'view'
+  | 'grip'
   | 'stats';
 
 const PATHS: Record<IconName, string> = {
@@ -48,6 +49,7 @@ const PATHS: Record<IconName, string> = {
   tag: 'M4 12l8-8h8v8l-8 8zM15 9h.01',
   browse: 'M4 6h6v12H4zM12 7h8M12 12h8M12 17h8',
   view: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 9a3 3 0 100 6 3 3 0 000-6z',
+  grip: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
   stats: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
 };
 

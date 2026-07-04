@@ -23,7 +23,7 @@
 8. **annotation 几何用 image 像素坐标**（V1 静态截图），不绑定价格/时间轴。
 9. 标签是 `group:value`、kebab-case、稳定 id；一个分类是被查询引擎泛化匹配的 tag 值，**不是硬编码分支**。
 10. **进程边界**：Electron **main** 拥有 Entry Store、Annotation-Tag Index、Tag & Query 引擎、统计、SQLite 与图片文件（durable / query 边界）；**renderer** 拥有 Fabric 画布与渲染/视图层。二者通过一套 typed IPC 契约（store/query API）通信；renderer 不直接开 SQLite 或读写文件。
-11. **测试方式（两层）**：因 better-sqlite3 按 Electron ABI 编译,领域测试分两层——(a) **纯逻辑单测**:tag 解析、布尔查询构造、result 聚合数学等**无 native 依赖**的模块用 **Vitest** 在 Node 跑(首个纯逻辑模块出现时即引入,约 Slice 7/9);(b) **契约 / 持久化 scenario test**:store/query/stats API(领域 slice 1、2、4、5、6、7、9、10、11)通过 **Playwright + Electron** harness 从 renderer 调 `window.api.<op>` 断言领域行为,**不绕过契约直接读 SQLite**。骨架 slice(0)跑启动冒烟;画布/视图 slice(3、5、8)驱动 renderer 跑真实交互并断言派生结果。
+11. **测试方式（两层）**：因 better-sqlite3 按 Electron ABI 编译,领域测试分两层——(a) **纯逻辑单测**:tag 解析、布尔查询构造、result 聚合数学等**无 native 依赖**的模块用 **Vitest** 在 Node 跑(首个纯逻辑模块出现时即引入,约 Slice 7/8);(b) **契约 / 持久化 scenario test**:store/query/stats API(领域 slice 1、2、4、5、6、7、8、9、10)通过 **Playwright + Electron** harness 从 renderer 调 `window.api.<op>` 断言领域行为,**不绕过契约直接读 SQLite**。骨架 slice(0)跑启动冒烟;画布/视图 slice(3、5、6)驱动 renderer 跑真实交互并断言派生结果。
 12. **本计划不含**：PPT 迁移（brief §10 后续研究）、可回放/实盘图表、多端同步、云后端、经纪/回测/行情。
 
 ## 3. Slice 0：项目骨架与可运行外壳（Walking Skeleton）
@@ -57,7 +57,7 @@ Expect：
 
 - **Slice 0 (walking skeleton) implemented.** Runnable Electron shell: boots to a status screen, opens a portable data folder (`app.sqlite` + `images/`), and a typed `app:ping` IPC round-trips main↔renderer. Layout: `src/main` (Electron main, data folder, SQLite open + ordered migration runner), `src/preload` (contextBridge `window.api`), `src/renderer` (React shell: `main.tsx` + `App.tsx`), `src/shared/` (typed IPC + domain contracts), `tests/e2e/boot.spec.ts` (Playwright + Electron boot smoke test).
 - Toolchain: **electron-vite** (separate main/preload/renderer builds) + **Vite** + **TypeScript**; renderer UI = **React** (`@vitejs/plugin-react`; a strict CSP is injected into the production build only, so dev keeps HMR/react-refresh); IPC payloads validated at the main-process boundary with **zod**; native `better-sqlite3` rebuilt for Electron's ABI via `electron-builder install-app-deps` (runs on `postinstall`); packaging via **electron-builder** (`--dir`); e2e via **@playwright/test** `_electron` (drives the real app, no browser download).
-- Decided tech: renderer UI = **React** (Vite-bundled, canvas kept imperative outside React); canvas = **Fabric.js** v6 (MIT; imperative, mounted outside React); shell = **Electron** (JS/TS, no Rust); storage = local **SQLite** (better-sqlite3) for entries/annotations/tags/results/views/stats + an `images/` folder for screenshots (referenced by hash, not base64-embedded), all under one portable data folder. Migration (reproduce the user's PPT annotations — boxes, text, arrows — as native editable annotations, not flat screenshots; high-difficulty) remains deferred research (see §15 与 brief 技术决策). Group/result vocabulary (which groups/tags/result dimensions exist) is user-defined at runtime, not a project decision. Do not assume other tech until it is chosen and recorded in this note.
+- Decided tech: renderer UI = **React** (Vite-bundled, canvas kept imperative outside React); canvas = **Fabric.js** v6 (MIT; imperative, mounted outside React); shell = **Electron** (JS/TS, no Rust); storage = local **SQLite** (better-sqlite3) for entries/annotations/tags/results/views/stats + an `images/` folder for screenshots (referenced by hash, not base64-embedded), all under one portable data folder. Migration (reproduce the user's PPT annotations — boxes, text, arrows — as native editable annotations, not flat screenshots; high-difficulty) remains deferred research (see §14 与 brief 技术决策). Group/result vocabulary (which groups/tags/result dimensions exist) is user-defined at runtime, not a project decision. Do not assume other tech until it is chosen and recorded in this note.
 - Verified commands (Windows, Node 22.22, npm 10.9): bootstrap `npm install` (postinstall rebuilds better-sqlite3 for Electron); build `npm run build`; typecheck `npm run typecheck`; lint `npm run lint`; run `npm run dev`; e2e `npm test` (build + Playwright suite: boot + store + ingest + editor scenarios), or `npm run test:e2e` after a prior `npm run build`; package `npm run package` (→ `dist/win-unpacked/TradingJournal.exe`).
 
 ## 4. Slice 1：Durable Entry & Annotation-Tag Store
@@ -156,7 +156,7 @@ Expect：
 - **单一 Office 式 Ribbon（无模式切换、无返回）**：顶部常驻一条 Ribbon（品牌 + 标签页 `Home / Draw / Tags / Browse / Stats`，每页内是带标题的分组命令），底部一条状态条（健康点 + 保存态「Saving… / All changes saved」 + zoom 控件）。命令按上下文启用 / 禁用：无复盘打开时 `Draw` 工具与删除置灰，无选中对象时删除所选 / 排列置灰；打开复盘自动切到 `Draw` 页。**编辑即自动保存**，故无「未保存」门控；手动 Save 按钮在 `Home` 页、全局 Ctrl+S 为习惯性「立即保存」（见 §8）。
 - **主体左栏 + 中间画布，无 Daily / 编辑器两态切换**：左栏（group→tag 导航 + 复盘缩略图廊）｜中间（打开复盘时是 Canvas 编辑器，否则「开始复盘」空状态）。同一外壳常驻，打开复盘即在中间渲染画布，不再有「进编辑器 / 返回」两态。**Stamp 印章条不是独立右栏——自 Slice 5 起它并入中间这张画布**（复盘页右侧、一条细分隔线、共享同一缩放，见 §8）。
 - **本 slice 已接行为的部分**：`Home`（新建 / 保存 / 删除复盘）、`Draw`（画布工具 / 样式 / 排列，见 B）、左栏复盘缩略图廊 + 右键「删除复盘」、状态栏 zoom 控件。
-- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页 = entry 级 tag 与 `date`（Slice 6；词表 / 维度管理 Slice 10 后续也在此页）、左栏 group→tag 两层导航的**浏览行为**与 `Browse` 页（Slice 8）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 9）。标注的 tag / result 编辑不再用常驻面板，而是 Slice 4 的**右键浮窗**。
+- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页（Slice 6 起改为 `Review` 页 = entry 级 tag + 快捷选择）、`Home` 的 Settings 词表窗口与选中标注才出现的 `Annotation` 上下文页（Slice 6；词表演化 Slice 9）、左栏按单一 group 维度 pivot 分桶的**浏览行为**与 `Browse` 页（Slice 6）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 8）。标注的 tag 编辑自 Slice 6 起走 `Annotation` 上下文页，result / link 走 Slice 4 的右键浮窗。
 - 这些占位是**非功能骨架**（图标、按钮、空面板、区域标题），真正行为在各自 slice 接入，不在本 slice 实现。
 
 **B. Canvas 标注层（本 slice 真正实现的能力）**
@@ -387,39 +387,143 @@ Expect：
 - 旧 `StampRailController` / `shell/StampRail.tsx` / DOM 幽灵拖拽编排已删除。`tests/e2e/stamp-library.spec.ts` 改为在**同一画布**内按 场景坐标 → 元素比例 定位拖拽（page ↔ strip）。
 - **顺带修的 UX**：在已有复盘打开时点 `Home` → `New` 建新复盘，Ribbon 现在会随 `entryId` 变化自动切回 `Draw` 页（原先停在 `Home`，新复盘看不到画笔工具）。新增 `tests/e2e/regression.spec.ts` 用**真实操作序列**兜底两个 bug：旧页坐标 stamp 被治愈进条区且不再投影为标注、连开多份复盘反复保存不再撞 `annotations.id`、空白新复盘页为空。stamp scenario 增加「解锁后拖出 = 同 id 移出（非复制）、库清空」一项。既有 21 项 + stamp 5 项 + regression 4 项共 **30 项 e2e 全绿**。
 
-## 9. Slice 6：Entry Tags
+## 9. Slice 6：Entry Tags、词表注册表与 Browse（浏览）
 
-目标：Entry 能携带贴在整张图上的 group tag，外加结构性的 `date`。
+目标：把「给复盘 / 标注打分类标签」与「按分类浏览复盘」一次做成一个闭环——用户先在一个**词表注册表**里声明自己的 group 与 tag 值，然后在 Ribbon 上一键给**整张复盘**（`Review` 页）或**选中的标注**（`Annotation` 上下文页）打这些 tag，最后在左栏**任选一个 group 维度**把整个库分桶浏览、点开大图时带该 tag 的标注短暂高亮。一份 Entry 在任意 group / tag 下浏览，零复制。（原 Entry Tags 与 Browse 合并：二者是同一件事的写侧与读侧，拆开各自没有可演示的回报。）
 
-**用户动作流程与直觉逻辑**：用户在 `Tags` 页给**整张复盘**贴标签（如这次的品种、大环境）——直觉上「这是关于整张图的属性，不指向某个具体标注」，跟 Slice 4 里贴在单个元素上的 tag 分得很清。`date` 永远自动在，让复盘天然按日排列，他不必手动组织时间线。
+**用户动作流程与直觉逻辑**：用户脑子里是「这张复盘的 day structure 是 X、品种是 NQ」——这些是**关于整张图的属性**，跟贴在某个框上的 tag 分得很清。他先在 `Home → Settings`（独立窗口）把词汇建好：group「day-structure」下若干值、group「symbol」下若干值……（系统不预置任何目录）。回到某张复盘，`Review` 页上就摆着他钉上来的几个 group 的快捷选择，点一下就打上，非常省事。当他点中画布上某个标注时，Ribbon **像 Office 一样冒出一个 `Annotation` 上下文页**（正如选中图片才出现 Shape Format），里面**同一套** group & tag 快捷选择，只是这次打给这个标注。浏览时，左栏顶部是一个**看起来就可点**的维度选择器（默认「All reviews」）：点开像下拉一样列出他建的所有 group，选一个（比如 symbol），左栏立刻按这个维度分成一段段可折叠的桶（NQ、ES……），每段里是命中的复盘缩略图；点一张在中间看大图，**带这个 tag 的标注亮 ~1.5s**——他一眼就知道「这张为什么归到 NQ」。选「All reviews」则是所有复盘按**年-月**自动分段（隐性时间结构，不是他建的 group、也不出现在 Settings 或打标签选项里），保证每张复盘一定有处可现。同一张图出现在好几个桶里时，他清楚**还是那一张、没有副本**。
 
 实现范围：
 
-- Entry 级 tag 的增删改；group 与 tag 值由用户定义。
-- `date` 作为结构性 group（总是存在，用于时间排序）。
-- entry tags 写入 `entry_tags`，可查询。
+**A. 数据模型契约（先契约、后 UI）**
 
-Scenario-based test：`scenario: user-defined entry tags are stored and queryable`
+- **词表注册表（新增一等公民）**：`TagGroup { id(slug), label, pinned }` ＋ `TagValue { groupId, value(slug), label? }`。group 与其值**独立于是否被用过**就存在、可声明——这是 pivot 下拉、快捷选择、Settings 三处的共同数据源。新增表 `tag_groups`、`tag_values`（migration `004`）。仍严守「app 只给机制、不预置目录」：目录全部用户建，只是从「用过才隐式存在」升级为「可预先声明」。
+- **输入即自然文本，id 自动派生**：用户在 Settings 与快捷条里键入人类写法（`TRD`、`Trading Range Day`、`上升日`），系统 `slugify` 成稳定 id（小写、空格 / 标点转连字符、保留 CJK 等 unicode 字母数字）、原文存为 `label` 显示；**用户从不手打 kebab**。`group:value` 查询、计数、浏览都用 slug id；chip / 桶 / 列表都显示 label。
+- **`date` 仍是结构性、系统维护的 entry tag**：**不进注册表、不进 Settings、不作为打标签选项**；「All reviews」按其年-月派生分桶。
+- Tag 仍是 `group:value`、kebab；entry 级与 annotation 级共用同一套 tag 机制，唯一区别是贴在整张 Entry 还是某个 annotation 上（group 无「单值 / 多值」之分，任意对象可带任意多个 tag）。
+
+**B. Settings 独立窗口（group & tag 增删查改 + 排序）**
+
+- `Home` 页一个 **Settings** 按钮 → **独立的模态窗口**：列出所有 group（含 label、pinned）与各自的值，可**新增 / 删除 group、新增 / 删除值、勾「钉到快捷选择」**（pinned）。**新建值只在这里做**（Ribbon 只选不建）。
+- **可拖排序**：group 与 group 内的值都渲染成带 ☰ 拖柄的行，**按住拖柄上下拖**即可改顺序（`tag_groups` / `tag_values` 的 `sort` 落库，migration `005`）；Ribbon 一律按此顺序渲染。拖动时被拖行跟随光标、其余行平滑让位（CSS transform 过渡），松手落位、写回顺序。
+- 用户输入自然文本（见 A）：值 / group 名都键入人类写法，id 由 `slugify` 派生、原文存 label。
+- 本 slice 只做**声明 / 删除 / 排序**；**重命名 / 合并 + 批量迁移引用**这类演化留给 Slice 9。
+- 全部经 store API，renderer 不直接开 SQLite。
+
+**C. Review 页与 Annotation 上下文页（同一套快捷标签控件）**
+
+- **`Review` 页**（原 `Tags` 页改名）：展示并编辑**这张复盘的 entry 级 tag**——每个 pinned group 是一个**固定宽度块**（组间一条很淡的细线分隔，谁也不推谁），块内值 chip 按 Settings 顺序、**已选(applied)浮到最前**始终可见；**长名 chip 省略号 + 悬停显示全名**；**放不下的收成 `+N` 展开钮**，点开一个**每组一个、限高可滚、带搜索框**的伸缩板（覆盖画布、点外/Esc 收），列全部值(applied 置顶)、点即打 tag。**只选不建**（新建走 Settings）。
+- **`Annotation` 上下文页**：**仅在选中某个 annotation 时出现**（Office contextual tab：出现即可点击，但**不抢占 `Draw`**——保持连续绘图；点该页即可给选中标注打 tag；取消选中即隐藏、Ribbon 回 `Draw`），承载**与 `Review` 页完全相同**的一套 group & tag 快捷选择，作用于选中的 annotation。二者共用同一个快捷标签控件（target = 整张 Entry 或选中 annotation），不写两套。
+- **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；Slice 4 的右键浮窗**收敛为「Result & links…」**（result 与 link 是标注独有、较低频，留在贴着对象的浮窗），避免同一 tag 两处可改。
+
+**D. entry-tag 写入路径**
+
+- 新增 store API `setEntryTags(entryId, Tag[])` ＋ typed IPC：entry tag 是 Entry 的属性、与 canvas 无关，**编辑即保存**（与自动保存同一直觉）。`updateEntryCanvas` 仍只管 canvas + 缩略图 + annotation 投影，不碰 `entry_tags`。
+- annotation 级 tag 仍随 canvas 保存经 `extractAnnotations()` 投影（Slice 4 既有路径）。
+
+**E. 左栏 pivot 浏览（取代原两层树，接入 `Browse` 页与左栏）**
+
+- 顶部一个**维度选择器**（默认「All reviews」，外观即「可点」）：点开列出注册表里所有 group；选中即把整个库按该维度分桶。
+- **选某个 group G**：按 G 的各**值**分成可折叠的**手风琴桶**；某值桶 = 在 entry 级**或** annotation 级带 `G:值` 的复盘（**并集、按 Entry 去重**），桶计数 = 去重 Entry 数；桶内竖排该批缩略图。该维度下无任何值的复盘不出现（「All reviews」保证它仍有处可现）；空桶就空着、不特殊处理。
+- **选「All reviews」**：所有复盘按**年-月**分桶（从 `date` 派生），新→旧，桶内按时间排。年-月是隐性时间结构，**不在 Settings、不可打标签**。
+- 每个桶头部左侧有**明显直觉的折叠三角**；对桶头（或左栏）**右键**有「全部折叠 / 全部展开」。折叠态只影响显示、不影响命中。
+- 点某张缩略图 → 中间画布渲染该 Entry 大图（复用现有画布；右侧仍是 Stamp 印章条）。
+- 读侧 API：`listGroups()`（注册表 ＋ 每值命中计数）、`queryEntriesByTag(tag)`（并集、去重 Entry 摘要）；「All reviews」复用 `listEntries()` 在 renderer 按年-月分组。**只读索引 / entry tags，绝不扫描 canvas JSON**。
+
+**F. 短暂高亮（render 期派生、不落库）**
+
+- 经某个值桶点开复盘时，画布对**带该 `group:值` 的 annotation** 在其 bounds 上画一圈 **~1.5s 后淡出的光晕**；多个携带者一起亮。entry 级命中无高亮目标（只是打开）。
+- 高亮几何从「当前 tag ＋ annotation bounds」在 render 期算出；切换维度 / 重开复盘不残留；持久化数据里无高亮 / 浏览态字段。
+
+Scenario-based test：`scenario: a declared group and value are usable before any review uses them`
 
 Given：
 
-- 用户在某 Entry 上新建一个 group 及 tag 值（此前系统无此 group）。
+- 用户在 Settings 里新建 group `symbol` 及值 `nq`、`es`，此前无任何复盘用过它们。
 
 Expect：
 
-- 该 `group:value` 存入 entry tags，可被查询命中。
-- 该 group 是运行时用户创建的，不是内置集合里的。
+- `tag_groups` / `tag_values` 出现该 group 与两个值；`listGroups()` 能读回。
+- pivot 维度选择器与 `Review` 页快捷选择立刻可用（无需先有复盘用过）。
+- 删除未被使用的值 `es` 后它从注册表消失，其它不受影响。
 
-Scenario-based test：`scenario: date is always present and orders entries chronologically`
+Scenario-based test：`scenario: quick-picking a value on the Review tab tags the whole entry and is queryable`
 
 Given：
 
-- 多个 Entry 有不同 `date`。
+- 一张打开的复盘；group `symbol` 被 pinned。
 
 Expect：
 
-- 每个 Entry 都有 `date`。
-- Daily 列表按 `date` 时间排序。
+- 在 `Review` 页点 `symbol:nq` → 该 `group:value` 经 `setEntryTags` 存入 `entry_tags`，重开后仍在。
+- `queryEntriesByTag({symbol, nq})` 命中该 Entry；`entries` 只有一行。
+- 再点一次 `symbol:nq` 取消 → entry tag 移除，查询不再命中。
+
+Scenario-based test：`scenario: the Annotation contextual tab appears on selection and tags the annotation`
+
+Given：
+
+- 打开复盘并选中一个矩形标注。
+
+Expect：
+
+- Ribbon 出现 `Annotation` 上下文页（不抢占 `Draw`，点该页即可编辑）；取消选中即隐藏。
+- 在其中点 `setup:h2` → 该 tag 随 canvas 保存投影进 `annotation_tags`，`queryAnnotationsByTag` 命中该标注。
+- 该控件与 `Review` 页是同一套（同机制，无特殊标注类型）。
+
+Scenario-based test：`scenario: browsing by a group lists value buckets (entry ∪ annotation) and opens one full-size with zero copies`
+
+Given：
+
+- 三张复盘：A 的 entry 带 `symbol:nq`，B 的某标注带 `symbol:nq`，C 带 `symbol:es`。
+
+Expect：
+
+- pivot 选 `symbol` → 出现 `nq` 桶（含 A、B，去重计数=2）与 `es` 桶（含 C）。
+- 点 A 的缩略图 → 中间画布渲染 A 大图。
+- A 同时出现在别的维度桶里时，`entries` / `images` 无第二份拷贝。
+
+Scenario-based test：`scenario: All reviews buckets every review by year-month, and date is neither a settings group nor a tagging option`
+
+Given：
+
+- 多张不同 `date` 的复盘。
+
+Expect：
+
+- pivot 选「All reviews」→ 复盘按**年-月**分桶、新→旧、桶内按时间排；每张复盘都出现在某个年-月桶里。
+- `date` / 年-月**不**出现在 Settings 的 group 列表，也**不**出现在 `Review` / `Annotation` 的打标签选项里。
+
+Scenario-based test：`scenario: opening via a value bucket briefly highlights the carrying annotations, and the highlight is derived not persisted`
+
+Given：
+
+- 浏览 `setup:h2` 桶，命中某 Entry，其一个标注带 `setup:h2`。
+
+Expect：
+
+- 打开大图后，对带 `setup:h2` 的标注在其 bounds 画 ~1.5s 淡出光晕；视口不缩放 / 不平移；其余标注不被持久淡化。
+- 切到别的维度或重开该 Entry 后不残留上一个高亮；Entry 持久化数据里无高亮 / 浏览态字段。
+
+Scenario-based test：`scenario: buckets collapse and a right-click collapses or expands all, without changing results`
+
+Given：
+
+- 某 pivot 维度下有多个值桶。
+
+Expect：
+
+- 每个桶可折叠 / 展开；桶头左侧折叠三角明显。
+- 桶头右键「全部折叠 / 全部展开」对所有桶生效。
+- 折叠态只影响显示，不改变桶命中与计数。
+
+**实现状态（已落地，46/46 e2e 全绿）**
+
+- **Slice 6（Entry Tags、词表注册表与 Browse）已落地。** 词表注册表成为一等公民：migration `004`（`user_version` → 4）建 `tag_groups` / `tag_values`；`store/vocabulary.ts` 做 group/value 声明 / 删除 / pin 与 `listGroups`（每值带 distinct-entry 计数）；`store/tagQuery.ts` 的 `entryIdsForTag` / `countEntriesForTag` 以 `entry_tags UNION annotation_tags` 求**并集去重**。`date` 不进注册表，仍是结构性系统 entry tag。
+- **写入 / 读取契约**：`entryStore.setEntryTags`（替换用户级 tag、**过滤并保留结构性 `date`**）、`entryStore.queryEntriesByTag`（并集去重的 `EntrySummary`）。新增 typed IPC `store:set-entry-tags` / `store:query-entries-by-tag` / `vocab:*`（list/define/delete group、define/delete value、set-pinned），全部 zod 边界校验、preload 白名单桥接，renderer 不开 SQLite。id 校验放宽为 unicode slug（`^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$`），配合 renderer 的 `shell/slug.ts`——用户键入 `TRD` / `上升日`，存为 slug id + 原文 label。
+- **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（出现但**不抢占 `Draw`**），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.5s 光晕**（派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Result & links**。
+- **测试**：`tests/e2e/vocab-browse.spec.ts`（11 项：注册表声明 / 删除、entry tag 存查且 `date` 不被覆盖、并集去重 + 计数 + 零复制、`Review` 一键打 tag → 进桶、Settings 自然文本 → slug id + label、**排序落库并跨重启持久**、**溢出组收成搜索伸缩板并从全表打 tag**、`Annotation` 上下文页选中即现 + 打 tag、All reviews 年-月且 `date` 不入 Settings/pivot、折叠 / 全部展开、高亮派生不落库）；`annotation-popover` 与 `stamp-library` 改为经 Ribbon 快捷控件打 tag（浮窗只留 result / link）。**46/46 e2e 全绿**。
+- 已验证命令：`npm run typecheck`、`npm run lint`、`npm run build`、`npm test`（Playwright + Electron，46 项）。
 
 ## 10. Slice 7：Tag & Query Engine
 
@@ -477,69 +581,7 @@ Expect：
 
 - 新增/移除一个带 `<group>:<A>` 的 annotation 后，该 tag 计数变为 N±1，无需手工维护。
 
-## 11. Slice 8：Browse by Group / Tag
-
-目标：在 Slice 3 外壳的 `Browse` 页 + 左栏接入两层可折叠导航（group → tag，OneNote 式）：选中 tag 后左栏缩略图廊按命中过滤，点某张缩略图即在**中间画布**渲染该 Entry，并对带该 tag 的 annotation 短暂高亮。复用外壳既有的左栏缩略图廊与中间画布，不另造两栏页。同一份 Entry 在任意 group/tag 下浏览，零复制。
-
-**用户动作流程与直觉逻辑**：用户像用 OneNote 一样在左栏点开一个 group、点一个 tag，缩略图立刻筛成这一类；点一张就在中间看大图，且**带该 tag 的那个标注会短暂亮一下**——直觉上「我一眼就知道这张图为什么属于这个 tag」。同一张图出现在好几个 tag 下时，他很清楚这**还是那一张、没有副本**。Daily Review 不过是浏览 `date` 这个 group。
-
-实现范围：
-
-- 左栏 group→tag 导航接入行为：两层可折叠——第一层 group，第二层 group 内的 tag；选中 tag = 跑查询 `tag == 该 tag`（外壳已有「All reviews」入口与缩略图廊容器，本 slice 让 group→tag 选择真正驱动过滤）。
-- 缩略图廊按选中 tag 过滤：命中的 Entry 竖排列出（复用 Slice 3 左栏缩略图廊，不新建列表）。
-- 中间画布渲染：点某张缩略图 → 中间 Canvas 渲染该 Entry 的完整大图（复用 Slice 3/5 画布；右侧仍是 Stamp 印章条，不是第二个大图栏）。
-- 短暂高亮：若该 tag 贴在某些 annotation 上，渲染时对这些 annotation 做**短暂高亮**（不缩放视口、不持久淡化其余）；entry 级 tag 只把整张图纳入，无高亮目标。
-- 高亮从「当前 tag + annotation bounds」在 render 期算出，不写库。
-- Daily Review = 选中 `date` 这个结构性 group 浏览、按时间排，不是独立特例。
-
-Scenario-based test：`scenario: selecting a tag lists matching entries as thumbnails and opens one full-size`
-
-Given：
-
-- 若干 Entry 在某 group 下带同一个 tag。
-
-Expect：
-
-- 左侧导航能展开该 group 并选中该 tag。
-- 缩略图廊竖排列出所有命中的 Entry。
-- 点一张缩略图，中间画布渲染该 Entry 的完整大图。
-- 同一个 Entry 在不同 tag 下浏览时，`entries` / `images` 没有第二份拷贝。
-
-Scenario-based test：`scenario: opening an entry briefly highlights the annotations carrying the browsed tag`
-
-Given：
-
-- 浏览某 tag，命中某 Entry，其中一个 annotation 带该 tag。
-
-Expect：
-
-- 打开大图后，对带该 tag 的 annotation 做短暂高亮，让人一眼知道「这个元素关于这个 tag」。
-- 视口不缩放、不平移；其余 annotation 不被持久淡化。
-- 高亮所依据的几何来自 annotation bounds，不是另存的字段。
-
-Scenario-based test：`scenario: highlight state is derived, not persisted`
-
-Given：
-
-- 浏览某 tag 打开某 Entry 触发高亮后，改浏览另一个 group，或直接重开该 Entry。
-
-Expect：
-
-- 不残留上一个 tag 的高亮。
-- Entry 的持久化数据里不含高亮 / 浏览态字段。
-
-Scenario-based test：`scenario: the two-level navigation collapses like OneNote`
-
-Given：
-
-- 左侧导航有多个 group，每个 group 内有多个 tag。
-
-Expect：
-
-- group 与其下的 tag 列表都可折叠 / 展开。
-- 折叠态只影响导航显示，不影响查询结果。
-
-## 12. Slice 9：Statistics
+## 11. Slice 8：Statistics
 
 目标：用户能先用分类 tag 的布尔组合切片，再对命中 annotation 的 typed `result` 维度做聚合——string 维度给计数/占比，number 维度给均值与阈值命中率，并可按一个或多个分类 tag 分组。数据实时反映 tag 与 result。
 
@@ -584,15 +626,15 @@ Expect：
 
 - 相关聚合（均值、阈值命中率、计数/占比）随之变化，无需手工刷新。
 
-## 13. Slice 10：词表与 result 维度管理（post-MVP）
+## 12. Slice 9：词表演化与 result 维度管理（post-MVP）
 
-目标：用户能管理自己定义的**分类词表**（group 与其 tag 值）和 **result 维度**随时间的演化——重命名、合并、删除,且已有引用一致更新。不在 brief §8 MVP 内(post-MVP 硬化)。
+目标：在 Slice 6 已落地的词表注册表（声明 / 删除 group 与值、钉快捷选择）之上，让用户管理**分类词表**（group 与其 tag 值）和 **result 维度**随时间的**演化**——重命名、合并，且已有引用一致更新、计数守恒。不在 brief §8 MVP 内(post-MVP 硬化)。
 
 **用户动作流程与直觉逻辑**：用了一阵后，用户想「把这两个其实是一回事的 tag 合并」「给这个 group 改个名」——改完所有旧引用自动跟着更新、计数守恒。直觉上「我在整理我的**词汇表**，不是逐张去改图」。
 
 实现范围：
 
-- 列出所有 group 及其 tag 值、所有 result 维度（id、label、type），各带使用计数（读 Annotation-Tag Index / entry tags / annotation_results）。
+- 在 Slice 6 的 Settings 之上，为每个 group / 值 / result 维度显示**使用计数**（读 Annotation-Tag Index / entry tags / annotation_results），供演化操作参考。
 - 改显示名：稳定 id 不变时只改 label；改 id 则批量迁移全部引用。
 - 合并两个 tag 值（把 A 的引用并入 B 并删除 A）；合并 / 删除 result 维度同理。
 - 删除 group / tag 值 / result 维度：显式（带确认）级联从 `entry_tags` / `annotation_tags` / `annotation_results` 移除引用,不留悬挂引用。
@@ -628,7 +670,7 @@ Expect：
 
 - 删除后 `annotation_results` 无该维度行,统计不再列出它,其它维度不受影响。
 
-## 14. Slice 11：编辑与生命周期（post-MVP）
+## 13. Slice 10：编辑与生命周期（post-MVP）
 
 目标：在 Slice 3 已实现的「删除复盘」（左栏右键缩略图 → 删 `entries` 行 + DB 外键 `ON DELETE CASCADE` 自动清 tag / annotation / result 投影）之上，补齐它未覆盖的两件事——**图片按引用计数回收**，以及**改 / 删单个 annotation 的 tag 与 result**；系统保持索引、统计与图片资产一致。不在 brief §8 MVP 内。
 
@@ -661,18 +703,18 @@ Expect：
 
 - 清除后相关统计聚合随之变化,该 annotation 仍存在（只是不再带 result）。
 
-## 15. Slice 依赖顺序与完成定义
+## 14. Slice 依赖顺序与完成定义
 
 - Slice 0 无前置依赖，是其余所有 slice 的运行前提（工具链 + 可运行外壳 + 进程边界）。
 - 主干：Slice 0 → 1 → 2 → 3 → 4（骨架 → 存储契约 → 导入 → 画布 + 主界面外壳 → 给 annotation 打 tag 与 result）。
-- **主界面外壳在 Slice 3 一次立好**（Ribbon `Home / Draw / Tags / Browse / Stats` + 三区布局）：`Home`/`Draw`/画布 / 左栏缩略图 + 右键删除已接行为，其余为占位。后续 slice 把功能**填进外壳预留的占位或就地入口**，不另造界面：Slice 4 = 标注的**右键浮窗**（tag / result；不再是常驻 Inspector）、Slice 5 = **右栏 Stamp 库**、Slice 6 填 `Tags` 页（entry tag + `date`）、Slice 7 填查询 / 保存视图入口、Slice 8 填左栏 group→tag 导航浏览行为 + `Browse` 页、Slice 9 填 `Stats` 页。
-- Slice 4 依赖 1/3（Entry 存储 + 画布标注）；Slice 5 依赖 3/4（画布 + 带 tag 的标注数据）；Slice 6 依赖 1（entry tag）；Slice 7 依赖 4/6（跨 annotation 级与 entry 级标签查询）；Slice 8 依赖 4/7（浏览＝查询 + 渲染 + 高亮）；Slice 9 依赖 4/7（对 tag 切片 + 对 result 统计）。
-- **post-MVP**（不在 brief §8 MVP）：Slice 10（词表 / 维度管理，UI 落在 `Tags` 页）依赖 4/6/7/9（有 tag、result 与查询、统计后才谈演化）；Slice 11（生命周期）依赖 1/4——**删除复盘本身已在 Slice 3 落地**，Slice 11 只补图片引用计数 GC 与 annotation 级改 / 删。
-- 项目级未决项见 §16「待定决策」（UI 框架、PPT 迁移范围）；领域测试策略已在原则 #11 定为两层。
+- **主界面外壳在 Slice 3 一次立好**（Ribbon `Home / Draw / Tags / Browse / Stats` + 三区布局）：`Home`/`Draw`/画布 / 左栏缩略图 + 右键删除已接行为，其余为占位。后续 slice 把功能**填进外壳预留的占位或就地入口**，不另造界面：Slice 4 = 标注的**右键浮窗**（tag / result；不再是常驻 Inspector）、Slice 5 = **右栏 Stamp 库**、Slice 6 = `Tags`→`Review` 页 entry tag + `Home` 的 Settings 词表窗口 + 选中标注的 `Annotation` 上下文页 + 左栏 pivot 浏览 + 短暂高亮（填 `Browse` 页）、Slice 7 填查询 / 保存视图入口、Slice 8 填 `Stats` 页。
+- Slice 4 依赖 1/3（Entry 存储 + 画布标注）；Slice 5 依赖 3/4（画布 + 带 tag 的标注数据）；Slice 6 依赖 1/3/4（entry 存储 + 画布 + 标注 tag 机制：词表注册表 + entry/annotation 打 tag + 按维度浏览 + 高亮）；Slice 7 依赖 4/6（跨 annotation 级与 entry 级标签的布尔查询 + 保存视图）；Slice 8（统计）依赖 4/6/7（对 tag 切片 + 对 result 统计）。
+- **post-MVP**（不在 brief §8 MVP）：Slice 9（词表演化：重命名 / 合并 / 迁移 + result 维度管理，UI 落在 Settings 窗口）依赖 6/7/8（先有注册表、查询、统计才谈演化）；Slice 10（生命周期）依赖 1/4——**删除复盘本身已在 Slice 3 落地**，Slice 10 只补图片引用计数 GC 与 annotation 级改 / 删。
+- 项目级未决项见 §15「待定决策」（UI 框架、PPT 迁移范围）；领域测试策略已在原则 #11 定为两层。
 - 每个 slice 的完成定义：其 scenario test 全绿 + 该 slice 的用户可观察能力可演示 + 未引入违规（扫描 canvas JSON 做查询/统计、复制 artifact 满足视图、把高亮/浏览态落库、内置默认词表/图章、把某种 annotation 特判成特殊标注类型、把 result 做成可浏览的 tag/group 或塞进浏览导航）。
 - 每完成一个 slice，把该 slice 的落地状态与已验证命令记进它自己的「实现状态」段，不写进 `AGENTS.md`。
 
-## 16. 待定决策（项目级，未收敛）
+## 15. 待定决策（项目级，未收敛）
 
 以下选择尚未拍板,但会影响后续 slice。按 product-spec-writing 约定集中放这里,不散落进设计正文。UI 框架已定为 **React**（见 brief §10 与 §1，已在 Slice 0 落地并验证），领域测试策略已定为两层（见原则 #11）;余下未决:
 

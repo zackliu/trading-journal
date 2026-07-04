@@ -7,6 +7,9 @@ import type {
   EntrySummary,
   ResultDimension,
   Tag,
+  TagGroup,
+  TagGroupView,
+  TagValue,
 } from './domain';
 
 export interface PingResult {
@@ -31,8 +34,18 @@ export interface IpcApi {
   updateEntry(id: string, input: CreateEntryInput): Promise<Entry>;
   updateEntryCanvas(id: string, canvasJson: string, annotations: Annotation[], thumbnail: string): Promise<Entry>;
   getEntry(id: string): Promise<Entry | null>;
+  setEntryTags(id: string, tags: Tag[]): Promise<Entry>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
+  queryEntriesByTag(tag: Tag): Promise<EntrySummary[]>;
   locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;
+  listGroups(): Promise<TagGroupView[]>;
+  defineGroup(group: TagGroup): Promise<void>;
+  deleteGroup(id: string): Promise<void>;
+  defineValue(value: TagValue): Promise<void>;
+  deleteValue(groupId: string, value: string): Promise<void>;
+  setGroupPinned(id: string, pinned: boolean): Promise<void>;
+  reorderGroups(ids: string[]): Promise<void>;
+  reorderValues(groupId: string, values: string[]): Promise<void>;
   getStampLibrary(): Promise<{ canvasJson: string }>;
   saveStampLibrary(canvasJson: string): Promise<void>;
 }
@@ -51,8 +64,18 @@ export const IpcChannel = {
   updateEntry: 'store:update-entry',
   updateEntryCanvas: 'store:update-entry-canvas',
   getEntry: 'store:get-entry',
+  setEntryTags: 'store:set-entry-tags',
   queryAnnotationsByTag: 'store:query-annotations-by-tag',
+  queryEntriesByTag: 'store:query-entries-by-tag',
   locateAnnotation: 'store:locate-annotation',
+  listGroups: 'vocab:list-groups',
+  defineGroup: 'vocab:define-group',
+  deleteGroup: 'vocab:delete-group',
+  defineValue: 'vocab:define-value',
+  deleteValue: 'vocab:delete-value',
+  setGroupPinned: 'vocab:set-group-pinned',
+  reorderGroups: 'vocab:reorder-groups',
+  reorderValues: 'vocab:reorder-values',
   getStampLibrary: 'stamp:get-library',
   saveStampLibrary: 'stamp:save-library',
 } as const;

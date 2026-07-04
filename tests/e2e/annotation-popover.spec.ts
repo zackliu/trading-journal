@@ -31,17 +31,11 @@ async function drag(page: Page, box: Box, x1: number, y1: number, x2: number, y2
   await page.mouse.up();
 }
 
-/** Right-click an annotation (screen coords) and open its "Tags & result…" popover. */
+/** Right-click an annotation (screen coords) and open its "Result & links…" popover. */
 async function openPopover(page: Page, screenX: number, screenY: number): Promise<void> {
   await page.mouse.click(screenX, screenY, { button: 'right' });
-  await page.getByTestId('menu-tags').click();
+  await page.getByTestId('menu-result-links').click();
   await expect(page.getByTestId('tag-popover')).toBeVisible();
-}
-
-async function addTag(page: Page, group: string, value: string): Promise<void> {
-  await page.getByTestId('tag-group').fill(group);
-  await page.getByTestId('tag-value').fill(value);
-  await page.getByTestId('tag-add').click();
 }
 
 async function firstEntryId(page: Page): Promise<string> {
@@ -50,83 +44,6 @@ async function firstEntryId(page: Page): Promise<string> {
   if (!id) throw new Error('expected an entry');
   return id;
 }
-
-test('any annotation can carry a group tag and become queryable', async () => {
-  const dataDir = tempDataDir();
-  const { app, page } = await launchApp(dataDir);
-
-  await page.getByTestId('ribbon-new').click();
-  await expect(page.getByTestId('editor')).toBeVisible();
-  const box = await canvasBox(page);
-  const entryId = await firstEntryId(page);
-
-  // A box, tagged via its right-click popover (Save commits).
-  await page.getByTestId('tool-rect').click();
-  await drag(page, box, 40, 40, 240, 160);
-  await openPopover(page, box.x + 140, box.y + 100);
-  await addTag(page, 'setup', 'wedge-top');
-  await expect(page.getByTestId('popover-tag')).toHaveText(/setup:wedge-top/);
-  await page.screenshot({ path: 'test-results/popover.png' });
-  await page.getByTestId('popover-save').click();
-
-  // A different annotation type (an arrow), tagged the same way — no special annotation type.
-  await page.getByTestId('tool-arrow').click();
-  await drag(page, box, 40, 200, 260, 240);
-  await openPopover(page, box.x + 150, box.y + 220);
-  await addTag(page, 'structure', 'lower-high');
-  await page.getByTestId('popover-save').click();
-
-  // The index (not canvas JSON) answers the tag queries; each tag finds its own annotation.
-  await expect
-    .poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'wedge-top' })).length)
-    .toBe(1);
-  const setupHits = await store.queryByTag(page, { group: 'setup', value: 'wedge-top' });
-  expect(setupHits[0]?.entryId).toBe(entryId);
-  expect(setupHits[0]?.bounds.width).toBeGreaterThan(0);
-  expect(setupHits[0]?.bounds.height).toBeGreaterThan(0);
-
-  const structHits = await store.queryByTag(page, { group: 'structure', value: 'lower-high' });
-  expect(structHits).toHaveLength(1);
-  expect(structHits[0]?.entryId).toBe(entryId);
-  expect(structHits[0]?.annotationId).not.toBe(setupHits[0]?.annotationId);
-
-  await app.close();
-});
-
-test('an untagged annotation stays out of tag queries', async () => {
-  const dataDir = tempDataDir();
-  const { app, page } = await launchApp(dataDir);
-
-  await page.getByTestId('ribbon-new').click();
-  await expect(page.getByTestId('editor')).toBeVisible();
-  const box = await canvasBox(page);
-  const entryId = await firstEntryId(page);
-
-  // A tagged box…
-  await page.getByTestId('tool-rect').click();
-  await drag(page, box, 40, 40, 200, 140);
-  await openPopover(page, box.x + 120, box.y + 90);
-  await addTag(page, 'setup', 'wedge-top');
-  await page.getByTestId('popover-save').click();
-
-  // …and an untagged trend line; persist both via the ribbon Save.
-  await page.getByTestId('tool-line').click();
-  await drag(page, box, 40, 200, 260, 240);
-  await page.keyboard.press('Control+s');
-
-  // Both annotations are projected (auto-saved); only the tagged box is a tag-query hit.
-  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(2);
-  const hits = await store.queryByTag(page, { group: 'setup', value: 'wedge-top' });
-  expect(hits).toHaveLength(1);
-
-  // Exactly one of the two annotations carries tags.
-  const anns = (await store.getEntry(page, entryId))?.annotations ?? [];
-  expect(anns).toHaveLength(2);
-  expect(anns.filter((a) => a.tags.length > 0)).toHaveLength(1);
-  expect(anns.filter((a) => a.tags.length === 0)).toHaveLength(1);
-
-  await app.close();
-});
 
 test('an annotation carries an optional typed result used only for statistics', async () => {
   const dataDir = tempDataDir();
@@ -184,7 +101,6 @@ test('an annotation links to another across entries, and you can jump to it', as
   await page.getByTestId('tool-rect').click();
   await drag(page, box, 40, 40, 220, 150);
   await openPopover(page, box.x + 130, box.y + 95);
-  await addTag(page, 'setup', 'entry-a');
   await page.getByTestId('link-copy').click();
   await page.getByTestId('popover-save').click();
 
@@ -220,10 +136,10 @@ test('an annotation links to another across entries, and you can jump to it', as
   await page.getByTestId('link-go').click();
   await expect(page.getByTestId('editor')).toBeVisible();
 
-  // A is on entry 1 and still carries its tag (right-click it to confirm).
-  box = await canvasBox(page);
-  await openPopover(page, box.x + 130, box.y + 95);
-  await expect(page.getByTestId('popover-tag')).toHaveText(/setup:entry-a/);
+  // The jump landed on entry 1 (A's entry): A's annotation id is the link target that resolved there.
+  await expect
+    .poll(async () => (await store.getEntry(page, entry1))?.annotations.some((a) => a.id === aId))
+    .toBe(true);
 
   await app.close();
 });

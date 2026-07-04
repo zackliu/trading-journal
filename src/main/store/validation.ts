@@ -5,9 +5,11 @@ import { z } from 'zod';
 // before it reaches the store. Structural rules only — referential checks
 // (e.g. a result dimension must exist) live in the store.
 
+// A tag / group / value id is a slug: letters or digits (any script, incl. CJK), hyphen-separated.
+// The renderer derives this from free-typed text (see shell/slug.ts), so users never type kebab.
 const kebab = z
   .string()
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'must be kebab-case (lowercase letters, digits, hyphens)');
+  .regex(/^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u, 'must be a slug (letters/digits, hyphen-separated)');
 
 const tag = z.object({ group: kebab, value: kebab });
 
@@ -31,6 +33,14 @@ const annotation = z.object({
 export const idSchema = z.string().min(1);
 
 export const tagSchema = tag;
+
+// Vocabulary registry payloads. Group / value ids are the stable kebab keys.
+export const kebabSchema = kebab;
+export const pinnedSchema = z.boolean();
+export const entryTagsSchema = z.array(tag);
+export const idListSchema = z.array(kebab);
+export const tagGroupSchema = z.object({ id: kebab, label: z.string().min(1), pinned: z.boolean() });
+export const tagValueSchema = z.object({ groupId: kebab, value: kebab, label: z.string().min(1).optional() });
 
 export const resultDimensionSchema = z.object({
   id: kebab,

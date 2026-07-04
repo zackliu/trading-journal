@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { DashStyle, DrawStyle, Tool } from '../editor/canvasController';
+import type { AnnotationSelection, DashStyle, DrawStyle, Tool } from '../editor/canvasController';
+import type { Tag, TagGroupView } from '../../../shared/domain';
 import { Icon, type IconName } from './icons';
+import { QuickTag } from './QuickTag';
 
 interface RibbonProps {
   entryOpen: boolean;
@@ -23,9 +25,15 @@ interface RibbonProps {
   onSave: () => void;
   stampLocked: boolean;
   onToggleStampLock: () => void;
+  groups: TagGroupView[];
+  entryTags: Tag[];
+  selectedAnnotation: AnnotationSelection | null;
+  onToggleEntryTag: (tag: Tag, on: boolean) => void;
+  onToggleAnnotationTag: (tag: Tag, on: boolean) => void;
+  onOpenSettings: () => void;
 }
 
-const TABS = ['Home', 'Draw', 'Tags', 'Browse', 'Stats'];
+const BASE_TABS = ['Home', 'Draw', 'Review', 'Browse', 'Stats'];
 
 const TOOLS: Array<{ id: Tool; icon: IconName; label: string }> = [
   { id: 'select', icon: 'select', label: 'Select' },
@@ -77,11 +85,18 @@ function Placeholder({ text }: { text: string }): JSX.Element {
 }
 
 export function Ribbon(props: RibbonProps): JSX.Element {
-  const { entryOpen, entryId, hasSelection, style } = props;
-  const [active, setActive] = useState(0);
+  const { entryOpen, entryId, hasSelection, style, selectedAnnotation } = props;
+  const [active, setActive] = useState<string>('Home');
+  const annId = selectedAnnotation?.id ?? null;
+  const tabs = annId ? [...BASE_TABS, 'Annotation'] : BASE_TABS;
 
   // Opening (or switching to) a review reveals the drawing tools; closing it returns to Home.
-  useEffect(() => setActive(entryOpen ? 1 : 0), [entryOpen, entryId]);
+  useEffect(() => setActive(entryOpen ? 'Draw' : 'Home'), [entryOpen, entryId]);
+  // Selecting an annotation reveals its contextual tab (like Office's Shape Format) but does NOT
+  // steal focus from Draw — so drawing stays fluid; click the tab to tag. Deselecting hides it.
+  useEffect(() => {
+    if (!annId) setActive((a) => (a === 'Annotation' ? 'Draw' : a));
+  }, [annId]);
 
   return (
     <div className="ribbon" data-testid="ribbon">
@@ -89,13 +104,13 @@ export function Ribbon(props: RibbonProps): JSX.Element {
         <span className="ribbon__brand" data-testid="app-title">
           Trading Journal
         </span>
-        {TABS.map((tab, i) => (
+        {tabs.map((tab) => (
           <button
             type="button"
             key={tab}
-            className={`ribbon__tab${i === active ? ' is-active' : ''}`}
+            className={`ribbon__tab${tab === active ? ' is-active' : ''}${tab === 'Annotation' ? ' ribbon__tab--ctx' : ''}`}
             data-testid={`tab-${tab.toLowerCase()}`}
-            onClick={() => setActive(i)}
+            onClick={() => setActive(tab)}
           >
             {tab}
           </button>
@@ -103,35 +118,42 @@ export function Ribbon(props: RibbonProps): JSX.Element {
       </div>
 
       <div className="ribbon__band">
-        {active === 0 ? (
-          <Group label="Review">
-            <button type="button" className="rbig" data-testid="ribbon-new" onClick={props.onNew}>
-              <Icon name="plus" /> New
-            </button>
-            <button
-              type="button"
-              className="rsave"
-              data-testid="editor-save"
-              disabled={!entryOpen}
-              title="Save now (Ctrl+S) — edits also save automatically"
-              onClick={props.onSave}
-            >
-              <Icon name="save" /> Save
-            </button>
-            <button
-              type="button"
-              className="rtext"
-              data-testid="ribbon-delete-review"
-              disabled={!entryOpen}
-              onClick={props.onDeleteReview}
-            >
-              <Icon name="trash" /> Delete
-            </button>
-            <span className="rhint">paste a screenshot · Ctrl+V · or drop an image</span>
-          </Group>
+        {active === 'Home' ? (
+          <>
+            <Group label="Review">
+              <button type="button" className="rbig" data-testid="ribbon-new" onClick={props.onNew}>
+                <Icon name="plus" /> New
+              </button>
+              <button
+                type="button"
+                className="rsave"
+                data-testid="editor-save"
+                disabled={!entryOpen}
+                title="Save now (Ctrl+S) — edits also save automatically"
+                onClick={props.onSave}
+              >
+                <Icon name="save" /> Save
+              </button>
+              <button
+                type="button"
+                className="rtext"
+                data-testid="ribbon-delete-review"
+                disabled={!entryOpen}
+                onClick={props.onDeleteReview}
+              >
+                <Icon name="trash" /> Delete
+              </button>
+              <span className="rhint">paste a screenshot · Ctrl+V · or drop an image</span>
+            </Group>
+            <Group label="Vocabulary">
+              <button type="button" className="rtext" data-testid="ribbon-settings" onClick={props.onOpenSettings}>
+                <Icon name="tag" /> Settings
+              </button>
+            </Group>
+          </>
         ) : null}
 
-        {active === 1 ? (
+        {active === 'Draw' ? (
           <>
             <Group label="Tools">
               {TOOLS.map((t) => (
@@ -296,9 +318,30 @@ export function Ribbon(props: RibbonProps): JSX.Element {
           </>
         ) : null}
 
-        {active === 2 ? <Placeholder text="Tag & result editing (Slice 4)" /> : null}
-        {active === 3 ? <Placeholder text="Browse by group → tag (Slice 7)" /> : null}
-        {active === 4 ? <Placeholder text="Group × result statistics (Slice 8)" /> : null}
+        {active === 'Review' ? (
+          <Group label="Review tags">
+            <QuickTag
+              groups={props.groups}
+              selected={props.entryTags}
+              onToggle={props.onToggleEntryTag}
+              onOpenSettings={props.onOpenSettings}
+            />
+          </Group>
+        ) : null}
+        {active === 'Annotation' && selectedAnnotation ? (
+          <Group label="Annotation tags">
+            <QuickTag
+              groups={props.groups}
+              selected={selectedAnnotation.tags}
+              onToggle={props.onToggleAnnotationTag}
+              onOpenSettings={props.onOpenSettings}
+            />
+          </Group>
+        ) : null}
+        {active === 'Browse' ? (
+          <div className="rplaceholder">Pick a group in the left rail to browse by it</div>
+        ) : null}
+        {active === 'Stats' ? <Placeholder text="Group × result statistics (Slice 8)" /> : null}
       </div>
     </div>
   );

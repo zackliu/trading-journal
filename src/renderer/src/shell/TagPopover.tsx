@@ -1,12 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Result, ResultDimension, Tag } from '../../../shared/domain';
+import type { Result, ResultDimension } from '../../../shared/domain';
 import type { AnnotationSelection } from '../editor/canvasController';
 import { Icon } from './icons';
 
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export interface AnnotationEdits {
-  tags: Tag[];
   result: Result;
   links: string[];
 }
@@ -25,10 +24,10 @@ interface Props {
 }
 
 /**
- * A right-click "Tags & result…" popover anchored at the object. Edits are staged in
- * local draft state: **Save** commits them (and closes); clicking outside or Escape
- * **cancels** unsaved changes (and closes). Defining a result dimension is a global
- * action that commits immediately (not part of the annotation draft).
+ * A right-click "Result & links…" popover anchored at the object. Tags live on the ribbon
+ * quick-pick; this popover owns only the annotation's typed result and its cross-chart links.
+ * Edits are staged in local draft state: **Save** commits them (and closes); clicking outside or
+ * Escape **cancels** unsaved changes. Defining a result dimension commits immediately (global).
  */
 export function TagPopover(props: Props): JSX.Element {
   const { annotation, dimensions, linkClipboard } = props;
@@ -54,17 +53,12 @@ export function TagPopover(props: Props): JSX.Element {
     return () => ro.disconnect();
   }, [props.x, props.y]);
 
-  const [tags, setTags] = useState<Tag[]>(annotation.tags);
   const [links, setLinks] = useState<string[]>(annotation.links);
   const [resultDraft, setResultDraft] = useState<Record<string, string>>(() => {
     const draft: Record<string, string> = {};
     for (const [k, v] of Object.entries(annotation.result)) draft[k] = String(v);
     return draft;
   });
-
-  const [tagGroup, setTagGroup] = useState('');
-  const [tagValue, setTagValue] = useState('');
-  const [tagError, setTagError] = useState<string | null>(null);
 
   const [dimId, setDimId] = useState('');
   const [dimLabel, setDimLabel] = useState('');
@@ -87,21 +81,6 @@ export function TagPopover(props: Props): JSX.Element {
       window.removeEventListener('keydown', onKey);
     };
   }, []);
-
-  const addTag = (): void => {
-    const group = tagGroup.trim();
-    const value = tagValue.trim();
-    if (!KEBAB.test(group) || !KEBAB.test(value)) {
-      setTagError('group and value must be kebab-case');
-      return;
-    }
-    if (!tags.some((t) => t.group === group && t.value === value)) setTags([...tags, { group, value }]);
-    setTagGroup('');
-    setTagValue('');
-    setTagError(null);
-  };
-
-  const removeTag = (t: Tag): void => setTags(tags.filter((x) => !(x.group === t.group && x.value === t.value)));
 
   const defineDim = (): void => {
     const id = dimId.trim();
@@ -135,7 +114,7 @@ export function TagPopover(props: Props): JSX.Element {
         result[dim.id] = raw;
       }
     }
-    props.onSave({ tags, result, links });
+    props.onSave({ result, links });
   };
 
   return (
@@ -146,52 +125,6 @@ export function TagPopover(props: Props): JSX.Element {
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <section className="insp__section">
-        <h4 className="insp__heading">Tags</h4>
-        <div className="insp__tags">
-          {tags.length === 0 ? (
-            <span className="insp__muted">No tags yet</span>
-          ) : (
-            tags.map((t) => (
-              <span className="chip" data-testid="popover-tag" key={`${t.group}:${t.value}`}>
-                {t.group}:{t.value}
-                <button
-                  type="button"
-                  className="chip__x"
-                  aria-label={`remove ${t.group}:${t.value}`}
-                  onClick={() => removeTag(t)}
-                >
-                  ×
-                </button>
-              </span>
-            ))
-          )}
-        </div>
-        <div className="insp__row">
-          <input
-            className="insp__input"
-            placeholder="group"
-            data-testid="tag-group"
-            value={tagGroup}
-            onChange={(e) => setTagGroup(e.target.value)}
-          />
-          <input
-            className="insp__input"
-            placeholder="value"
-            data-testid="tag-value"
-            value={tagValue}
-            onChange={(e) => setTagValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') addTag();
-            }}
-          />
-          <button type="button" className="insp__btn" data-testid="tag-add" onClick={addTag}>
-            Add
-          </button>
-        </div>
-        {tagError ? <div className="insp__error">{tagError}</div> : null}
-      </section>
-
       <section className="insp__section">
         <h4 className="insp__heading">Result</h4>
         {dimensions.length === 0 ? (

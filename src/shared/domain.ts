@@ -79,6 +79,41 @@ export interface SavedView {
   createdAt: number;
 }
 
+/**
+ * A user-declared classification group in the vocabulary registry. Groups (and their
+ * values) exist independently of whether any review uses them — this registry feeds the
+ * pivot browse dropdown, the Review/Annotation quick-pick, and Settings. `date` is NOT a
+ * registry group: it is structural, system-maintained, and never a tagging option.
+ */
+export interface TagGroup {
+  id: string;
+  label: string;
+  /** Pinned groups render as quick-pick controls on the Review / Annotation ribbon tabs. */
+  pinned: boolean;
+}
+
+/** A user-declared value within a group (the `value` half of a `group:value` tag). */
+export interface TagValue {
+  groupId: string;
+  value: string;
+  label?: string;
+}
+
+/** A registry value plus its distinct-entry hit count (entry-level ∪ annotation-level). */
+export interface TagValueView {
+  value: string;
+  label?: string;
+  count: number;
+}
+
+/** A group with its declared values and counts — the read shape for browse + Settings. */
+export interface TagGroupView {
+  id: string;
+  label: string;
+  pinned: boolean;
+  values: TagValueView[];
+}
+
 /** A compact entry row for the Daily list (no canvas JSON, no annotations). */
 export interface EntrySummary {
   id: string;

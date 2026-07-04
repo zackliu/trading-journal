@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
-import type { EntrySummary, ResultDimension } from '../../shared/domain';
+import type { EntrySummary, ResultDimension, Tag, TagGroup, TagGroupView, TagValue } from '../../shared/domain';
 import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
 import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
+import { GroupBrowser, type Bucket } from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
+import { SettingsDialog } from './shell/SettingsDialog';
 import { StatusBar } from './shell/StatusBar';
 import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
-import { Thumbnails } from './shell/Thumbnails';
 
 type Health = 'ok' | 'pending' | 'error';
 type Menu = { x: number; y: number; items: MenuItem[] };
@@ -29,10 +30,31 @@ async function fileToBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
 }
 
+/** Group all reviews into year-month buckets (newest first) for the “All reviews” pivot. Derived from
+ *  the structural `date` (or the created day), never a declared group / never a tagging option. */
+function yearMonthBuckets(entries: EntrySummary[]): Bucket[] {
+  const byMonth = new Map<string, EntrySummary[]>();
+  for (const entry of entries) {
+    const day = entry.date ?? new Date(entry.createdAt).toISOString().slice(0, 10);
+    const ym = day.slice(0, 7);
+    const list = byMonth.get(ym);
+    if (list) list.push(entry);
+    else byMonth.set(ym, [entry]);
+  }
+  return [...byMonth.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([ym, list]) => ({ key: ym, label: ym, entries: list }));
+}
+
 export function App(): JSX.Element {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState('all');
+  const [pivot, setPivot] = useState('all');
+  const [groups, setGroups] = useState<TagGroupView[]>([]);
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [entryUserTags, setEntryUserTags] = useState<Tag[]>([]);
+  const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +81,9 @@ export function App(): JSX.Element {
   const switchToRef = useRef<(id: string | null) => Promise<void>>(async () => {});
   const wheelNavAtRef = useRef(0);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
+  const pendingFlashRef = useRef<Tag | null>(null);
+  const entryUserTagsRef = useRef(entryUserTags);
+  const selectedAnnotationRef = useRef(selectedAnnotation);
 
   const refresh = useCallback(async () => {
     setEntries(await window.api.listEntries());
@@ -68,9 +93,14 @@ export function App(): JSX.Element {
     setDimensions(await window.api.listResultDimensions());
   }, []);
 
+  const refreshGroups = useCallback(async () => {
+    setGroups(await window.api.listGroups());
+  }, []);
+
   useEffect(() => {
     void refresh();
     void refreshDimensions();
+    void refreshGroups();
     window.api
       .ping()
       .then((res: PingResult) => {
@@ -83,7 +113,7 @@ export function App(): JSX.Element {
         setStoreHealth('error');
         setStoreLabel('unavailable');
       });
-  }, [refresh, refreshDimensions]);
+  }, [refresh, refreshDimensions, refreshGroups]);
 
   const entryOpen = selectedEntryId !== null;
 
@@ -134,6 +164,58 @@ export function App(): JSX.Element {
   useEffect(() => {
     entriesRef.current = entries;
   }, [entries]);
+  useEffect(() => {
+    entryUserTagsRef.current = entryUserTags;
+  }, [entryUserTags]);
+  useEffect(() => {
+    selectedAnnotationRef.current = selectedAnnotation;
+  }, [selectedAnnotation]);
+
+  // Load the open review's user (non-`date`) entry tags for the Review tab quick-pick.
+  useEffect(() => {
+    if (!selectedEntryId) {
+      setEntryUserTags([]);
+      return;
+    }
+    let cancelled = false;
+    void window.api.getEntry(selectedEntryId).then((entry) => {
+      if (!cancelled && entry) setEntryUserTags(entry.entryTags.filter((t) => t.group !== 'date'));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedEntryId]);
+
+  // Compute the left-rail browse buckets for the active pivot: year-month for “All reviews”, else the
+  // selected group's value buckets (entry ∪ annotation, via the store — never scanning canvas JSON).
+  useEffect(() => {
+    if (pivot === 'all') {
+      setBuckets(yearMonthBuckets(entries));
+      return;
+    }
+    const group = groups.find((g) => g.id === pivot);
+    if (!group) {
+      setBuckets([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const next: Bucket[] = [];
+      for (const value of group.values) {
+        const hits = await window.api.queryEntriesByTag({ group: group.id, value: value.value });
+        next.push({
+          key: value.value,
+          label: value.label ?? value.value,
+          entries: hits,
+          tag: { group: group.id, value: value.value },
+        });
+      }
+      if (!cancelled) setBuckets(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pivot, groups, entries]);
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
@@ -144,6 +226,7 @@ export function App(): JSX.Element {
       setTool('select');
       setEditorState(EMPTY_EDITOR);
       setPopover(null);
+      setSelectedAnnotation(null);
       await refresh();
     },
     [editorState.dirty, saveNow, refresh],
@@ -324,9 +407,9 @@ export function App(): JSX.Element {
         const px = r.x;
         const py = r.y;
         items.push({
-          label: 'Tags & result…',
+          label: 'Result & links…',
           icon: 'tag',
-          testId: 'menu-tags',
+          testId: 'menu-result-links',
           onClick: () => setPopover({ annotation: ann, x: px, y: py }),
         });
       }
@@ -383,6 +466,8 @@ export function App(): JSX.Element {
     controller.onZoom(setZoom);
     // Every committed edit auto-saves the Entry page + stamp library and mirrors the rail thumbnail.
     controller.onContentChanged(() => void saveNow());
+    // Selecting an annotation surfaces the contextual Annotation ribbon tab (tags target this object).
+    controller.onAnnotationSelection(setSelectedAnnotation);
     controller.setPaletteLocked(stampLockedRef.current);
     controller.setStyle(styleRef.current);
   }, [saveNow]);
@@ -431,7 +516,7 @@ export function App(): JSX.Element {
   const onPopoverSave = useCallback(
     (edits: AnnotationEdits) => {
       if (popover) {
-        controllerRef.current?.applyAnnotationEdits(popover.annotation.id, edits.tags, edits.result, edits.links);
+        controllerRef.current?.setAnnotationResultLinks(popover.annotation.id, edits.result, edits.links);
       }
       setPopover(null);
     },
@@ -453,11 +538,92 @@ export function App(): JSX.Element {
     },
     [selectedEntryId, switchTo],
   );
+  // Toggle a tag on the whole review (Review tab quick-pick). Entry tags save immediately.
+  const onToggleEntryTag = useCallback(
+    (tag: Tag, on: boolean) => {
+      const id = selectedEntryIdRef.current;
+      if (!id) return;
+      const cur = entryUserTagsRef.current;
+      const has = cur.some((t) => t.group === tag.group && t.value === tag.value);
+      const next = on ? (has ? cur : [...cur, tag]) : cur.filter((t) => !(t.group === tag.group && t.value === tag.value));
+      setEntryUserTags(next);
+      void window.api.setEntryTags(id, next).then(() => {
+        void refresh();
+        void refreshGroups();
+      });
+    },
+    [refresh, refreshGroups],
+  );
+
+  // Toggle a tag on the selected annotation (Annotation contextual tab). Preserves its result / links.
+  const onToggleAnnotationTag = useCallback(
+    (tag: Tag, on: boolean) => {
+      const sel = selectedAnnotationRef.current;
+      if (!sel) return;
+      const has = sel.tags.some((t) => t.group === tag.group && t.value === tag.value);
+      const next = on ? (has ? sel.tags : [...sel.tags, tag]) : sel.tags.filter((t) => !(t.group === tag.group && t.value === tag.value));
+      controllerRef.current?.applyAnnotationEdits(sel.id, next, sel.result, sel.links);
+      void saveNow().then(() => {
+        void refresh();
+        void refreshGroups();
+      });
+    },
+    [saveNow, refresh, refreshGroups],
+  );
+
+  // Settings window: declare / delete groups & values, pin for quick-pick (registry writes only).
+  const onDefineGroup = useCallback(async (group: TagGroup) => {
+    await window.api.defineGroup(group);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onDeleteGroup = useCallback(async (id: string) => {
+    await window.api.deleteGroup(id);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onDefineValueCfg = useCallback(async (value: TagValue) => {
+    await window.api.defineValue(value);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onDeleteValue = useCallback(async (groupId: string, value: string) => {
+    await window.api.deleteValue(groupId, value);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onSetPinned = useCallback(async (id: string, pinned: boolean) => {
+    await window.api.setGroupPinned(id, pinned);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onReorderGroups = useCallback(async (ids: string[]) => {
+    await window.api.reorderGroups(ids);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onReorderValues = useCallback(async (groupId: string, values: string[]) => {
+    await window.api.reorderValues(groupId, values);
+    await refreshGroups();
+  }, [refreshGroups]);
+
+  // Open a review from a browse bucket; a value bucket's tag briefly highlights its carriers.
+  const openFromBrowse = useCallback(
+    async (id: string, tag?: Tag) => {
+      if (id === selectedEntryIdRef.current) {
+        if (tag) controllerRef.current?.flashTagHighlight(tag);
+        return;
+      }
+      pendingFlashRef.current = tag ?? null;
+      await switchTo(id);
+    },
+    [switchTo],
+  );
+
   const onEditorLoaded = useCallback(() => {
     const pending = pendingSelectRef.current;
     if (pending) {
       controllerRef.current?.selectAnnotationById(pending);
       pendingSelectRef.current = null;
+    }
+    const flashTag = pendingFlashRef.current;
+    if (flashTag) {
+      controllerRef.current?.flashTagHighlight(flashTag);
+      pendingFlashRef.current = null;
     }
   }, []);
 
@@ -486,29 +652,24 @@ export function App(): JSX.Element {
         onSave={() => void saveNow()}
         stampLocked={stampLocked}
         onToggleStampLock={onToggleStampLock}
+        groups={groups}
+        entryTags={entryUserTags}
+        selectedAnnotation={selectedAnnotation}
+        onToggleEntryTag={onToggleEntryTag}
+        onToggleAnnotationTag={onToggleAnnotationTag}
+        onOpenSettings={() => setShowSettings(true)}
       />
 
       <div className="body">
         <aside className="rail">
-          <div className="rail__title">Groups</div>
-          <nav className="groups" data-testid="groups">
-            <button
-              type="button"
-              className={`groups__item${selectedGroup === 'all' ? ' is-active' : ''}`}
-              data-testid="group-all"
-              onClick={() => setSelectedGroup('all')}
-            >
-              <Icon name="browse" /> All reviews
-              <span className="groups__count">{entries.length}</span>
-            </button>
-            <div className="groups__hint">Tag groups appear here · Slice 7</div>
-          </nav>
-
-          <div className="rail__title">Reviews</div>
-          <Thumbnails
-            entries={entries}
-            selectedId={selectedEntryId}
-            onOpen={(id) => void switchTo(id)}
+          <GroupBrowser
+            groups={groups}
+            pivot={pivot}
+            onPivot={setPivot}
+            buckets={buckets}
+            totalCount={entries.length}
+            selectedEntryId={selectedEntryId}
+            onOpen={(id, tag) => void openFromBrowse(id, tag)}
             onContextMenu={openThumbMenu}
           />
         </aside>
@@ -575,6 +736,19 @@ export function App(): JSX.Element {
           onJumpLink={jumpToAnnotation}
           onSave={onPopoverSave}
           onCancel={() => setPopover(null)}
+        />
+      ) : null}
+      {showSettings ? (
+        <SettingsDialog
+          groups={groups}
+          onDefineGroup={(g) => void onDefineGroup(g)}
+          onDeleteGroup={(id) => void onDeleteGroup(id)}
+          onDefineValue={(v) => void onDefineValueCfg(v)}
+          onDeleteValue={(gid, val) => void onDeleteValue(gid, val)}
+          onSetPinned={(id, p) => void onSetPinned(id, p)}
+          onReorderGroups={(ids) => void onReorderGroups(ids)}
+          onReorderValues={(gid, vals) => void onReorderValues(gid, vals)}
+          onClose={() => setShowSettings(false)}
         />
       ) : null}
     </div>

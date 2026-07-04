@@ -83,6 +83,7 @@ const TITLE_H = 150; // scene px: a title band carved from the page top; the wor
 const TITLE_FONT = 36;
 const TITLE_PAD = 32; // left/right inset of the title text within the band
 const TITLE_INK = '#33302a';
+const FLASH_MS = 1500; // browse tag-highlight halo lifetime (fades 1→0); derived at render time, never persisted
 
 function dashArray(dash: DashStyle, width: number): number[] | null {
   if (dash === 'dashed') return [width * 4, width * 3];
@@ -167,6 +168,13 @@ export class CanvasController {
   private newTextBox: TextBoxAnnotation | null = null;
   // Set while a press on a non-selectable object suppressed group-selection; restored on mouse:up.
   private selectionSuppressed = false;
+  private selectionCb: ((sel: AnnotationSelection | null) => void) | null = null;
+  // Transient browse highlight: haloed annotation bounds (scene coords) + start time. Derived from the
+  // active tag at render time; never an object, never in canvas JSON / history, never in the thumbnail.
+  private flash: { bounds: Array<{ left: number; top: number; width: number; height: number }>; start: number } | null =
+    null;
+  private flashRAF = 0;
+  private capturing = false;
 
   constructor(el: HTMLCanvasElement) {
     this.canvas = new Canvas(el, {
@@ -196,6 +204,7 @@ export class CanvasController {
     this.canvas.on('selection:updated', () => this.emit());
     this.canvas.on('selection:cleared', () => this.emit());
     this.canvas.on('text:editing:exited', (e) => this.onTextEditExit((e.target as FabricObject | undefined) ?? null));
+    this.canvas.on('after:render', () => this.drawFlash());
   }
 
   onState(cb: (s: EditorState) => void): void {
@@ -219,6 +228,12 @@ export class CanvasController {
   /** Fired after every committed edit (any page or strip change), so the shell can auto-save both stores. */
   onContentChanged(cb: () => void): void {
     this.contentChangedCb = cb;
+  }
+
+  /** Fired when the selection changes: the one selected taggable annotation, or null. Drives the contextual Annotation ribbon tab. */
+  onAnnotationSelection(cb: (sel: AnnotationSelection | null) => void): void {
+    this.selectionCb = cb;
+    this.emitSelection();
   }
 
   /** The visible stage area (px). Re-fits the surface while in fit mode. */
@@ -329,6 +344,8 @@ export class CanvasController {
 
   async loadEntry(canvasJson: string, coverUrl: string | null, stampJson: string): Promise<void> {
     this.restoring = true;
+    this.flash = null;
+    cancelAnimationFrame(this.flashRAF);
     const pageData = safeParse(canvasJson);
     const stripData = safeParse(stampJson);
     const page = (pageData?.tjPage as { width?: number; height?: number } | undefined) ?? DEFAULT_PAGE;
@@ -731,6 +748,7 @@ export class CanvasController {
   renderThumbnail(): string {
     const saved = this.canvas.viewportTransform;
     this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    this.capturing = true; // keep the transient browse-highlight halo out of the saved thumbnail
     try {
       return this.canvas.toDataURL({
         format: 'jpeg',
@@ -743,6 +761,7 @@ export class CanvasController {
         enableRetinaScaling: false,
       });
     } finally {
+      this.capturing = false;
       this.canvas.setViewportTransform(saved);
     }
   }
@@ -753,6 +772,7 @@ export class CanvasController {
   }
 
   dispose(): void {
+    cancelAnimationFrame(this.flashRAF);
     void this.canvas.dispose();
   }
 
@@ -1187,6 +1207,70 @@ export class CanvasController {
     this.pushHistory();
   }
 
+  /** Update only an annotation's result + links (the right-click popover's scope); tags stay with the ribbon quick-pick. */
+  setAnnotationResultLinks(id: string, result: Result, links: string[]): void {
+    const obj = this.canvas.getObjects().find((o) => tjMeta(o).tjId === id);
+    if (!obj) return;
+    const a = tjMeta(obj);
+    a.tjResult = Object.keys(result).length > 0 ? { ...result } : undefined;
+    a.tjLinks = links.length > 0 ? [...links] : undefined;
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+  }
+
+  /**
+   * Briefly halo the annotations carrying `tag` (~1.5s fade) when a review is opened from a browse
+   * bucket. Pure render transform: computed from the active tag + live annotation bounds, drawn on
+   * the page in `after:render`, never an object / never persisted. No viewport change, no dimming.
+   */
+  flashTagHighlight(tag: Tag): void {
+    const bounds = this.canvas
+      .getObjects()
+      .filter((o) => {
+        const a = tjMeta(o);
+        if (typeof a.tjId !== 'string' || this.regionOf(o) === 'strip') return false;
+        return (a.tjTags ?? []).some((t) => t.group === tag.group && t.value === tag.value);
+      })
+      .map((o) => {
+        o.setCoords();
+        return o.getBoundingRect();
+      });
+    if (bounds.length === 0) return;
+    this.flash = { bounds, start: performance.now() };
+    cancelAnimationFrame(this.flashRAF);
+    const tick = (): void => {
+      if (!this.flash) return;
+      if (performance.now() - this.flash.start >= FLASH_MS) {
+        this.flash = null;
+        this.canvas.requestRenderAll();
+        return;
+      }
+      this.canvas.requestRenderAll();
+      this.flashRAF = requestAnimationFrame(tick);
+    };
+    this.canvas.requestRenderAll();
+    this.flashRAF = requestAnimationFrame(tick);
+  }
+
+  /** Paint the transient tag-highlight halos onto the page (after Fabric draws the objects). */
+  private drawFlash(): void {
+    if (!this.flash || this.capturing) return;
+    const alpha = clamp(1 - (performance.now() - this.flash.start) / FLASH_MS, 0, 1);
+    const ctx = this.canvas.getContext();
+    const [a, b, c, d, e, f] = this.canvas.viewportTransform;
+    const pad = 8 / this.zoom;
+    ctx.save();
+    ctx.transform(a, b, c, d, e, f);
+    ctx.lineWidth = 4 / this.zoom;
+    ctx.strokeStyle = `rgba(65, 101, 204, ${0.92 * alpha})`;
+    ctx.shadowColor = `rgba(65, 101, 204, ${0.55 * alpha})`;
+    ctx.shadowBlur = 18 / this.zoom;
+    for (const r of this.flash.bounds) {
+      ctx.strokeRect(r.left - pad, r.top - pad, r.width + pad * 2, r.height + pad * 2);
+    }
+    ctx.restore();
+  }
+
   // ---- Clipboard: Ctrl+C / Ctrl+V duplicates a drawing on the page. ----
 
   /** Serialize the active annotation for the internal clipboard (Ctrl+C); null if none / a screenshot. */
@@ -1210,6 +1294,14 @@ export class CanvasController {
       dirty: this.histIndex !== this.savedIndex,
       hasSelection: this.canvas.getActiveObjects().length > 0,
     });
+    this.emitSelection();
+  }
+
+  private emitSelection(): void {
+    if (!this.selectionCb) return;
+    const active = this.canvas.getActiveObjects();
+    const only = active.length === 1 ? active[0] : null;
+    this.selectionCb(only && isAnnotation(only) ? this.readAnnotation(only) : null);
   }
 }
 

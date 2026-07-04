@@ -18,8 +18,18 @@ const api: IpcApi = {
   updateEntryCanvas: (id, canvasJson, annotations, thumbnail) =>
     ipcRenderer.invoke(IpcChannel.updateEntryCanvas, id, canvasJson, annotations, thumbnail),
   getEntry: (id) => ipcRenderer.invoke(IpcChannel.getEntry, id),
+  setEntryTags: (id, tags) => ipcRenderer.invoke(IpcChannel.setEntryTags, id, tags),
   queryAnnotationsByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryAnnotationsByTag, tag),
+  queryEntriesByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryEntriesByTag, tag),
   locateAnnotation: (annotationId) => ipcRenderer.invoke(IpcChannel.locateAnnotation, annotationId),
+  listGroups: () => ipcRenderer.invoke(IpcChannel.listGroups),
+  defineGroup: (group) => ipcRenderer.invoke(IpcChannel.defineGroup, group),
+  deleteGroup: (id) => ipcRenderer.invoke(IpcChannel.deleteGroup, id),
+  defineValue: (value) => ipcRenderer.invoke(IpcChannel.defineValue, value),
+  deleteValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.deleteValue, groupId, value),
+  setGroupPinned: (id, pinned) => ipcRenderer.invoke(IpcChannel.setGroupPinned, id, pinned),
+  reorderGroups: (ids) => ipcRenderer.invoke(IpcChannel.reorderGroups, ids),
+  reorderValues: (groupId, values) => ipcRenderer.invoke(IpcChannel.reorderValues, groupId, values),
   getStampLibrary: () => ipcRenderer.invoke(IpcChannel.getStampLibrary),
   saveStampLibrary: (canvasJson) => ipcRenderer.invoke(IpcChannel.saveStampLibrary, canvasJson),
 };

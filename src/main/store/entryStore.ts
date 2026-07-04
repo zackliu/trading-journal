@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db';
 import type { Annotation, CreateEntryInput, Entry, EntrySummary, Tag } from '../../shared/domain';
 import { projectEntryAnnotations, readAnnotationResult, readAnnotationTags } from './annotationIndex';
+import { entryIdsForTag } from './tagQuery';
 
 interface EntryRow {
   id: string;
@@ -138,6 +139,27 @@ export function setEntryImage(db: Db, id: string, hash: string): Entry {
   return requireEntry(db, id);
 }
 
+/**
+ * Replace an entry's user (non-structural) tags — the Review tab's quick-pick write path.
+ * `date` is system-maintained and never editable here, so any incoming `date` tag is dropped and
+ * the existing structural `date` row is preserved. Entry tags are a property of the Entry (not the
+ * canvas), so this is a standalone write, independent of the canvas save path.
+ */
+export function setEntryTags(db: Db, id: string, tags: Tag[]): Entry {
+  const exists = db.prepare('SELECT id FROM entries WHERE id = ?').get(id);
+  if (!exists) {
+    throw new Error(`entry not found: ${id}`);
+  }
+  const userTags = tags.filter((tag) => tag.group !== 'date');
+  const write = db.transaction(() => {
+    db.prepare('DELETE FROM entry_tags WHERE entry_id = ? AND "group" != ?').run(id, 'date');
+    insertEntryTags(db, id, userTags);
+    db.prepare('UPDATE entries SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+  });
+  write();
+  return requireEntry(db, id);
+}
+
 /** Delete an entry and (via FK cascade) its annotation / tag / result projections. */
 export function deleteEntry(db: Db, id: string): void {
   db.prepare('DELETE FROM entries WHERE id = ?').run(id);
@@ -170,6 +192,24 @@ export function listEntries(db: Db): EntrySummary[] {
   const rows = db
     .prepare('SELECT id, image_hash, thumbnail, created_at FROM entries ORDER BY created_at DESC, id DESC')
     .all() as EntrySummaryRow[];
+  return toSummaries(db, rows);
+}
+
+/** Entry summaries (newest-first) whose entry OR any annotation carries the tag — the browse read. */
+export function queryEntriesByTag(db: Db, tag: Tag): EntrySummary[] {
+  const ids = entryIdsForTag(db, tag.group, tag.value);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT id, image_hash, thumbnail, created_at FROM entries WHERE id IN (${placeholders}) ` +
+        'ORDER BY created_at DESC, id DESC',
+    )
+    .all(...ids) as EntrySummaryRow[];
+  return toSummaries(db, rows);
+}
+
+function toSummaries(db: Db, rows: EntrySummaryRow[]): EntrySummary[] {
   const dateStmt = db.prepare(
     'SELECT value FROM entry_tags WHERE entry_id = ? AND "group" = \'date\' ORDER BY value DESC LIMIT 1',
   );

@@ -45,6 +45,7 @@ async function dragScene(page: Page, box: Box, from: Scene, to: Scene): Promise<
 }
 
 async function drawRect(page: Page, box: Box, from: Scene, to: Scene): Promise<void> {
+  await page.getByTestId('tab-draw').click(); // finishing a shape selects it (→ Annotation tab); re-show the tools
   await page.getByTestId('tool-rect').click();
   await page.locator(CANVAS).hover({ position: pos(box, from[0], from[1]), force: true });
   await page.mouse.down();
@@ -52,14 +53,12 @@ async function drawRect(page: Page, box: Box, from: Scene, to: Scene): Promise<v
   await page.mouse.up();
 }
 
+/** Tag the drawing at scene point `at` via the contextual Annotation tab's quick-pick (vocab pre-declared). */
 async function tagAt(page: Page, box: Box, at: Scene, group: string, value: string): Promise<void> {
-  await page.locator(CANVAS).click({ button: 'right', position: pos(box, at[0], at[1]), force: true });
-  await page.getByTestId('menu-tags').click();
-  await expect(page.getByTestId('tag-popover')).toBeVisible();
-  await page.getByTestId('tag-group').fill(group);
-  await page.getByTestId('tag-value').fill(value);
-  await page.getByTestId('tag-add').click();
-  await page.getByTestId('popover-save').click();
+  await page.locator(CANVAS).click({ position: pos(box, at[0], at[1]), force: true }); // select the drawing
+  await page.getByTestId('tab-annotation').click(); // open the contextual tab
+  await page.getByTestId(`qtag-${group}-${value}`).click();
+  await page.getByTestId('tab-draw').click(); // restore Draw for subsequent tools / palette lock
 }
 
 function stampCount(canvasJson: string): number {
@@ -163,6 +162,12 @@ test('a dropped stamp copy carries tags but not result or links', async () => {
 test('unlocking the palette lets a page drawing be moved in as a global stamp', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);
+  // Pre-declare the vocabulary (registry) so the Annotation quick-pick offers it; reload to load it.
+  await store.defineGroup(page, { id: 'setup', label: 'setup', pinned: true });
+  await store.defineValue(page, { groupId: 'setup', value: 'alpha' });
+  await store.defineValue(page, { groupId: 'setup', value: 'beta' });
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
   const entry1 = await openReview(page);
   const box = await canvasBox(page);
 
