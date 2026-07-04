@@ -29,7 +29,7 @@ export interface IpcApi {
   listResultDimensions(): Promise<ResultDimension[]>;
   createEntry(input: CreateEntryInput): Promise<Entry>;
   updateEntry(id: string, input: CreateEntryInput): Promise<Entry>;
-  updateEntryCanvas(id: string, canvasJson: string, annotations: Annotation[]): Promise<Entry>;
+  updateEntryCanvas(id: string, canvasJson: string, annotations: Annotation[], thumbnail: string): Promise<Entry>;
   getEntry(id: string): Promise<Entry | null>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
   locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;

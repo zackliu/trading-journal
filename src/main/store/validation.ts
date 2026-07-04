@@ -50,3 +50,9 @@ export const canvasJsonSchema = z.string();
 export const annotationsSchema = z.array(annotation);
 
 export const imageHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+// The list thumbnail is a rendered page snapshot: empty, or a bounded data: image URL.
+export const thumbnailSchema = z
+  .string()
+  .max(4_000_000)
+  .refine((value) => value === '' || value.startsWith('data:image/'), 'must be empty or a data: image URL');

@@ -15,6 +15,7 @@ import {
   imageHashSchema,
   resultDimensionSchema,
   tagSchema,
+  thumbnailSchema,
 } from './store/validation';
 import { IpcChannel, type PingResult } from '../shared/ipc';
 
@@ -120,12 +121,13 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.updateEntry, (_event, id: unknown, raw: unknown) =>
     updateEntry(requireDb(), idSchema.parse(id), createEntryInputSchema.parse(raw)),
   );
-  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown, annotations: unknown) =>
+  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown, annotations: unknown, thumbnail: unknown) =>
     updateEntryCanvas(
       requireDb(),
       idSchema.parse(id),
       canvasJsonSchema.parse(canvasJson),
       annotationsSchema.parse(annotations),
+      thumbnailSchema.parse(thumbnail),
     ),
   );
   ipcMain.handle(IpcChannel.getEntry, (_event, id: unknown) => getEntry(requireDb(), idSchema.parse(id)));

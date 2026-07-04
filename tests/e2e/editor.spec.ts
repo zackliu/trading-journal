@@ -266,7 +266,7 @@ test('lines and arrows are saved as two-point segments, and arrows revive on rel
   // The arrow stays selected → its two endpoint handles are visible.
   await page.screenshot({ path: 'test-results/segments.png' });
 
-  await page.getByTestId('editor-save').click();
+  await page.keyboard.press('Control+s');
   const list = await store.listEntries(page);
   const id = list[0]?.id;
   if (!id) throw new Error('expected one entry');
@@ -313,7 +313,7 @@ test('the text tool makes an Office-style text box (types text; empty is discard
   await page.mouse.click(box.x + 6, box.y + 6); // exit editing + deselect
   await page.screenshot({ path: 'test-results/textbox.png' });
 
-  await page.getByTestId('editor-save').click();
+  await page.keyboard.press('Control+s');
   const list = await store.listEntries(page);
   const id = list[0]?.id;
   if (!id) throw new Error('expected one entry');
@@ -345,7 +345,6 @@ test('the text tool makes an Office-style text box (types text; empty is discard
   await page.getByTestId('tool-text').click();
   await page.mouse.click(box.x + box.width * 0.75, box.y + box.height * 0.6);
   await page.mouse.click(box.x + 6, box.y + 6); // exit without typing → discarded, nothing changed
-  await expect(page.getByTestId('editor-save')).toBeDisabled();
   const after = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
     objects?: { type?: string }[];
   };
@@ -387,7 +386,7 @@ test('No border removes a rectangle outline but lines keep their stroke', async 
   await page.getByTestId('tool-line').click();
   await drag(40, 190, 240, 230);
 
-  await page.getByTestId('editor-save').click();
+  await page.keyboard.press('Control+s');
   const list = await store.listEntries(page);
   const id = list[0]?.id;
   if (!id) throw new Error('expected one entry');

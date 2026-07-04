@@ -112,15 +112,15 @@ test('an untagged annotation stays out of tag queries', async () => {
   // …and an untagged trend line; persist both via the ribbon Save.
   await page.getByTestId('tool-line').click();
   await drag(page, box, 40, 200, 260, 240);
-  await page.getByTestId('editor-save').click();
+  await page.keyboard.press('Control+s');
 
-  // Only the tagged box is a tag-query hit.
+  // Both annotations are projected (auto-saved); only the tagged box is a tag-query hit.
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(2);
   const hits = await store.queryByTag(page, { group: 'setup', value: 'wedge-top' });
   expect(hits).toHaveLength(1);
 
-  // Both annotations are projected, but exactly one carries tags.
-  const entry = await store.getEntry(page, entryId);
-  const anns = entry?.annotations ?? [];
+  // Exactly one of the two annotations carries tags.
+  const anns = (await store.getEntry(page, entryId))?.annotations ?? [];
   expect(anns).toHaveLength(2);
   expect(anns.filter((a) => a.tags.length > 0)).toHaveLength(1);
   expect(anns.filter((a) => a.tags.length === 0)).toHaveLength(1);

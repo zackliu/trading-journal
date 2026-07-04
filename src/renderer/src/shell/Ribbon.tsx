@@ -10,7 +10,6 @@ interface RibbonProps {
   style: DrawStyle;
   canUndo: boolean;
   canRedo: boolean;
-  dirty: boolean;
   onNew: () => void;
   onDeleteReview: () => void;
   onTool: (tool: Tool) => void;
@@ -108,6 +107,16 @@ export function Ribbon(props: RibbonProps): JSX.Element {
           <Group label="Review">
             <button type="button" className="rbig" data-testid="ribbon-new" onClick={props.onNew}>
               <Icon name="plus" /> New
+            </button>
+            <button
+              type="button"
+              className="rsave"
+              data-testid="editor-save"
+              disabled={!entryOpen}
+              title="Save now (Ctrl+S) — edits also save automatically"
+              onClick={props.onSave}
+            >
+              <Icon name="save" /> Save
             </button>
             <button
               type="button"
@@ -282,17 +291,6 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 onClick={props.onToggleStampLock}
               >
                 <Icon name={props.stampLocked ? 'lock' : 'unlock'} /> {props.stampLocked ? 'Locked' : 'Unlocked'}
-              </button>
-            </Group>
-            <Group label="Entry">
-              <button
-                type="button"
-                className="rsave"
-                disabled={!entryOpen || !props.dirty}
-                onClick={props.onSave}
-                data-testid="editor-save"
-              >
-                <Icon name="save" /> Save
               </button>
             </Group>
           </>

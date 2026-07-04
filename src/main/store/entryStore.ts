@@ -95,14 +95,25 @@ export function getEntry(db: Db, id: string): Entry | null {
   };
 }
 
-/** Update the canvas JSON of an entry and re-project its annotation index (the editor's save path). */
-export function updateEntryCanvas(db: Db, id: string, canvasJson: string, annotations: Annotation[]): Entry {
+/** Update the canvas JSON + rendered thumbnail of an entry and re-project its annotation index (the editor's save path). */
+export function updateEntryCanvas(
+  db: Db,
+  id: string,
+  canvasJson: string,
+  annotations: Annotation[],
+  thumbnail: string,
+): Entry {
   const exists = db.prepare('SELECT id FROM entries WHERE id = ?').get(id);
   if (!exists) {
     throw new Error(`entry not found: ${id}`);
   }
   const write = db.transaction(() => {
-    db.prepare('UPDATE entries SET canvas_json = ?, updated_at = ? WHERE id = ?').run(canvasJson, Date.now(), id);
+    db.prepare('UPDATE entries SET canvas_json = ?, thumbnail = ?, updated_at = ? WHERE id = ?').run(
+      canvasJson,
+      thumbnail,
+      Date.now(),
+      id,
+    );
     projectEntryAnnotations(db, id, annotations);
   });
   write();
@@ -150,19 +161,26 @@ function insertEntryTags(db: Db, entryId: string, tags: Tag[]): void {
 interface EntrySummaryRow {
   id: string;
   image_hash: string;
+  thumbnail: string;
   created_at: number;
 }
 
-/** Newest-first entry summaries for the Daily list (id, image ref, date). */
+/** Newest-first entry summaries for the Daily list (id, rendered thumbnail, cover fallback, date). */
 export function listEntries(db: Db): EntrySummary[] {
   const rows = db
-    .prepare('SELECT id, image_hash, created_at FROM entries ORDER BY created_at DESC, id DESC')
+    .prepare('SELECT id, image_hash, thumbnail, created_at FROM entries ORDER BY created_at DESC, id DESC')
     .all() as EntrySummaryRow[];
   const dateStmt = db.prepare(
     'SELECT value FROM entry_tags WHERE entry_id = ? AND "group" = \'date\' ORDER BY value DESC LIMIT 1',
   );
   return rows.map((row) => {
     const dateRow = dateStmt.get(row.id) as { value: string } | undefined;
-    return { id: row.id, imageHash: row.image_hash || undefined, createdAt: row.created_at, date: dateRow?.value };
+    return {
+      id: row.id,
+      thumbnail: row.thumbnail || undefined,
+      imageHash: row.image_hash || undefined,
+      createdAt: row.created_at,
+      date: dateRow?.value,
+    };
   });
 }

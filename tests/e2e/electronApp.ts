@@ -43,10 +43,22 @@ export const store = {
       { id, input },
     ),
 
-  updateEntryCanvas: (page: Page, id: string, canvasJson: string, annotations: Annotation[] = []): Promise<Entry> =>
+  updateEntryCanvas: (
+    page: Page,
+    id: string,
+    canvasJson: string,
+    annotations: Annotation[] = [],
+    thumbnail = '',
+  ): Promise<Entry> =>
     page.evaluate(
-      (arg) => (globalThis as unknown as WindowWithApi).api.updateEntryCanvas(arg.id, arg.canvasJson, arg.annotations),
-      { id, canvasJson, annotations },
+      (arg) =>
+        (globalThis as unknown as WindowWithApi).api.updateEntryCanvas(
+          arg.id,
+          arg.canvasJson,
+          arg.annotations,
+          arg.thumbnail,
+        ),
+      { id, canvasJson, annotations, thumbnail },
     ),
 
   getEntry: (page: Page, id: string): Promise<Entry | null> =>

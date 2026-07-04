@@ -15,8 +15,8 @@ const api: IpcApi = {
   listResultDimensions: () => ipcRenderer.invoke(IpcChannel.listResultDimensions),
   createEntry: (input) => ipcRenderer.invoke(IpcChannel.createEntry, input),
   updateEntry: (id, input) => ipcRenderer.invoke(IpcChannel.updateEntry, id, input),
-  updateEntryCanvas: (id, canvasJson, annotations) =>
-    ipcRenderer.invoke(IpcChannel.updateEntryCanvas, id, canvasJson, annotations),
+  updateEntryCanvas: (id, canvasJson, annotations, thumbnail) =>
+    ipcRenderer.invoke(IpcChannel.updateEntryCanvas, id, canvasJson, annotations, thumbnail),
   getEntry: (id) => ipcRenderer.invoke(IpcChannel.getEntry, id),
   queryAnnotationsByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryAnnotationsByTag, tag),
   locateAnnotation: (annotationId) => ipcRenderer.invoke(IpcChannel.locateAnnotation, annotationId),

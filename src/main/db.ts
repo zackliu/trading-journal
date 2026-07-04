@@ -10,7 +10,11 @@ export interface OpenedDb {
 // Ordered migrations. Index i migrates schema version i -> i+1, wrapped in a
 // transaction together with the user_version bump. Slice 1 introduces the schema;
 // Slice 5 adds the global stamp library.
-const MIGRATIONS: Array<(db: Db) => void> = [migration001Initial, migration002StampLibrary];
+const MIGRATIONS: Array<(db: Db) => void> = [
+  migration001Initial,
+  migration002StampLibrary,
+  migration003EntryThumbnail,
+];
 
 /** Open (creating if missing) the SQLite database and run pending migrations. */
 export function openDatabase(sqlitePath: string): OpenedDb {
@@ -109,4 +113,11 @@ function migration002StampLibrary(db: Db): void {
       updated_at  INTEGER NOT NULL
     );
   `);
+}
+
+// The list thumbnail is a rendered, scaled-down snapshot of the review page (screenshots +
+// annotations), stored as a JPEG data URL and refreshed on every canvas save. It reflects the real
+// page, not a frozen cover screenshot.
+function migration003EntryThumbnail(db: Db): void {
+  db.exec(`ALTER TABLE entries ADD COLUMN thumbnail TEXT NOT NULL DEFAULT '';`);
 }

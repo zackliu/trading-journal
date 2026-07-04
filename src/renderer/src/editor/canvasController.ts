@@ -77,6 +77,7 @@ const GAP = 20; // scene px between page and strip — a thin divider band
 const STRIP_W = 760; // scene px width of the stamp strip
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
+const THUMB_W = 400; // list-thumbnail width in px; the review page is captured at this size
 
 function dashArray(dash: DashStyle, width: number): number[] | null {
   if (dash === 'dashed') return [width * 4, width * 3];
@@ -156,9 +157,11 @@ export class CanvasController {
   private toolCb: ((t: Tool) => void) | null = null;
   private contextCb: ((r: CanvasContextRequest) => void) | null = null;
   private zoomCb: ((z: { percent: number; fitMode: boolean }) => void) | null = null;
-  private stripChangedCb: (() => void) | null = null;
+  private contentChangedCb: (() => void) | null = null;
   private contextTarget: FabricObject | null = null;
   private newTextBox: TextBoxAnnotation | null = null;
+  // Set while a press on a non-selectable object suppressed group-selection; restored on mouse:up.
+  private selectionSuppressed = false;
 
   constructor(el: HTMLCanvasElement) {
     this.canvas = new Canvas(el, {
@@ -169,6 +172,7 @@ export class CanvasController {
       // Office-style corners: dragging a corner stretches width and height freely; hold Shift to keep aspect.
       uniformScaling: false,
     });
+    this.canvas.on('mouse:down:before', (opt) => this.onDownBefore(opt));
     this.canvas.on('mouse:down', (opt) => this.onDown(opt));
     this.canvas.on('mouse:move', (opt) => this.onMove(opt));
     this.canvas.on('mouse:up', () => this.onUp());
@@ -180,7 +184,6 @@ export class CanvasController {
       if (path) {
         ensureAnnotation(path);
         this.pushHistory();
-        if (this.regionOf(path) === 'strip') this.stripChangedCb?.();
       }
     });
     this.canvas.on('object:modified', () => this.pushHistory());
@@ -208,9 +211,9 @@ export class CanvasController {
     this.emitZoom();
   }
 
-  /** Fired after an edit that may have changed the stamp strip, so the shell can persist both stores. */
-  onStripChanged(cb: () => void): void {
-    this.stripChangedCb = cb;
+  /** Fired after every committed edit (any page or strip change), so the shell can auto-save both stores. */
+  onContentChanged(cb: () => void): void {
+    this.contentChangedCb = cb;
   }
 
   /** The visible stage area (px). Re-fits the surface while in fit mode. */
@@ -560,7 +563,6 @@ export class CanvasController {
     if (active.length > 0) {
       this.canvas.requestRenderAll();
       this.pushHistory();
-      if (active.some((o) => this.regionOf(o) === 'strip')) this.stripChangedCb?.();
     }
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush) {
       const brush = this.canvas.freeDrawingBrush;
@@ -608,12 +610,10 @@ export class CanvasController {
   deleteSelected(): void {
     const active = this.canvas.getActiveObjects();
     if (active.length === 0) return;
-    const touchedStrip = active.some((o) => this.regionOf(o) === 'strip');
     this.canvas.remove(...active);
     this.canvas.discardActiveObject();
     this.canvas.requestRenderAll();
     this.pushHistory();
-    if (touchedStrip) this.stripChangedCb?.();
   }
 
   async undo(): Promise<void> {
@@ -661,6 +661,30 @@ export class CanvasController {
     return this.objectsJson(this.editableObjects(), true);
   }
 
+  /**
+   * A scaled-down JPEG snapshot of the review PAGE (screenshots + annotations; the strip and divider
+   * are cropped out) for the list thumbnail. Rendered view-independently: the on-screen zoom is
+   * momentarily reset so the capture always covers exactly [0..pageW] x [0..pageH] at a fixed width.
+   */
+  renderThumbnail(): string {
+    const saved = this.canvas.viewportTransform;
+    this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    try {
+      return this.canvas.toDataURL({
+        format: 'jpeg',
+        quality: 0.72,
+        multiplier: THUMB_W / this.pageW,
+        left: 0,
+        top: 0,
+        width: this.pageW,
+        height: this.pageH,
+        enableRetinaScaling: false,
+      });
+    } finally {
+      this.canvas.setViewportTransform(saved);
+    }
+  }
+
   markSaved(): void {
     this.savedIndex = this.histIndex;
     this.emit();
@@ -668,6 +692,22 @@ export class CanvasController {
 
   dispose(): void {
     void this.canvas.dispose();
+  }
+
+  /**
+   * Fires before Fabric decides whether to begin a rubber-band group selector. Fabric starts one for
+   * ANY evented-but-non-selectable target (a pinned/locked drawing, a locked-palette stamp), which
+   * makes pressing such an object "pull a selection box out of it" instead of doing nothing. Turn
+   * group-selection off for this gesture here — before Fabric's decision — and restore it on mouse:up.
+   * An empty-space press (no target) still starts a marquee as usual.
+   */
+  private onDownBefore(opt: TPointerEventInfo<TPointerEvent>): void {
+    if ((opt.e as MouseEvent).button !== 0 || this.tool !== 'select') return;
+    const t = opt.target ?? null;
+    if (t && !isChrome(t) && !t.selectable) {
+      this.canvas.selection = false;
+      this.selectionSuppressed = true;
+    }
   }
 
   private onDown(opt: TPointerEventInfo<TPointerEvent>): void {
@@ -795,6 +835,10 @@ export class CanvasController {
   }
 
   private onUp(): void {
+    if (this.selectionSuppressed) {
+      this.selectionSuppressed = false;
+      this.canvas.selection = this.tool === 'select';
+    }
     if (this.ghostDrag) {
       this.finishGhostDrag();
       return;
@@ -834,7 +878,6 @@ export class CanvasController {
       this.canvas.setActiveObject(created);
       this.canvas.requestRenderAll();
       this.pushHistory();
-      if (this.regionOf(created) === 'strip') this.stripChangedCb?.();
     } else {
       this.canvas.requestRenderAll();
     }
@@ -849,7 +892,6 @@ export class CanvasController {
     const home = this.dragHome;
     if (!home || !this.canvas.getObjects().includes(home.obj)) return;
     const obj = home.obj;
-    const start = home.region;
     const end = this.regionOf(obj);
     const isImg = obj instanceof FabricImage;
 
@@ -865,7 +907,6 @@ export class CanvasController {
     obj.setCoords();
     this.canvas.requestRenderAll();
     this.pushHistory();
-    if (start === 'strip' || end === 'strip') this.stripChangedCb?.();
   }
 
   private snapBack(obj: FabricObject, home: { left: number; top: number }): void {
@@ -886,7 +927,6 @@ export class CanvasController {
     };
     this.ghostDrag = drag;
     this.canvas.discardActiveObject();
-    this.canvas.selection = false; // no rubber-band marquee while a ghost is being dragged
     const serialized = source.toObject([...TJ_PROPS]) as Record<string, unknown>;
     void (async () => {
       const [g] = await util.enlivenObjects<FabricObject>([serialized]);
@@ -906,7 +946,6 @@ export class CanvasController {
   private finishGhostDrag(): void {
     const drag = this.ghostDrag;
     this.ghostDrag = null;
-    this.canvas.selection = this.tool === 'select';
     if (!drag) return;
     if (drag.obj) this.canvas.remove(drag.obj);
     // Solidify only if the copy was actually dragged onto the page (the copy is built from the
@@ -951,7 +990,6 @@ export class CanvasController {
     });
     obj.set({ left, top, opacity, selectable: true, evented: true });
     this.placeNew(obj);
-    this.stripChangedCb?.();
   }
 
   private makeSegment(x1: number, y1: number, x2: number, y2: number, arrow: boolean): Polyline {
@@ -1006,7 +1044,6 @@ export class CanvasController {
         if (this.newTextBox !== target) this.pushHistory();
       } else {
         this.pushHistory();
-        if (this.regionOf(target) === 'strip') this.stripChangedCb?.();
       }
     }
     this.newTextBox = null;
@@ -1018,6 +1055,7 @@ export class CanvasController {
     this.history.push(this.serializeAll());
     this.histIndex = this.history.length - 1;
     this.emit();
+    this.contentChangedCb?.(); // every committed edit auto-saves (page + strip)
   }
 
   private async applyState(json: string): Promise<void> {
@@ -1101,7 +1139,6 @@ export class CanvasController {
     const obj = await this.reviveClone(serialized);
     obj.set({ left: (obj.left ?? 0) + 24, top: (obj.top ?? 0) + 24 });
     this.placeNew(obj);
-    if (this.regionOf(obj) === 'strip') this.stripChangedCb?.();
   }
 
   private emit(): void {

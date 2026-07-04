@@ -82,6 +82,9 @@ export interface SavedView {
 /** A compact entry row for the Daily list (no canvas JSON, no annotations). */
 export interface EntrySummary {
   id: string;
+  /** Rendered snapshot of the page (JPEG data URL); reflects the latest saved edits. */
+  thumbnail?: string;
+  /** Cover screenshot hash, used only as a fallback before the page is first rendered. */
   imageHash?: string;
   createdAt: number;
   date?: string;

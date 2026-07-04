@@ -76,7 +76,7 @@ async function drawAndSave(page: Page, entryId: string): Promise<void> {
   await page.mouse.down();
   await page.locator(CANVAS).hover({ position: pos(box, 720, 540), force: true });
   await page.mouse.up();
-  await page.getByTestId('editor-save').click();
+  await page.keyboard.press('Control+s');
   await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBeGreaterThan(0);
 }
 
@@ -142,6 +142,68 @@ test('a blank new review opens with an empty page', async () => {
   const second = await newReview(page);
   const anns = (await store.getEntry(page, second))?.annotations ?? [];
   expect(anns).toHaveLength(0);
+
+  await app.close();
+});
+
+test('pressing a locked drawing does not pull out a marquee that grabs other objects', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const entryId = await newReview(page);
+  const box = await canvasBox(page);
+
+  const drawRect = async (a: [number, number], b: [number, number]): Promise<void> => {
+    await page.getByTestId('tool-rect').click();
+    await page.locator(CANVAS).hover({ position: pos(box, a[0], a[1]), force: true });
+    await page.mouse.down();
+    await page.locator(CANVAS).hover({ position: pos(box, b[0], b[1]), force: true });
+    await page.mouse.up();
+  };
+
+  // A = the drawing we lock; B = a bystander the marquee must never grab.
+  await drawRect([300, 300], [520, 460]);
+  await drawRect([700, 560], [980, 760]);
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(2);
+
+  // Lock A (right-click its centre → Lock).
+  await page.locator(CANVAS).click({ button: 'right', position: pos(box, 410, 380), force: true });
+  await page.getByTestId('menu-lock').click();
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.canvasJson ?? '').toContain('"tjLocked":true');
+
+  // Press-drag STARTING on locked A, sweeping a rubber-band across B. A locked (non-selectable) object
+  // must NOT start a group-selection marquee — Fabric otherwise would, grabbing B.
+  await page.locator(CANVAS).hover({ position: pos(box, 410, 380), force: true });
+  await page.mouse.down();
+  await page.locator(CANVAS).hover({ position: pos(box, 720, 600), force: true });
+  await page.locator(CANVAS).hover({ position: pos(box, 1050, 820), force: true });
+  await page.mouse.up();
+
+  // If a marquee had grabbed B, Delete would remove it. With the press inert, B survives.
+  await page.keyboard.press('Delete');
+  await page.waitForTimeout(400);
+  const anns = (await store.getEntry(page, entryId))?.annotations ?? [];
+  expect(anns).toHaveLength(2);
+
+  await app.close();
+});
+
+test('Ctrl+Z undoes the last drawing and persists the undone page', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const entryId = await newReview(page);
+  const box = await canvasBox(page);
+
+  await page.getByTestId('tool-rect').click();
+  await page.locator(CANVAS).hover({ position: pos(box, 400, 320), force: true });
+  await page.mouse.down();
+  await page.locator(CANVAS).hover({ position: pos(box, 760, 560), force: true });
+  await page.mouse.up();
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(1);
+
+  // Ctrl+Z removes the rectangle, and the undone (empty) page is persisted.
+  await page.keyboard.press('Control+z');
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(0);
 
   await app.close();
 });

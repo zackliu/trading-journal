@@ -51,7 +51,8 @@ export function App(): JSX.Element {
   const controllerRef = useRef<CanvasController | null>(null);
   const pendingSelectRef = useRef<string | null>(null);
   const styleRef = useRef(style);
-  const saveRef = useRef<() => Promise<void>>(async () => {});
+  const saveRunningRef = useRef<Promise<void> | null>(null);
+  const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
   const selectedEntryIdRef = useRef(selectedEntryId);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
@@ -83,21 +84,43 @@ export function App(): JSX.Element {
 
   const entryOpen = selectedEntryId !== null;
 
-  // Persist both stores from the one canvas: page-region objects → the Entry, strip → the stamp library.
-  const persist = useCallback(async () => {
-    const controller = controllerRef.current;
-    if (!controller || !selectedEntryId) return;
-    await window.api.updateEntryCanvas(selectedEntryId, controller.serializePage(), controller.extractAnnotations());
-    await window.api.saveStampLibrary(controller.serializeStrip());
-    controller.markSaved();
-  }, [selectedEntryId]);
+  // Auto-save engine — editing IS saving, there is no manual-save ritual. Every committed edit calls
+  // this. It coalesces concurrent calls (one write in flight; a request during a write re-runs once
+  // after), always serializes the latest state, and mirrors the page into the rail thumbnail live.
+  const saveNow = useCallback((): Promise<void> => {
+    if (saveRunningRef.current) {
+      saveAgainRef.current = true;
+      return saveRunningRef.current;
+    }
+    const run = async (): Promise<void> => {
+      try {
+        do {
+          saveAgainRef.current = false;
+          const controller = controllerRef.current;
+          const id = selectedEntryIdRef.current;
+          if (!controller || !id) break;
+          const thumbnail = controller.renderThumbnail();
+          setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, thumbnail } : e)));
+          await window.api.updateEntryCanvas(
+            id,
+            controller.serializePage(),
+            controller.extractAnnotations(),
+            thumbnail,
+          );
+          await window.api.saveStampLibrary(controller.serializeStrip());
+          controller.markSaved();
+        } while (saveAgainRef.current);
+      } finally {
+        saveRunningRef.current = null;
+      }
+    };
+    saveRunningRef.current = run();
+    return saveRunningRef.current;
+  }, []);
 
   useEffect(() => {
     styleRef.current = style;
   }, [style]);
-  useEffect(() => {
-    saveRef.current = persist;
-  }, [persist]);
   useEffect(() => {
     stampLockedRef.current = stampLocked;
     controllerRef.current?.setPaletteLocked(stampLocked);
@@ -108,7 +131,7 @@ export function App(): JSX.Element {
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
-      if (editorState.dirty) await persist();
+      if (editorState.dirty) await saveNow();
       controllerRef.current = null;
       setSelectedEntryId(nextId);
       setTool('select');
@@ -116,7 +139,7 @@ export function App(): JSX.Element {
       setPopover(null);
       await refresh();
     },
-    [editorState.dirty, persist, refresh],
+    [editorState.dirty, saveNow, refresh],
   );
 
   const createNew = useCallback(async () => {
@@ -142,8 +165,7 @@ export function App(): JSX.Element {
           const { hash } = await window.api.storeImage(bytes);
           const { isFirst } = await controllerRef.current.addImage(`tj-image://${hash}`);
           if (isFirst) await window.api.setEntryImage(selectedEntryId, hash);
-          await persist();
-          await refresh();
+          // addImage() commits history → auto-saves the canvas + thumbnail via onContentChanged.
         } else {
           const entry = await window.api.ingestImageEntry(bytes);
           await switchTo(entry.id);
@@ -154,7 +176,7 @@ export function App(): JSX.Element {
         setBusy(false);
       }
     },
-    [selectedEntryId, persist, refresh, switchTo],
+    [selectedEntryId, switchTo],
   );
 
   const removeEntry = useCallback(
@@ -179,7 +201,7 @@ export function App(): JSX.Element {
       const clip = drawingClipboardRef.current;
       if (clip && selectedEntryIdRef.current && controllerRef.current) {
         event.preventDefault();
-        void controllerRef.current.pasteSerializedAnnotation(clip).then(() => saveRef.current());
+        void controllerRef.current.pasteSerializedAnnotation(clip);
         return;
       }
       const items = event.clipboardData?.items;
@@ -216,6 +238,37 @@ export function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Ctrl/Cmd+S: a habitual "save now". Auto-save already persists every edit, so this just flushes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        void saveNow();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [saveNow]);
+
+  // Ctrl/Cmd+Z undo; Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while typing in a field (native undo wins).
+  // Undo/redo bypass the history, so persist the result to keep the DB + thumbnail in step with the page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const controller = controllerRef.current;
+      if (!controller) return;
+      e.preventDefault();
+      const redo = key === 'y' || (key === 'z' && e.shiftKey);
+      void (redo ? controller.redo() : controller.undo()).then(() => saveNow());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [saveNow]);
+
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>): void => {
       event.preventDefault();
@@ -247,81 +300,57 @@ export function App(): JSX.Element {
           label: 'Unlock',
           icon: 'unlock',
           testId: 'menu-unlock',
-          onClick: () => {
-            controllerRef.current?.unlockContext();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.unlockContext(),
         });
         items.push({
           label: 'Bring to front',
           icon: 'front',
-          onClick: () => {
-            controllerRef.current?.bringContextToFront();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.bringContextToFront(),
         });
         items.push({
           label: 'Send to back',
           icon: 'sendtoback',
-          onClick: () => {
-            controllerRef.current?.sendContextToBack();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.sendContextToBack(),
         });
       } else if (r.hasSelection) {
         if (r.isImage) {
           items.push({
             label: 'Fit to canvas',
             icon: 'fit',
-            onClick: () => {
-              controllerRef.current?.fitActiveToCanvas();
-              void saveRef.current();
-            },
+            onClick: () => controllerRef.current?.fitActiveToCanvas(),
           });
         }
         items.push({
           label: 'Bring to front',
           icon: 'front',
-          onClick: () => {
-            controllerRef.current?.bringToFront();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.bringToFront(),
         });
         items.push({
           label: 'Send to back',
           icon: 'sendtoback',
-          onClick: () => {
-            controllerRef.current?.sendToBack();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.sendToBack(),
         });
         items.push({
           label: 'Lock',
           icon: 'lock',
           testId: 'menu-lock',
-          onClick: () => {
-            controllerRef.current?.lockActive();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.lockActive(),
         });
         items.push({
           label: 'Delete',
           icon: 'trash',
           danger: true,
-          onClick: () => {
-            controllerRef.current?.deleteSelected();
-            void saveRef.current();
-          },
+          onClick: () => controllerRef.current?.deleteSelected(),
         });
       }
       if (items.length > 0) setMenu({ x: r.x, y: r.y, items });
     });
     controller.onZoom(setZoom);
-    // Any edit that may have changed the stamp strip persists both the Entry page and the library.
-    controller.onStripChanged(() => void saveRef.current());
+    // Every committed edit auto-saves the Entry page + stamp library and mirrors the rail thumbnail.
+    controller.onContentChanged(() => void saveNow());
     controller.setPaletteLocked(stampLockedRef.current);
     controller.setStyle(styleRef.current);
-  }, []);
+  }, [saveNow]);
 
   const pickTool = useCallback((next: Tool) => {
     setTool(next);
@@ -368,11 +397,10 @@ export function App(): JSX.Element {
     (edits: AnnotationEdits) => {
       if (popover) {
         controllerRef.current?.applyAnnotationEdits(popover.annotation.id, edits.tags, edits.result, edits.links);
-        void persist();
       }
       setPopover(null);
     },
-    [popover, persist],
+    [popover],
   );
 
   const onToggleStampLock = useCallback(() => setStampLocked((v) => !v), []);
@@ -408,29 +436,19 @@ export function App(): JSX.Element {
         style={style}
         canUndo={editorState.canUndo}
         canRedo={editorState.canRedo}
-        dirty={editorState.dirty}
         onNew={() => void createNew()}
         onDeleteReview={() => {
           if (selectedEntryId) void removeEntry(selectedEntryId);
         }}
         onTool={pickTool}
         onStyle={changeStyle}
-        onUndo={() => void controllerRef.current?.undo()}
-        onRedo={() => void controllerRef.current?.redo()}
+        onUndo={() => void controllerRef.current?.undo().then(() => saveNow())}
+        onRedo={() => void controllerRef.current?.redo().then(() => saveNow())}
         onDeleteSelected={() => controllerRef.current?.deleteSelected()}
-        onBringToFront={() => {
-          controllerRef.current?.bringToFront();
-          void persist();
-        }}
-        onSendToBack={() => {
-          controllerRef.current?.sendToBack();
-          void persist();
-        }}
-        onFitToCanvas={() => {
-          controllerRef.current?.fitActiveToCanvas();
-          void persist();
-        }}
-        onSave={() => void persist()}
+        onBringToFront={() => controllerRef.current?.bringToFront()}
+        onSendToBack={() => controllerRef.current?.sendToBack()}
+        onFitToCanvas={() => controllerRef.current?.fitActiveToCanvas()}
+        onSave={() => void saveNow()}
         stampLocked={stampLocked}
         onToggleStampLock={onToggleStampLock}
       />

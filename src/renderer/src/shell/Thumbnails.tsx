@@ -7,8 +7,14 @@ interface Props {
   onContextMenu: (id: string, x: number, y: number) => void;
 }
 
-function formatWhen(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+/** One date per row: the review's `date` tag if set, else the day it was created. */
+function formatDate(entry: EntrySummary): string {
+  if (entry.date) return entry.date;
+  return new Date(entry.createdAt).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 /** Left-rail gallery of review thumbnails (click to open, right-click for actions). */
@@ -18,29 +24,33 @@ export function Thumbnails({ entries, selectedId, onOpen, onContextMenu }: Props
   }
   return (
     <div className="thumbs" data-testid="thumbs">
-      {entries.map((entry) => (
-        <button
-          type="button"
-          key={entry.id}
-          className={`thumb${entry.id === selectedId ? ' is-active' : ''}`}
-          data-testid="entry-item"
-          onClick={() => onOpen(entry.id)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            onContextMenu(entry.id, e.clientX, e.clientY);
-          }}
-        >
-          {entry.imageHash ? (
-            <img className="thumb__img" src={`tj-image://${entry.imageHash}`} alt="chart screenshot" />
-          ) : (
-            <span className="thumb__img thumb__img--blank">blank</span>
-          )}
-          <span className="thumb__meta">
-            <span className="thumb__date">{entry.date ?? '—'}</span>
-            <span className="thumb__when">{formatWhen(entry.createdAt)}</span>
-          </span>
-        </button>
-      ))}
+      {entries.map((entry) => {
+        // The thumbnail is the rendered page (reflects every edit); the cover screenshot is only a
+        // fallback for a freshly ingested review whose page has not been rendered yet.
+        const src = entry.thumbnail ?? (entry.imageHash ? `tj-image://${entry.imageHash}` : null);
+        return (
+          <button
+            type="button"
+            key={entry.id}
+            className={`thumb${entry.id === selectedId ? ' is-active' : ''}`}
+            data-testid="entry-item"
+            onClick={() => onOpen(entry.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onContextMenu(entry.id, e.clientX, e.clientY);
+            }}
+          >
+            {src ? (
+              <img className="thumb__img" src={src} alt="review preview" />
+            ) : (
+              <span className="thumb__img" aria-hidden="true" />
+            )}
+            <span className="thumb__meta">
+              <span className="thumb__date">{formatDate(entry)}</span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

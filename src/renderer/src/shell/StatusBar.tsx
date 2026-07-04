@@ -38,7 +38,7 @@ export function StatusBar({
       </span>
       {dirty !== undefined ? (
         <span className="foot__item foot__item--right" data-testid="dirty-state">
-          {dirty ? 'Unsaved changes' : 'All changes saved'}
+          {dirty ? 'Saving…' : 'All changes saved'}
         </span>
       ) : null}
       {showZoom ? (
