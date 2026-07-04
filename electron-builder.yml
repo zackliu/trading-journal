@@ -9,4 +9,13 @@ files:
 asarUnpack:
   - "**/node_modules/better-sqlite3/**"
 win:
-  target: dir
+  target:
+    - nsis
+    - dir
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-Setup.${ext}
+  shortcutName: TradingJournal
+  deleteAppDataOnUninstall: false

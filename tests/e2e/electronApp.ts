@@ -2,14 +2,20 @@ import { _electron as electron, type ElectronApplication, type Page } from '@pla
 import type {
   Annotation,
   AnnotationHit,
+  ArchivedResults,
+  ArchivedVocab,
   CreateEntryInput,
   Entry,
   EntrySummary,
   ResultDimension,
+  ResultDimensionView,
+  SavedView,
   Tag,
   TagGroup,
   TagGroupView,
   TagValue,
+  ViewMatch,
+  ViewQuery,
 } from '../../src/shared/domain';
 import type { IpcApi } from '../../src/shared/ipc';
 
@@ -36,6 +42,48 @@ type WindowWithApi = { api: IpcApi };
 export const store = {
   defineDimension: (page: Page, dimension: ResultDimension): Promise<void> =>
     page.evaluate((d) => (globalThis as unknown as WindowWithApi).api.defineResultDimension(d), dimension),
+
+  listResultVocabulary: (page: Page): Promise<ResultDimensionView[]> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listResultVocabulary()),
+
+  deleteResultDimension: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteResultDimension(x), id),
+
+  defineResultValue: (page: Page, dimensionId: string, value: string, label?: string): Promise<void> =>
+    page.evaluate(
+      (a) => (globalThis as unknown as WindowWithApi).api.defineResultValue(a.dimensionId, a.value, a.label),
+      { dimensionId, value, label },
+    ),
+
+  deleteResultValue: (page: Page, dimensionId: string, value: string): Promise<void> =>
+    page.evaluate(
+      (a) => (globalThis as unknown as WindowWithApi).api.deleteResultValue(a.dimensionId, a.value),
+      { dimensionId, value },
+    ),
+
+  restoreGroup: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.restoreGroup(x), id),
+
+  restoreValue: (page: Page, groupId: string, value: string): Promise<void> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.restoreValue(a.groupId, a.value), {
+      groupId,
+      value,
+    }),
+
+  listArchivedGroups: (page: Page): Promise<ArchivedVocab> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listArchivedGroups()),
+
+  restoreResultDimension: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.restoreResultDimension(x), id),
+
+  restoreResultValue: (page: Page, dimensionId: string, value: string): Promise<void> =>
+    page.evaluate(
+      (a) => (globalThis as unknown as WindowWithApi).api.restoreResultValue(a.dimensionId, a.value),
+      { dimensionId, value },
+    ),
+
+  listArchivedResults: (page: Page): Promise<ArchivedResults> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listArchivedResults()),
 
   createEntry: (page: Page, input: CreateEntryInput): Promise<Entry> =>
     page.evaluate((i) => (globalThis as unknown as WindowWithApi).api.createEntry(i), input),
@@ -145,4 +193,35 @@ export const store = {
 
   saveStampLibrary: (page: Page, canvasJson: string): Promise<void> =>
     page.evaluate((j) => (globalThis as unknown as WindowWithApi).api.saveStampLibrary(j), canvasJson),
+
+  runView: (page: Page, query: ViewQuery): Promise<ViewMatch[]> =>
+    page.evaluate((q) => (globalThis as unknown as WindowWithApi).api.runView(q), query),
+
+  queryEntriesByView: (page: Page, query: ViewQuery): Promise<EntrySummary[]> =>
+    page.evaluate((q) => (globalThis as unknown as WindowWithApi).api.queryEntriesByView(q), query),
+
+  countGroupValuesUnderView: (
+    page: Page,
+    query: ViewQuery,
+    groupId: string,
+  ): Promise<Array<{ value: string; count: number }>> =>
+    page.evaluate(
+      (a) => (globalThis as unknown as WindowWithApi).api.countGroupValuesUnderView(a.query, a.groupId),
+      { query, groupId },
+    ),
+
+  distinctResultValues: (page: Page, dimensionId: string): Promise<string[]> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.distinctResultValues(x), dimensionId),
+
+  createSavedView: (page: Page, name: string, query: ViewQuery): Promise<SavedView> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.createSavedView(a.name, a.query), { name, query }),
+
+  listSavedViews: (page: Page): Promise<SavedView[]> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listSavedViews()),
+
+  getSavedView: (page: Page, id: string): Promise<SavedView | null> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.getSavedView(x), id),
+
+  deleteSavedView: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteSavedView(x), id),
 };

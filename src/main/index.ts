@@ -5,9 +5,11 @@ import { openDatabase, type Db } from './db';
 import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
 import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, queryEntriesByTag, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
-import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned } from './store/vocabulary';
-import { listResultDimensions, upsertResultDimension } from './store/resultDimensions';
+import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, listArchivedGroups } from './store/vocabulary';
+import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
 import { getStampLibrary, saveStampLibrary } from './store/stampStore';
+import { countGroupValuesUnderView, queryEntriesByView, runViewQuery } from './store/viewQuery';
+import { createSavedView, deleteSavedView, getSavedView, listSavedViews } from './store/savedViewStore';
 import {
   annotationsSchema,
   canvasJsonSchema,
@@ -19,10 +21,14 @@ import {
   kebabSchema,
   pinnedSchema,
   resultDimensionSchema,
+  resultValueSchema,
+  resultValueTextSchema,
+  savedViewNameSchema,
   tagGroupSchema,
   tagSchema,
   tagValueSchema,
   thumbnailSchema,
+  viewQuerySchema,
 } from './store/validation';
 import { IpcChannel, type PingResult } from '../shared/ipc';
 
@@ -122,6 +128,24 @@ function registerIpc(): void {
     upsertResultDimension(requireDb(), resultDimensionSchema.parse(raw));
   });
   ipcMain.handle(IpcChannel.listResultDimensions, () => listResultDimensions(requireDb()));
+  ipcMain.handle(IpcChannel.listResultVocabulary, () => listResultVocabulary(requireDb()));
+  ipcMain.handle(IpcChannel.deleteResultDimension, (_event, id: unknown) =>
+    deleteResultDimension(requireDb(), kebabSchema.parse(id)),
+  );
+  ipcMain.handle(IpcChannel.defineResultValue, (_event, dimensionId: unknown, value: unknown, label: unknown) => {
+    const parsed = resultValueSchema.parse({ dimensionId, value, label: label === undefined ? undefined : label });
+    defineResultValue(requireDb(), parsed.dimensionId, parsed.value, parsed.label);
+  });
+  ipcMain.handle(IpcChannel.deleteResultValue, (_event, dimensionId: unknown, value: unknown) =>
+    deleteResultValue(requireDb(), kebabSchema.parse(dimensionId), resultValueTextSchema.parse(value)),
+  );
+  ipcMain.handle(IpcChannel.restoreResultDimension, (_event, id: unknown) =>
+    restoreResultDimension(requireDb(), kebabSchema.parse(id)),
+  );
+  ipcMain.handle(IpcChannel.restoreResultValue, (_event, dimensionId: unknown, value: unknown) =>
+    restoreResultValue(requireDb(), kebabSchema.parse(dimensionId), resultValueTextSchema.parse(value)),
+  );
+  ipcMain.handle(IpcChannel.listArchivedResults, () => listArchivedResults(requireDb()));
   ipcMain.handle(IpcChannel.createEntry, (_event, raw: unknown) =>
     createEntry(requireDb(), createEntryInputSchema.parse(raw)),
   );
@@ -163,6 +187,13 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.deleteValue, (_event, groupId: unknown, value: unknown) => {
     deleteValue(requireDb(), kebabSchema.parse(groupId), kebabSchema.parse(value));
   });
+  ipcMain.handle(IpcChannel.restoreGroup, (_event, id: unknown) => {
+    restoreGroup(requireDb(), kebabSchema.parse(id));
+  });
+  ipcMain.handle(IpcChannel.restoreValue, (_event, groupId: unknown, value: unknown) => {
+    restoreValue(requireDb(), kebabSchema.parse(groupId), kebabSchema.parse(value));
+  });
+  ipcMain.handle(IpcChannel.listArchivedGroups, () => listArchivedGroups(requireDb()));
   ipcMain.handle(IpcChannel.setGroupPinned, (_event, id: unknown, pinned: unknown) => {
     setGroupPinned(requireDb(), kebabSchema.parse(id), pinnedSchema.parse(pinned));
   });
@@ -172,6 +203,23 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.reorderValues, (_event, groupId: unknown, values: unknown) => {
     reorderValues(requireDb(), kebabSchema.parse(groupId), idListSchema.parse(values));
   });
+
+  ipcMain.handle(IpcChannel.runView, (_event, raw: unknown) => runViewQuery(requireDb(), viewQuerySchema.parse(raw)));
+  ipcMain.handle(IpcChannel.queryEntriesByView, (_event, raw: unknown) =>
+    queryEntriesByView(requireDb(), viewQuerySchema.parse(raw)),
+  );
+  ipcMain.handle(IpcChannel.countGroupValuesUnderView, (_event, raw: unknown, groupId: unknown) =>
+    countGroupValuesUnderView(requireDb(), viewQuerySchema.parse(raw), kebabSchema.parse(groupId)),
+  );
+  ipcMain.handle(IpcChannel.distinctResultValues, (_event, id: unknown) =>
+    distinctResultValues(requireDb(), kebabSchema.parse(id)),
+  );
+  ipcMain.handle(IpcChannel.createSavedView, (_event, name: unknown, raw: unknown) =>
+    createSavedView(requireDb(), savedViewNameSchema.parse(name), JSON.stringify(viewQuerySchema.parse(raw))),
+  );
+  ipcMain.handle(IpcChannel.listSavedViews, () => listSavedViews(requireDb()));
+  ipcMain.handle(IpcChannel.getSavedView, (_event, id: unknown) => getSavedView(requireDb(), idSchema.parse(id)));
+  ipcMain.handle(IpcChannel.deleteSavedView, (_event, id: unknown) => deleteSavedView(requireDb(), idSchema.parse(id)));
 
   ipcMain.handle(IpcChannel.getStampLibrary, () => getStampLibrary(requireDb()));
   ipcMain.handle(IpcChannel.saveStampLibrary, (_event, canvasJson: unknown) =>

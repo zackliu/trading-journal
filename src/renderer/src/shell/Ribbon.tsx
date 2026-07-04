@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { AnnotationSelection, DashStyle, DrawStyle, Tool } from '../editor/canvasController';
-import type { Tag, TagGroupView } from '../../../shared/domain';
+import type { ResultDimensionView, SavedView, Tag, TagGroupView } from '../../../shared/domain';
 import { Icon, type IconName } from './icons';
 import { QuickTag } from './QuickTag';
+import { ResultQuickPick } from './ResultQuickPick';
 
 interface RibbonProps {
   entryOpen: boolean;
@@ -31,9 +32,18 @@ interface RibbonProps {
   onToggleEntryTag: (tag: Tag, on: boolean) => void;
   onToggleAnnotationTag: (tag: Tag, on: boolean) => void;
   onOpenSettings: () => void;
+  onOpenResultSettings: () => void;
+  resultDimensions: ResultDimensionView[];
+  onSetAnnotationResult: (dimensionId: string, value: string | number | null) => void;
+  savedViews: SavedView[];
+  hasFilter: boolean;
+  filterSummary: string;
+  onEditFilter: () => void;
+  onClearFilter: () => void;
+  onLoadView: (id: string) => void;
 }
 
-const BASE_TABS = ['Home', 'Draw', 'Review', 'Browse', 'Stats'];
+const BASE_TABS = ['Home', 'Draw', 'Review', 'View', 'Stats'];
 
 const TOOLS: Array<{ id: Tool; icon: IconName; label: string }> = [
   { id: 'select', icon: 'select', label: 'Select' },
@@ -145,9 +155,17 @@ export function Ribbon(props: RibbonProps): JSX.Element {
               </button>
               <span className="rhint">paste a screenshot · Ctrl+V · or drop an image</span>
             </Group>
-            <Group label="Vocabulary">
+            <Group label="Settings">
               <button type="button" className="rtext" data-testid="ribbon-settings" onClick={props.onOpenSettings}>
-                <Icon name="tag" /> Settings
+                <Icon name="tag" /> Group &amp; tags
+              </button>
+              <button
+                type="button"
+                className="rtext"
+                data-testid="ribbon-result-settings"
+                onClick={props.onOpenResultSettings}
+              >
+                <Icon name="gauge" /> Result
               </button>
             </Group>
           </>
@@ -351,15 +369,59 @@ export function Ribbon(props: RibbonProps): JSX.Element {
           />
         ) : null}
         {active === 'Annotation' && selectedAnnotation ? (
-          <QuickTag
-            groups={props.groups}
-            selected={selectedAnnotation.tags}
-            onToggle={props.onToggleAnnotationTag}
-            onOpenSettings={props.onOpenSettings}
-          />
+          <>
+            <QuickTag
+              groups={props.groups}
+              selected={selectedAnnotation.tags}
+              onToggle={props.onToggleAnnotationTag}
+              onOpenSettings={props.onOpenSettings}
+            />
+            <div className="ribbon__vdiv" aria-hidden="true" />
+            <ResultQuickPick
+              dimensions={props.resultDimensions}
+              result={selectedAnnotation.result}
+              onSet={props.onSetAnnotationResult}
+              onOpenSettings={props.onOpenResultSettings}
+            />
+          </>
         ) : null}
-        {active === 'Browse' ? (
-          <div className="rplaceholder">Pick a group in the left rail to browse by it</div>
+        {active === 'View' ? (
+          <>
+            <Group label="Filter">
+              <button type="button" className="rtext" data-testid="view-edit" onClick={props.onEditFilter}>
+                <Icon name="tag" /> Edit filter…
+              </button>
+              <button
+                type="button"
+                className="rtext"
+                data-testid="view-clear"
+                disabled={!props.hasFilter}
+                onClick={props.onClearFilter}
+              >
+                <Icon name="trash" /> Clear
+              </button>
+              <span className="rhint" data-testid="view-summary">
+                {props.filterSummary}
+              </span>
+            </Group>
+            <Group label="Saved views">
+              <select
+                className="rselect"
+                data-testid="view-picker"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) props.onLoadView(e.target.value);
+                }}
+              >
+                <option value="">Open a view…</option>
+                {props.savedViews.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </Group>
+          </>
         ) : null}
         {active === 'Stats' ? <Placeholder text="Group × result statistics (Slice 8)" /> : null}
       </div>

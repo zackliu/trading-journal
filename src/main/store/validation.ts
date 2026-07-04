@@ -42,10 +42,39 @@ export const idListSchema = z.array(kebab);
 export const tagGroupSchema = z.object({ id: kebab, label: z.string().min(1), pinned: z.boolean() });
 export const tagValueSchema = z.object({ groupId: kebab, value: kebab, label: z.string().min(1).optional() });
 
+// Slice 7 view query: two dimensions (entry existence + annotation co-occurrence) + typed result predicates.
+const tagPredicate = z.object({ group: kebab, values: z.array(kebab).min(1) });
+const resultPredicate = z
+  .object({
+    dimension: kebab,
+    in: z.array(z.string().min(1)).min(1).optional(),
+    gte: z.number().finite().optional(),
+    lte: z.number().finite().optional(),
+  })
+  .refine(
+    (p) => p.in !== undefined || p.gte !== undefined || p.lte !== undefined,
+    'a result predicate must constrain a value',
+  );
+export const viewQuerySchema = z.object({
+  entry: z.array(tagPredicate),
+  annotation: z.array(tagPredicate),
+  results: z.array(resultPredicate),
+});
+export const savedViewNameSchema = z.string().min(1).max(200);
+
 export const resultDimensionSchema = z.object({
   id: kebab,
   label: z.string().min(1),
   type: z.enum(['string', 'number']),
+});
+
+// A result preset value is the exact outcome text ("1R", "-1R", "BE"): the sign / case are data, so it
+// is stored verbatim — unlike a tag value's kebab slug id, which would collapse "1R" and "-1R" to "1r".
+export const resultValueTextSchema = z.string().min(1).max(80);
+export const resultValueSchema = z.object({
+  dimensionId: kebab,
+  value: resultValueTextSchema,
+  label: z.string().min(1).optional(),
 });
 
 export const createEntryInputSchema = z.object({

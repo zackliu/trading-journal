@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Result, ResultDimension } from '../../../shared/domain';
+import type { Result } from '../../../shared/domain';
 import type { AnnotationSelection } from '../editor/canvasController';
 import { Icon } from './icons';
-
-const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export interface AnnotationEdits {
   result: Result;
@@ -14,9 +12,7 @@ interface Props {
   x: number;
   y: number;
   annotation: AnnotationSelection;
-  dimensions: ResultDimension[];
   linkClipboard: { entryId: string; annotationId: string } | null;
-  onDefineDimension: (dim: ResultDimension) => void;
   onCopyLinkTarget: (annotationId: string) => void;
   onJumpLink: (annotationId: string) => void;
   onSave: (edits: AnnotationEdits) => void;
@@ -24,13 +20,13 @@ interface Props {
 }
 
 /**
- * A right-click "Result & links…" popover anchored at the object. Tags live on the ribbon
- * quick-pick; this popover owns only the annotation's typed result and its cross-chart links.
- * Edits are staged in local draft state: **Save** commits them (and closes); clicking outside or
- * Escape **cancels** unsaved changes. Defining a result dimension commits immediately (global).
+ * A right-click "Links…" popover anchored at the object. Tags live on the Review/Annotation ribbon
+ * quick-pick and the trade's result on the Annotation tab; this popover owns only the annotation's
+ * cross-chart links. Edits are staged locally: Save commits (preserving the recorded result);
+ * clicking outside or Escape cancels.
  */
 export function TagPopover(props: Props): JSX.Element {
-  const { annotation, dimensions, linkClipboard } = props;
+  const { annotation, linkClipboard } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(props.onCancel);
   cancelRef.current = props.onCancel;
@@ -54,16 +50,6 @@ export function TagPopover(props: Props): JSX.Element {
   }, [props.x, props.y]);
 
   const [links, setLinks] = useState<string[]>(annotation.links);
-  const [resultDraft, setResultDraft] = useState<Record<string, string>>(() => {
-    const draft: Record<string, string> = {};
-    for (const [k, v] of Object.entries(annotation.result)) draft[k] = String(v);
-    return draft;
-  });
-
-  const [dimId, setDimId] = useState('');
-  const [dimLabel, setDimLabel] = useState('');
-  const [dimType, setDimType] = useState<'string' | 'number'>('number');
-  const [dimError, setDimError] = useState<string | null>(null);
 
   // Dismiss on outside click / Escape, deferred a tick so the opening click can't close it.
   useEffect(() => {
@@ -82,19 +68,6 @@ export function TagPopover(props: Props): JSX.Element {
     };
   }, []);
 
-  const defineDim = (): void => {
-    const id = dimId.trim();
-    const label = dimLabel.trim();
-    if (!KEBAB.test(id) || label === '') {
-      setDimError('id must be kebab-case, label required');
-      return;
-    }
-    props.onDefineDimension({ id, label, type: dimType });
-    setDimId('');
-    setDimLabel('');
-    setDimError(null);
-  };
-
   const linkToCopied = (): void => {
     if (!linkClipboard) return;
     const id = linkClipboard.annotationId;
@@ -102,20 +75,8 @@ export function TagPopover(props: Props): JSX.Element {
   };
   const removeLink = (id: string): void => setLinks(links.filter((x) => x !== id));
 
-  const save = (): void => {
-    const result: Result = {};
-    for (const dim of dimensions) {
-      const raw = (resultDraft[dim.id] ?? '').trim();
-      if (raw === '') continue;
-      if (dim.type === 'number') {
-        const n = Number(raw);
-        if (Number.isFinite(n)) result[dim.id] = n;
-      } else {
-        result[dim.id] = raw;
-      }
-    }
-    props.onSave({ result, links });
-  };
+  // Result stays as recorded (it is edited on the Annotation tab) — the popover only changes links.
+  const save = (): void => props.onSave({ result: annotation.result, links });
 
   return (
     <div
@@ -125,60 +86,6 @@ export function TagPopover(props: Props): JSX.Element {
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <section className="insp__section">
-        <h4 className="insp__heading">Result</h4>
-        {dimensions.length === 0 ? (
-          <div className="insp__muted">No result dimensions defined yet.</div>
-        ) : (
-          dimensions.map((dim) => (
-            <label className="insp__field" key={dim.id}>
-              <span className="insp__label">
-                {dim.label} <em className="insp__type">{dim.type}</em>
-              </span>
-              <input
-                className="insp__input"
-                type={dim.type === 'number' ? 'number' : 'text'}
-                data-testid={`result-${dim.id}`}
-                value={resultDraft[dim.id] ?? ''}
-                onChange={(e) => setResultDraft({ ...resultDraft, [dim.id]: e.target.value })}
-              />
-            </label>
-          ))
-        )}
-        <details className="insp__more">
-          <summary data-testid="dim-toggle">Define a result dimension</summary>
-          <div className="insp__row">
-            <input
-              className="insp__input"
-              placeholder="id (kebab)"
-              data-testid="dim-id"
-              value={dimId}
-              onChange={(e) => setDimId(e.target.value)}
-            />
-            <input
-              className="insp__input"
-              placeholder="label"
-              data-testid="dim-label"
-              value={dimLabel}
-              onChange={(e) => setDimLabel(e.target.value)}
-            />
-            <select
-              className="insp__input"
-              data-testid="dim-type"
-              value={dimType}
-              onChange={(e) => setDimType(e.target.value === 'string' ? 'string' : 'number')}
-            >
-              <option value="number">number</option>
-              <option value="string">string</option>
-            </select>
-            <button type="button" className="insp__btn" data-testid="dim-add" onClick={defineDim}>
-              Define
-            </button>
-          </div>
-          {dimError ? <div className="insp__error">{dimError}</div> : null}
-        </details>
-      </section>
-
       <section className="insp__section">
         <h4 className="insp__heading">Links</h4>
         <div className="insp__row">

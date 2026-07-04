@@ -31,10 +31,10 @@ async function drag(page: Page, box: Box, x1: number, y1: number, x2: number, y2
   await page.mouse.up();
 }
 
-/** Right-click an annotation (screen coords) and open its "Result & links…" popover. */
+/** Right-click an annotation (screen coords) and open its "Links…" popover. */
 async function openPopover(page: Page, screenX: number, screenY: number): Promise<void> {
   await page.mouse.click(screenX, screenY, { button: 'right' });
-  await page.getByTestId('menu-result-links').click();
+  await page.getByTestId('menu-links').click();
   await expect(page.getByTestId('tag-popover')).toBeVisible();
 }
 
@@ -45,7 +45,7 @@ async function firstEntryId(page: Page): Promise<string> {
   return id;
 }
 
-test('an annotation carries an optional typed result used only for statistics', async () => {
+test('a trade records a typed result via presets on the Annotation tab', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);
 
@@ -54,37 +54,40 @@ test('an annotation carries an optional typed result used only for statistics', 
   const box = await canvasBox(page);
   const entryId = await firstEntryId(page);
 
+  // Draw a trade annotation (auto-selected → the Annotation tab appears).
   await page.getByTestId('tool-rect').click();
   await drag(page, box, 40, 40, 240, 160);
-  await openPopover(page, box.x + 140, box.y + 100);
 
-  // Predefine two result dimensions from the popover (one number, one string).
-  await page.getByTestId('dim-toggle').click();
-  await page.getByTestId('dim-id').fill('r-multiple');
-  await page.getByTestId('dim-label').fill('R Multiple');
-  await page.getByTestId('dim-type').selectOption('number');
-  await page.getByTestId('dim-add').click();
-  await page.getByTestId('dim-id').fill('pullback-depth');
-  await page.getByTestId('dim-label').fill('Pullback Depth');
-  await page.getByTestId('dim-type').selectOption('string');
-  await page.getByTestId('dim-add').click();
+  // Define result types in Settings: a number (R Multiple) and a choices dimension (Outcome: win / loss).
+  await page.getByTestId('tab-home').click();
+  await page.getByTestId('ribbon-result-settings').click();
+  await expect(page.getByTestId('result-settings')).toBeVisible();
+  await page.getByTestId('result-dim-name').fill('R Multiple');
+  await page.getByTestId('result-dim-type').selectOption('number');
+  await page.getByTestId('result-add-dim').click();
+  await page.getByTestId('result-dim-name').fill('Outcome');
+  await page.getByTestId('result-dim-type').selectOption('string');
+  await page.getByTestId('result-add-dim').click();
+  await page.getByTestId('result-add-value-outcome').fill('win');
+  await page.getByTestId('result-add-value-outcome').press('Enter');
+  await page.getByTestId('result-add-value-outcome').fill('loss');
+  await page.getByTestId('result-add-value-outcome').press('Enter');
+  await page.getByTestId('result-settings-close').click();
 
-  // Set the typed result, then Save commits it.
-  await page.getByTestId('result-r-multiple').fill('1');
-  await page.getByTestId('result-pullback-depth').fill('deep');
-  await page.getByTestId('popover-save').click();
+  // Record the result on the Annotation tab: type the number, click the Outcome preset chip.
+  await page.getByTestId('tab-annotation').click();
+  await page.getByTestId('rquick-num-r-multiple').fill('2');
+  await page.getByTestId('rquick-outcome-win').click();
 
   await expect
     .poll(async () => (await store.getEntry(page, entryId))?.annotations[0]?.result ?? null)
-    .toEqual({ 'r-multiple': 1, 'pullback-depth': 'deep' });
+    .toEqual({ 'r-multiple': 2, outcome: 'win' });
 
-  // Reopen, clear one dimension, Save — the other value survives.
-  await openPopover(page, box.x + 140, box.y + 100);
-  await page.getByTestId('result-r-multiple').fill('');
-  await page.getByTestId('popover-save').click();
+  // Clicking the active Outcome preset clears just that dimension; the number survives.
+  await page.getByTestId('rquick-outcome-win').click();
   await expect
     .poll(async () => (await store.getEntry(page, entryId))?.annotations[0]?.result ?? null)
-    .toEqual({ 'pullback-depth': 'deep' });
+    .toEqual({ 'r-multiple': 2 });
 
   await app.close();
 });

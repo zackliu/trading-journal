@@ -197,7 +197,11 @@ export function listEntries(db: Db): EntrySummary[] {
 
 /** Entry summaries (newest-first) whose entry OR any annotation carries the tag — the browse read. */
 export function queryEntriesByTag(db: Db, tag: Tag): EntrySummary[] {
-  const ids = entryIdsForTag(db, tag.group, tag.value);
+  return summariesForIds(db, entryIdsForTag(db, tag.group, tag.value));
+}
+
+/** Newest-first summaries for a set of entry ids (deduped by the caller) — shared by the tag + view reads. */
+export function summariesForIds(db: Db, ids: string[]): EntrySummary[] {
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => '?').join(',');
   const rows = db

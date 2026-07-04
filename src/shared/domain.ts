@@ -34,6 +34,55 @@ export interface ResultDimension {
   type: ResultValueType;
 }
 
+/** A preset value for a (string) result dimension — the value half plus an optional display label. */
+export interface ResultDimensionValue {
+  value: string;
+  label?: string;
+  /** How many distinct reviews have recorded this value (for the delete-confirm + Settings). */
+  count: number;
+}
+
+/** A result dimension plus its declared preset values (empty for number dimensions) — the registry read. */
+export interface ResultDimensionView {
+  id: string;
+  label: string;
+  type: ResultValueType;
+  /** How many distinct reviews have recorded any value for this dimension. */
+  count: number;
+  values: ResultDimensionValue[];
+}
+
+/** Archived (soft-deleted) classification vocabulary, shown in the Settings “Archived” section. */
+export interface ArchivedGroup {
+  id: string;
+  label: string;
+}
+export interface ArchivedValue {
+  groupId: string;
+  groupLabel: string;
+  value: string;
+  label?: string;
+}
+export interface ArchivedVocab {
+  groups: ArchivedGroup[];
+  values: ArchivedValue[];
+}
+
+/** Archived (soft-deleted) result vocabulary, shown in the Result Settings “Archived” section. */
+export interface ArchivedResultDimension {
+  id: string;
+  label: string;
+}
+export interface ArchivedResultValue {
+  dimensionId: string;
+  dimensionLabel: string;
+  value: string;
+}
+export interface ArchivedResults {
+  dimensions: ArchivedResultDimension[];
+  values: ArchivedResultValue[];
+}
+
 /** An annotation's optional outcome: dimensionId -> typed value. Stats-only. */
 export type Result = Record<string, string | number>;
 
@@ -77,6 +126,42 @@ export interface SavedView {
   name: string;
   queryJson: string;
   createdAt: number;
+}
+
+/** One classification predicate: the group must carry at least one of these values (OR within). */
+export interface TagPredicate {
+  group: string;
+  values: string[];
+}
+
+/**
+ * A typed result predicate (annotation dimension only). A string dimension matches by membership in
+ * `in`; a number dimension matches the range `gte`..`lte` (either bound optional). `result` is never
+ * a tag — this only lets a view filter on a measured outcome.
+ */
+export interface ResultPredicate {
+  dimension: string;
+  in?: string[];
+  gte?: number;
+  lte?: number;
+}
+
+/**
+ * A two-dimension view query. `entry` predicates must EXIST at the Entry level; the `annotation` tag
+ * predicates + `results` predicates must ALL co-occur on a SINGLE annotation. An Entry matches when
+ * the entry dimension holds AND at least one annotation satisfies the whole annotation dimension.
+ * Level is chosen here (per view), never declared on the group.
+ */
+export interface ViewQuery {
+  entry: TagPredicate[];
+  annotation: TagPredicate[];
+  results: ResultPredicate[];
+}
+
+/** A matched Entry plus the annotation ids that satisfied the annotation dimension (drives highlight). */
+export interface ViewMatch {
+  entryId: string;
+  annotationIds: string[];
 }
 
 /**

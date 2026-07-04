@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
-import type { EntrySummary, ResultDimension, Tag, TagGroup, TagGroupView, TagValue } from '../../shared/domain';
+import type {
+  ArchivedResults,
+  ArchivedVocab,
+  EntrySummary,
+  Result,
+  ResultDimension,
+  ResultDimensionView,
+  SavedView,
+  Tag,
+  TagGroup,
+  TagGroupView,
+  TagValue,
+  ViewQuery,
+} from '../../shared/domain';
 import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
 import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
@@ -8,6 +21,8 @@ import { GroupBrowser, type Bucket } from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
+import { ResultSettingsDialog } from './shell/ResultSettingsDialog';
+import { ViewBuilder } from './shell/ViewBuilder';
 import { StatusBar } from './shell/StatusBar';
 import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
 
@@ -25,6 +40,43 @@ const DEFAULT_STYLE: DrawStyle = {
   fontSize: 22,
 };
 const EMPTY_EDITOR: EditorState = { canUndo: false, canRedo: false, dirty: false, hasSelection: false };
+const EMPTY_QUERY: ViewQuery = { entry: [], annotation: [], results: [] };
+
+interface FilterMatch {
+  ids: Set<string>;
+  annById: Map<string, string[]>;
+}
+type FlashReq = { tag: Tag } | { annIds: string[] };
+
+function isEmptyQuery(q: ViewQuery): boolean {
+  return q.entry.length === 0 && q.annotation.length === 0 && q.results.length === 0;
+}
+
+/** Describe the active filter as compact chips for the rail + a one-line ribbon summary. */
+function filterChips(
+  q: ViewQuery,
+  groups: TagGroupView[],
+  dimensions: ResultDimension[],
+): Array<{ text: string; scope: 'entry' | 'annotation' }> {
+  const gl = (id: string): string => groups.find((g) => g.id === id)?.label ?? id;
+  const vl = (gid: string, v: string): string =>
+    groups.find((g) => g.id === gid)?.values.find((x) => x.value === v)?.label ?? v;
+  const dl = (id: string): string => dimensions.find((d) => d.id === id)?.label ?? id;
+  const chips: Array<{ text: string; scope: 'entry' | 'annotation' }> = [];
+  for (const p of q.entry)
+    chips.push({ scope: 'entry', text: `${gl(p.group)}: ${p.values.map((v) => vl(p.group, v)).join(' / ')}` });
+  for (const p of q.annotation)
+    chips.push({ scope: 'annotation', text: `${gl(p.group)}: ${p.values.map((v) => vl(p.group, v)).join(' / ')}` });
+  for (const r of q.results) {
+    let val = '';
+    if (r.in && r.in.length > 0) val = r.in.join(' / ');
+    else if (r.gte !== undefined && r.lte !== undefined) val = `${r.gte}–${r.lte}`;
+    else if (r.gte !== undefined) val = `≥ ${r.gte}`;
+    else if (r.lte !== undefined) val = `≤ ${r.lte}`;
+    chips.push({ scope: 'annotation', text: `${dl(r.dimension)}: ${val}` });
+  }
+  return chips;
+}
 
 async function fileToBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
@@ -51,10 +103,16 @@ export function App(): JSX.Element {
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [pivot, setPivot] = useState('all');
   const [groups, setGroups] = useState<TagGroupView[]>([]);
+  const [archivedGroups, setArchivedGroups] = useState<ArchivedVocab>({ groups: [], values: [] });
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [entryUserTags, setEntryUserTags] = useState<Tag[]>([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [filter, setFilter] = useState<ViewQuery>(EMPTY_QUERY);
+  const [filterMatch, setFilterMatch] = useState<FilterMatch | null>(null);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [showViewBuilder, setShowViewBuilder] = useState(false);
+  const [showResultSettings, setShowResultSettings] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +125,8 @@ export function App(): JSX.Element {
   const [editorState, setEditorState] = useState<EditorState>(EMPTY_EDITOR);
   const [zoom, setZoom] = useState<{ percent: number; fitMode: boolean }>({ percent: 100, fitMode: true });
   const [popover, setPopover] = useState<{ annotation: AnnotationSelection; x: number; y: number } | null>(null);
-  const [dimensions, setDimensions] = useState<ResultDimension[]>([]);
+  const [dimensions, setDimensions] = useState<ResultDimensionView[]>([]);
+  const [archivedResults, setArchivedResults] = useState<ArchivedResults>({ dimensions: [], values: [] });
   const [linkClipboard, setLinkClipboard] = useState<{ entryId: string; annotationId: string } | null>(null);
   const [stampLocked, setStampLocked] = useState(true);
   const controllerRef = useRef<CanvasController | null>(null);
@@ -81,7 +140,8 @@ export function App(): JSX.Element {
   const switchToRef = useRef<(id: string | null) => Promise<void>>(async () => {});
   const wheelNavAtRef = useRef(0);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
-  const pendingFlashRef = useRef<Tag | null>(null);
+  const pendingFlashRef = useRef<FlashReq | null>(null);
+  const filterMatchRef = useRef<FilterMatch | null>(null);
   const entryUserTagsRef = useRef(entryUserTags);
   const selectedAnnotationRef = useRef(selectedAnnotation);
 
@@ -90,17 +150,26 @@ export function App(): JSX.Element {
   }, []);
 
   const refreshDimensions = useCallback(async () => {
-    setDimensions(await window.api.listResultDimensions());
+    const [dims, arch] = await Promise.all([window.api.listResultVocabulary(), window.api.listArchivedResults()]);
+    setDimensions(dims);
+    setArchivedResults(arch);
   }, []);
 
   const refreshGroups = useCallback(async () => {
-    setGroups(await window.api.listGroups());
+    const [gs, arch] = await Promise.all([window.api.listGroups(), window.api.listArchivedGroups()]);
+    setGroups(gs);
+    setArchivedGroups(arch);
+  }, []);
+
+  const refreshSavedViews = useCallback(async () => {
+    setSavedViews(await window.api.listSavedViews());
   }, []);
 
   useEffect(() => {
     void refresh();
     void refreshDimensions();
     void refreshGroups();
+    void refreshSavedViews();
     window.api
       .ping()
       .then((res: PingResult) => {
@@ -113,7 +182,7 @@ export function App(): JSX.Element {
         setStoreHealth('error');
         setStoreLabel('unavailable');
       });
-  }, [refresh, refreshDimensions, refreshGroups]);
+  }, [refresh, refreshDimensions, refreshGroups, refreshSavedViews]);
 
   const entryOpen = selectedEntryId !== null;
 
@@ -170,6 +239,30 @@ export function App(): JSX.Element {
   useEffect(() => {
     selectedAnnotationRef.current = selectedAnnotation;
   }, [selectedAnnotation]);
+  useEffect(() => {
+    filterMatchRef.current = filterMatch;
+  }, [filterMatch]);
+
+  // Recompute which reviews (and their co-occurring annotations) the active filter matches. Re-runs
+  // when the filter or the library changes, so a newly added matching review appears automatically.
+  useEffect(() => {
+    if (isEmptyQuery(filter)) {
+      setFilterMatch(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const matches = await window.api.runView(filter);
+      if (cancelled) return;
+      setFilterMatch({
+        ids: new Set(matches.map((m) => m.entryId)),
+        annById: new Map(matches.map((m) => [m.entryId, m.annotationIds])),
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filter, entries]);
 
   // Load the open review's user (non-`date`) entry tags for the Review tab quick-pick.
   useEffect(() => {
@@ -186,11 +279,13 @@ export function App(): JSX.Element {
     };
   }, [selectedEntryId]);
 
-  // Compute the left-rail browse buckets for the active pivot: year-month for “All reviews”, else the
-  // selected group's value buckets (entry ∪ annotation, via the store — never scanning canvas JSON).
+  // Compute the left-rail browse buckets over the filter's survivors: year-month for “All reviews”,
+  // else the selected group's value buckets. Counts are context-sensitive (within the active filter);
+  // membership is read from the store (entry ∪ annotation) — never scanning canvas JSON.
   useEffect(() => {
+    const survivors = filterMatch ? entries.filter((e) => filterMatch.ids.has(e.id)) : entries;
     if (pivot === 'all') {
-      setBuckets(yearMonthBuckets(entries));
+      setBuckets(yearMonthBuckets(survivors));
       return;
     }
     const group = groups.find((g) => g.id === pivot);
@@ -202,11 +297,13 @@ export function App(): JSX.Element {
     void (async () => {
       const next: Bucket[] = [];
       for (const value of group.values) {
-        const hits = await window.api.queryEntriesByTag({ group: group.id, value: value.value });
+        const ids = new Set(
+          (await window.api.queryEntriesByTag({ group: group.id, value: value.value })).map((e) => e.id),
+        );
         next.push({
           key: value.value,
           label: value.label ?? value.value,
-          entries: hits,
+          entries: survivors.filter((e) => ids.has(e.id)),
           tag: { group: group.id, value: value.value },
         });
       }
@@ -215,7 +312,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [pivot, groups, entries]);
+  }, [pivot, groups, entries, filterMatch]);
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
@@ -407,9 +504,9 @@ export function App(): JSX.Element {
         const px = r.x;
         const py = r.y;
         items.push({
-          label: 'Result & links…',
-          icon: 'tag',
-          testId: 'menu-result-links',
+          label: 'Links…',
+          icon: 'browse',
+          testId: 'menu-links',
           onClick: () => setPopover({ annotation: ann, x: px, y: py }),
         });
       }
@@ -507,6 +604,54 @@ export function App(): JSX.Element {
     },
     [refreshDimensions],
   );
+  const onDeleteDimension = useCallback(
+    async (id: string) => {
+      await window.api.deleteResultDimension(id);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  const onDefineResultValue = useCallback(
+    async (dimensionId: string, value: string, label: string) => {
+      await window.api.defineResultValue(dimensionId, value, label);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  const onDeleteResultValue = useCallback(
+    async (dimensionId: string, value: string) => {
+      await window.api.deleteResultValue(dimensionId, value);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  const onRestoreResultDimension = useCallback(
+    async (id: string) => {
+      await window.api.restoreResultDimension(id);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  const onRestoreResultValue = useCallback(
+    async (dimensionId: string, value: string) => {
+      await window.api.restoreResultValue(dimensionId, value);
+      await refreshDimensions();
+    },
+    [refreshDimensions],
+  );
+  // Set (or clear) one result dimension on the selected annotation — the Annotation tab's one-tap editor.
+  const onSetAnnotationResult = useCallback(
+    (dimensionId: string, value: string | number | null) => {
+      const sel = selectedAnnotationRef.current;
+      if (!sel) return;
+      const next: Result = { ...sel.result };
+      if (value === null) delete next[dimensionId];
+      else next[dimensionId] = value;
+      controllerRef.current?.applyAnnotationEdits(sel.id, sel.tags, next, sel.links);
+      void saveNow().then(() => void refresh());
+    },
+    [saveNow, refresh],
+  );
   const onCopyLinkTarget = useCallback(
     (annotationId: string) => {
       if (selectedEntryId) setLinkClipboard({ entryId: selectedEntryId, annotationId });
@@ -600,15 +745,26 @@ export function App(): JSX.Element {
     await window.api.reorderValues(groupId, values);
     await refreshGroups();
   }, [refreshGroups]);
+  const onRestoreGroup = useCallback(async (id: string) => {
+    await window.api.restoreGroup(id);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onRestoreValue = useCallback(async (groupId: string, value: string) => {
+    await window.api.restoreValue(groupId, value);
+    await refreshGroups();
+  }, [refreshGroups]);
 
   // Open a review from a browse bucket; a value bucket's tag briefly highlights its carriers.
   const openFromBrowse = useCallback(
     async (id: string, tag?: Tag) => {
+      const annIds = filterMatchRef.current?.annById.get(id);
+      const req: FlashReq | null = annIds && annIds.length > 0 ? { annIds } : tag ? { tag } : null;
       if (id === selectedEntryIdRef.current) {
-        if (tag) controllerRef.current?.flashTagHighlight(tag);
+        if (req && 'annIds' in req) controllerRef.current?.flashAnnotationHighlight(req.annIds);
+        else if (req) controllerRef.current?.flashTagHighlight(req.tag);
         return;
       }
-      pendingFlashRef.current = tag ?? null;
+      pendingFlashRef.current = req;
       await switchTo(id);
     },
     [switchTo],
@@ -620,12 +776,40 @@ export function App(): JSX.Element {
       controllerRef.current?.selectAnnotationById(pending);
       pendingSelectRef.current = null;
     }
-    const flashTag = pendingFlashRef.current;
-    if (flashTag) {
-      controllerRef.current?.flashTagHighlight(flashTag);
+    const req = pendingFlashRef.current;
+    if (req) {
+      if ('annIds' in req) controllerRef.current?.flashAnnotationHighlight(req.annIds);
+      else controllerRef.current?.flashTagHighlight(req.tag);
       pendingFlashRef.current = null;
     }
   }, []);
+
+  const onSaveView = useCallback(
+    async (name: string, q: ViewQuery) => {
+      await window.api.createSavedView(name, q);
+      await refreshSavedViews();
+    },
+    [refreshSavedViews],
+  );
+  const onDeleteView = useCallback(
+    async (id: string) => {
+      await window.api.deleteSavedView(id);
+      await refreshSavedViews();
+    },
+    [refreshSavedViews],
+  );
+  const onLoadView = useCallback(
+    (id: string) => {
+      const v = savedViews.find((x) => x.id === id);
+      if (v) setFilter(JSON.parse(v.queryJson) as ViewQuery);
+    },
+    [savedViews],
+  );
+
+  const chips = filterChips(filter, groups, dimensions);
+  const filterSummary =
+    chips.length === 0 ? 'No filter' : `${chips.length} condition${chips.length > 1 ? 's' : ''} active`;
+  const hasFilter = !isEmptyQuery(filter);
 
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
@@ -658,6 +842,15 @@ export function App(): JSX.Element {
         onToggleEntryTag={onToggleEntryTag}
         onToggleAnnotationTag={onToggleAnnotationTag}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenResultSettings={() => setShowResultSettings(true)}
+        resultDimensions={dimensions}
+        onSetAnnotationResult={onSetAnnotationResult}
+        savedViews={savedViews}
+        hasFilter={hasFilter}
+        filterSummary={filterSummary}
+        onEditFilter={() => setShowViewBuilder(true)}
+        onClearFilter={() => setFilter(EMPTY_QUERY)}
+        onLoadView={onLoadView}
       />
 
       <div className="body">
@@ -669,6 +862,8 @@ export function App(): JSX.Element {
             buckets={buckets}
             totalCount={entries.length}
             selectedEntryId={selectedEntryId}
+            filterChips={chips}
+            onClearFilter={() => setFilter(EMPTY_QUERY)}
             onOpen={(id, tag) => void openFromBrowse(id, tag)}
             onContextMenu={openThumbMenu}
           />
@@ -729,9 +924,7 @@ export function App(): JSX.Element {
           x={popover.x}
           y={popover.y}
           annotation={popover.annotation}
-          dimensions={dimensions}
           linkClipboard={linkClipboard}
-          onDefineDimension={onDefineDimension}
           onCopyLinkTarget={onCopyLinkTarget}
           onJumpLink={jumpToAnnotation}
           onSave={onPopoverSave}
@@ -741,6 +934,7 @@ export function App(): JSX.Element {
       {showSettings ? (
         <SettingsDialog
           groups={groups}
+          archived={archivedGroups}
           onDefineGroup={(g) => void onDefineGroup(g)}
           onDeleteGroup={(id) => void onDeleteGroup(id)}
           onDefineValue={(v) => void onDefineValueCfg(v)}
@@ -748,7 +942,38 @@ export function App(): JSX.Element {
           onSetPinned={(id, p) => void onSetPinned(id, p)}
           onReorderGroups={(ids) => void onReorderGroups(ids)}
           onReorderValues={(gid, vals) => void onReorderValues(gid, vals)}
+          onRestoreGroup={(id) => void onRestoreGroup(id)}
+          onRestoreValue={(gid, val) => void onRestoreValue(gid, val)}
           onClose={() => setShowSettings(false)}
+        />
+      ) : null}
+      {showViewBuilder ? (
+        <ViewBuilder
+          groups={groups}
+          dimensions={dimensions}
+          initial={filter}
+          savedViews={savedViews}
+          onApply={(q) => {
+            setFilter(q);
+            setShowViewBuilder(false);
+          }}
+          onSaveView={(name, q) => void onSaveView(name, q)}
+          onDeleteView={(id) => void onDeleteView(id)}
+          onClose={() => setShowViewBuilder(false)}
+          fetchResultValues={(id) => window.api.distinctResultValues(id)}
+        />
+      ) : null}
+      {showResultSettings ? (
+        <ResultSettingsDialog
+          dimensions={dimensions}
+          archived={archivedResults}
+          onDefineDimension={(d) => void onDefineDimension(d)}
+          onDeleteDimension={(id) => void onDeleteDimension(id)}
+          onDefineValue={(dimId, value, label) => void onDefineResultValue(dimId, value, label)}
+          onDeleteValue={(dimId, value) => void onDeleteResultValue(dimId, value)}
+          onRestoreDimension={(id) => void onRestoreResultDimension(id)}
+          onRestoreValue={(dimId, value) => void onRestoreResultValue(dimId, value)}
+          onClose={() => setShowResultSettings(false)}
         />
       ) : null}
     </div>

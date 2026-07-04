@@ -13,6 +13,14 @@ const api: IpcApi = {
   deleteEntry: (id) => ipcRenderer.invoke(IpcChannel.deleteEntry, id),
   defineResultDimension: (dimension) => ipcRenderer.invoke(IpcChannel.defineResultDimension, dimension),
   listResultDimensions: () => ipcRenderer.invoke(IpcChannel.listResultDimensions),
+  listResultVocabulary: () => ipcRenderer.invoke(IpcChannel.listResultVocabulary),
+  deleteResultDimension: (id) => ipcRenderer.invoke(IpcChannel.deleteResultDimension, id),
+  defineResultValue: (dimensionId, value, label) =>
+    ipcRenderer.invoke(IpcChannel.defineResultValue, dimensionId, value, label),
+  deleteResultValue: (dimensionId, value) => ipcRenderer.invoke(IpcChannel.deleteResultValue, dimensionId, value),
+  restoreResultDimension: (id) => ipcRenderer.invoke(IpcChannel.restoreResultDimension, id),
+  restoreResultValue: (dimensionId, value) => ipcRenderer.invoke(IpcChannel.restoreResultValue, dimensionId, value),
+  listArchivedResults: () => ipcRenderer.invoke(IpcChannel.listArchivedResults),
   createEntry: (input) => ipcRenderer.invoke(IpcChannel.createEntry, input),
   updateEntry: (id, input) => ipcRenderer.invoke(IpcChannel.updateEntry, id, input),
   updateEntryCanvas: (id, canvasJson, annotations, thumbnail) =>
@@ -27,11 +35,23 @@ const api: IpcApi = {
   deleteGroup: (id) => ipcRenderer.invoke(IpcChannel.deleteGroup, id),
   defineValue: (value) => ipcRenderer.invoke(IpcChannel.defineValue, value),
   deleteValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.deleteValue, groupId, value),
+  restoreGroup: (id) => ipcRenderer.invoke(IpcChannel.restoreGroup, id),
+  restoreValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.restoreValue, groupId, value),
+  listArchivedGroups: () => ipcRenderer.invoke(IpcChannel.listArchivedGroups),
   setGroupPinned: (id, pinned) => ipcRenderer.invoke(IpcChannel.setGroupPinned, id, pinned),
   reorderGroups: (ids) => ipcRenderer.invoke(IpcChannel.reorderGroups, ids),
   reorderValues: (groupId, values) => ipcRenderer.invoke(IpcChannel.reorderValues, groupId, values),
   getStampLibrary: () => ipcRenderer.invoke(IpcChannel.getStampLibrary),
   saveStampLibrary: (canvasJson) => ipcRenderer.invoke(IpcChannel.saveStampLibrary, canvasJson),
+  runView: (query) => ipcRenderer.invoke(IpcChannel.runView, query),
+  queryEntriesByView: (query) => ipcRenderer.invoke(IpcChannel.queryEntriesByView, query),
+  countGroupValuesUnderView: (query, groupId) =>
+    ipcRenderer.invoke(IpcChannel.countGroupValuesUnderView, query, groupId),
+  distinctResultValues: (dimensionId) => ipcRenderer.invoke(IpcChannel.distinctResultValues, dimensionId),
+  createSavedView: (name, query) => ipcRenderer.invoke(IpcChannel.createSavedView, name, query),
+  listSavedViews: () => ipcRenderer.invoke(IpcChannel.listSavedViews),
+  getSavedView: (id) => ipcRenderer.invoke(IpcChannel.getSavedView, id),
+  deleteSavedView: (id) => ipcRenderer.invoke(IpcChannel.deleteSavedView, id),
 };
 
 contextBridge.exposeInMainWorld('api', api);

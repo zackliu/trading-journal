@@ -18,7 +18,8 @@
     "postinstall": "electron-builder install-app-deps",
     "test:e2e": "playwright test",
     "test": "npm run build && playwright test",
-    "package": "electron-vite build && electron-builder --dir"
+    "package": "electron-vite build && electron-builder --dir",
+    "dist": "electron-vite build && electron-builder --win nsis"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

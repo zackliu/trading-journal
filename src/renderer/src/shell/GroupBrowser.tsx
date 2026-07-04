@@ -22,6 +22,9 @@ interface Props {
   /** Open a review; `tag` (present for value buckets) briefly highlights its carriers. */
   onOpen: (entryId: string, tag?: Tag) => void;
   onContextMenu: (id: string, x: number, y: number) => void;
+  /** The active view filter as compact chips (empty = no filter); each is scoped entry vs annotation. */
+  filterChips: Array<{ text: string; scope: 'entry' | 'annotation' }>;
+  onClearFilter: () => void;
 }
 
 /**
@@ -65,6 +68,25 @@ export function GroupBrowser(props: Props): JSX.Element {
 
   return (
     <div className="browse" data-testid="group-browser">
+      {props.filterChips.length > 0 ? (
+        <div className="filterbar" data-testid="filter-bar">
+          <div className="filterbar__chips">
+            {props.filterChips.map((c) => (
+              <span key={`${c.scope}-${c.text}`} className={`fchip fchip--${c.scope}`} title={`${c.scope} condition`}>
+                {c.text}
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="filterbar__clear"
+            data-testid="filter-clear"
+            onClick={props.onClearFilter}
+          >
+            Clear
+          </button>
+        </div>
+      ) : null}
       <div className="pivot">
         <button
           type="button"

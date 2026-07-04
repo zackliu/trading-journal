@@ -23,7 +23,9 @@ export type IconName =
   | 'browse'
   | 'view'
   | 'grip'
-  | 'stats';
+  | 'stats'
+  | 'gauge'
+  | 'pencil';
 
 const PATHS: Record<IconName, string> = {
   select: 'M5 3l5 15 2.2-6.3L18.5 9.5z',
@@ -51,6 +53,8 @@ const PATHS: Record<IconName, string> = {
   view: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 9a3 3 0 100 6 3 3 0 000-6z',
   grip: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
   stats: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+  gauge: 'M4 15a8 8 0 0116 0M12 15l3.5-3.5',
+  pencil: 'M5 19h3L18 9l-3-3L5 16zM14 6l3 3',
 };
 
 export function Icon({ name }: { name: IconName }): JSX.Element {

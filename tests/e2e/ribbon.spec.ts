@@ -23,7 +23,7 @@ test('the ribbon band is the same height on every tab', async () => {
 
   const band = page.getByTestId('ribbon').locator('.ribbon__band');
   const heights: number[] = [];
-  for (const tab of ['home', 'draw', 'review', 'browse', 'stats']) {
+  for (const tab of ['home', 'draw', 'review', 'view', 'stats']) {
     await page.getByTestId(`tab-${tab}`).click();
     const box = await band.boundingBox();
     heights.push(box?.height ?? -1);

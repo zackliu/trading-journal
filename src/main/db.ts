@@ -16,6 +16,8 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   migration003EntryThumbnail,
   migration004TagRegistry,
   migration005TagSort,
+  migration006ResultValues,
+  migration007SoftDelete,
 ];
 
 /** Open (creating if missing) the SQLite database and run pending migrations. */
@@ -154,5 +156,32 @@ function migration005TagSort(db: Db): void {
   db.exec(`
     ALTER TABLE tag_groups ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE tag_values ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
+// Preset values for a result dimension — mirrors tag_values. A string dimension can declare its
+// allowed outcomes (e.g. win / loss / breakeven), which the Annotation tab then offers as one-tap
+// chips; number dimensions declare none (their value is typed). Deleting a dimension cascades these.
+function migration006ResultValues(db: Db): void {
+  db.exec(`
+    CREATE TABLE result_dimension_values (
+      dimension_id TEXT NOT NULL REFERENCES result_dimensions(id) ON DELETE CASCADE,
+      value        TEXT NOT NULL,
+      label        TEXT,
+      sort         INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (dimension_id, value)
+    );
+  `);
+}
+
+// Soft delete: deleting a group / value / result dimension / result value archives it (hidden from the
+// quick-pick, pivot, and active Settings) instead of destroying it, so an accidental delete of a
+// heavily-used vocabulary entry is recoverable (Restore) and never orphans its recorded usage.
+function migration007SoftDelete(db: Db): void {
+  db.exec(`
+    ALTER TABLE tag_groups ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tag_values ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE result_dimensions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE result_dimension_values ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
   `);
 }

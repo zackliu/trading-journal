@@ -414,7 +414,7 @@ Expect：
 
 - **`Review` 页**（原 `Tags` 页改名）：展示并编辑**这张复盘的 entry 级 tag**——每个 pinned group 是一个**固定宽度块**（组间一条很淡的细线分隔，谁也不推谁），块内值 chip 按 Settings 顺序、**已选(applied)浮到最前**始终可见；**长名 chip 省略号 + 悬停显示全名**；**放不下的收成 `+N` 展开钮**，点开一个**每组一个、限高可滚、带搜索框**的伸缩板（覆盖画布、点外/Esc 收），列全部值(applied 置顶)、点即打 tag。**只选不建**（新建走 Settings）。
 - **`Annotation` 上下文页**：**仅在选中某个 annotation 时出现**（Office contextual tab：出现即可点击，但**不抢占 `Draw`**——保持连续绘图；点该页即可给选中标注打 tag；取消选中即隐藏、Ribbon 回 `Draw`），承载**与 `Review` 页完全相同**的一套 group & tag 快捷选择，作用于选中的 annotation。二者共用同一个快捷标签控件（target = 整张 Entry 或选中 annotation），不写两套。
-- **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；Slice 4 的右键浮窗**收敛为「Result & links…」**（result 与 link 是标注独有、较低频，留在贴着对象的浮窗），避免同一 tag 两处可改。
+- **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；`Annotation` 页在 tag 快捷选择之外还**并排承载结果登记**（result 维度：`choices` 预设值单选 chips / `number` 数字框，与 tag 一个手感）；Slice 4 的右键浮窗**收敛为「Links…」**（跨图链接是标注独有、较低频，留在贴着对象的浮窗）。**结果类型（result 维度与其预设值）在 Home 的「Settings → Result」注册表里声明**，镜像 group & tags 的注册表设计（migration 006 加 `result_dimension_values`）。
 
 **D. entry-tag 写入路径**
 
@@ -521,66 +521,100 @@ Expect：
 
 - **Slice 6（Entry Tags、词表注册表与 Browse）已落地。** 词表注册表成为一等公民：migration `004`（`user_version` → 4）建 `tag_groups` / `tag_values`；`store/vocabulary.ts` 做 group/value 声明 / 删除 / pin 与 `listGroups`（每值带 distinct-entry 计数）；`store/tagQuery.ts` 的 `entryIdsForTag` / `countEntriesForTag` 以 `entry_tags UNION annotation_tags` 求**并集去重**。`date` 不进注册表，仍是结构性系统 entry tag。
 - **写入 / 读取契约**：`entryStore.setEntryTags`（替换用户级 tag、**过滤并保留结构性 `date`**）、`entryStore.queryEntriesByTag`（并集去重的 `EntrySummary`）。新增 typed IPC `store:set-entry-tags` / `store:query-entries-by-tag` / `vocab:*`（list/define/delete group、define/delete value、set-pinned），全部 zod 边界校验、preload 白名单桥接，renderer 不开 SQLite。id 校验放宽为 unicode slug（`^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$`），配合 renderer 的 `shell/slug.ts`——用户键入 `TRD` / `上升日`，存为 slug id + 原文 label。
-- **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（出现但**不抢占 `Draw`**），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.15s 柔和琥珀光晕**（device-space 分层 shadow-blur，短促 bloom 后向外溢出淡出；无硬描边、不覆盖对象内部；派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Result & links**。
+- **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（出现但**不抢占 `Draw`**），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.15s 柔和琥珀光晕**（device-space 分层 shadow-blur，短促 bloom 后向外溢出淡出；无硬描边、不覆盖对象内部；派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Links**（result 编辑迁至 `Annotation` 页）。
 - **Ribbon 双行版式**：band 固定高（92px）、**跨所有页等高**（`tests/e2e/ribbon.spec.ts` 断言）；`Draw` 页刻意排成**双行簇**（Tools 4+3、Stroke / Fill&opacity / Text / Edit / Arrange 皆两行；组名作**底部小标题**），为将来扩容留量；`Review` / `Annotation` 的 QuickTag 直接渲染，chip **两行环绕**、组名同样落到**底部小标题**，长 chip 不半截裁切；`BrowserWindow` 设 `minWidth: 980`（band 内容 966px），保证缩窗时 `Draw` **永不横向溢出**。
 - **测试**：`tests/e2e/vocab-browse.spec.ts`（11 项：注册表声明 / 删除、entry tag 存查且 `date` 不被覆盖、并集去重 + 计数 + 零复制、`Review` 一键打 tag → 进桶、Settings 自然文本 → slug id + label、**排序落库并跨重启持久**、**溢出组收成搜索伸缩板并从全表打 tag**、`Annotation` 上下文页选中即现 + 打 tag、All reviews 年-月且 `date` 不入 Settings/pivot、折叠 / 全部展开、高亮派生不落库）；`annotation-popover` 与 `stamp-library` 改为经 Ribbon 快捷控件打 tag（浮窗只留 result / link）；`tests/e2e/ribbon.spec.ts` 断言 band 跨五页**等高不变量**。**47/47 e2e 全绿**。
 - 已验证命令：`npm run typecheck`、`npm run lint`、`npm run build`、`npm test`（Playwright + Electron，47 项）。
 
-## 10. Slice 7：Tag & Query Engine
+## 10. Slice 7：View 查询引擎（两维度筛选 + 保存的视图）
 
-目标：用户能按任意标签组合检索 Entry / annotation，计数自动更新，并把查询保存成一个「视图」（section = 保存的查询，不是文件夹）。
+目标：用户能用**两个维度**（Entry 存在 + Annotation 共现）组合分类 tag 与 typed `result` 谓词，把复盘库筛成一个结果集；计数随当前筛选实时重算；并把一次组合**存成命名的「视图」**，下次点开自动重跑（section = 活的查询，不是文件夹）。
 
-**用户动作流程与直觉逻辑**：用户心里想的是「给我看所有 A 且 B 的复盘」，把几个 tag 一勾、结果实时出来；他还能把这组条件**存成一个“栏目”**，下次点开自动重跑——直觉上「栏目是一个**活的搜索**，不是我往里搬东西的文件夹」，所以永远不会有“复制一张图进某栏目”这回事。
+**用户动作流程与直觉逻辑**：用户想「给我看**牛市日**里、我做**成功**的 **H2 多头**」。他在视图构建器里把条件按语义分放两栏——描述**整页 / 当天**的（`day-structure:bull`）放 **Entry 维度**（整页存在即可）；描述**某一笔交易**的（`setup:h2`、`side:long`、`outcome:win`）放 **Annotation 维度**，后者必须**落在同一枚标注上**（「就是那一笔 H2 多头赢了」，而不是这页里分别有 H2、有个 win）。结果实时收窄、桶上的数随之变；满意就「存成一个栏目」。直觉上「level 不是 tag 生来带的，而是我做这个视图时决定把它当整页条件还是某一笔条件」，「同一笔」的精确性天然由 Annotation 维度的共现表达。
 
 实现范围：
 
-- 布尔 tag 查询（AND / OR / NOT），跨 entry 级与 annotation 级标签，读 Annotation-Tag Index + entry tags。
-- 每个 tag 的实时计数。
-- SavedView：把一个查询存为命名视图并可重跑。
+- **两维度 `ViewQuery`（typed + zod 校验，不是 DSL 字符串）**：
+  - `entry: TagPredicate[]` —— **Entry 维度**：每个谓词要求该 Entry 在 `entry_tags` 里带该 group 的某个值（组内 OR、组间 AND）；整页存在即可。
+  - `annotation: TagPredicate[]` + `results: ResultPredicate[]` —— **Annotation 维度**：必须存在**同一枚 annotation**，同时满足所有 annotation tag 谓词（组内 OR）与所有 result 谓词（string：等值 / 多选；number：区间 `gte` / `lte`），全部 AND 在这枚标注上。
+  - `TagPredicate = { group, values[] }`；`ResultPredicate = { dimension, in?[]（string 维度）, gte? / lte?（number 维度）}`。
+  - **命中** = Entry 维度在该 Entry 成立 **且** 存在一枚满足整个 Annotation 维度的 annotation；某一维度为空则不约束。
+  - **level 是 view 里的选择，不是 group 的固有属性**：同一 group 可在不同视图落到 `entry` 或 `annotation` 维度。注册表与 Slice 6 打标签 UI **不变**（两级本就分别落 `entry_tags` / `annotation_tags`）。
+- **`result` 进筛选（仅 Annotation 维度）**：typed 谓词；`result` 仍**不是 tag、不做 pivot 分桶维度、不驱动高亮**。
+- **只读索引**：`entry_tags` / `annotation_tags` / `annotation_results`（均带 `entry_id`），不扫 canvas JSON。引擎返回**命中 Entry + 每个 Entry 里共现命中的 annotation id**（供高亮）。既有 `saved_views` 表已在 migration 001，**本 slice 不需要 migration**。
+- **B1：筛选收窄 + pivot 分组 + 随上下文计数**：`ViewQuery` 收窄人群；现有 pivot 仍把幸存者按一个分类 group 分桶；每个值的计数按当前筛选**重算**（context-sensitive）。`date` 不作筛选面，仍是结构性 pivot。
+- **SavedView**：把 `ViewQuery` 存进 `saved_views`（`query_json`），命名 / 列出 / 删除 / 可重跑；**只存查询、不物理装载 artifact**；出现在 pivot 选择器里与「All reviews」并列。
+- **高亮**：打开某视图命中的复盘时，发光的是**共现命中的那枚 annotation**（按 id 派生，不落库 / 不入 history / 不进缩略图）。
 
-Scenario-based test：`scenario: a boolean tag query returns the matching annotations`
-
-Given：
-
-- 若干 annotation 带不同 group 下的 tag，若干 Entry 带不同 entry tag。
-
-Expect：
-
-- 查询 `<group-a>:<A> AND <group-b>:<X>` 返回同时满足的 annotation 及其母 Entry。
-- 结果来自索引查询，不扫描 canvas JSON。
-
-Scenario-based test：`scenario: an entry tagged under two tags appears in both queries with no second stored row`
+Scenario-based test：`scenario: a view matches entry-existence AND single-annotation co-occurrence`
 
 Given：
 
-- 一个 Entry 含两个 annotation，分别带 `<group>:<A>` 与 `<group>:<B>`。
+- 复盘 E1 的 entry 带 `day-structure:bull`，其标注 A1 带 `setup:h2` + `side:long` + result `outcome:win`，标注 A2 带 `setup:h2` 但 `outcome:loss`；复盘 E2 的 `setup:h2` 与 `outcome:win` 分处两枚不同标注。
 
 Expect：
 
-- 查询 `<group>:<A>` 与查询 `<group>:<B>` 都返回该 Entry（经各自 annotation）。
-- `entries` 表里该 Entry 只有一行，没有为第二个分类复制。
+- `entry=[{day-structure:[bull]}], annotation=[{setup:[h2]},{side:[long]}], results=[{outcome in [win]}]` 只命中 E1，且返回的共现命中 annotation 是 A1。
+- E2（H2 与 win 分处两枚标注）**不命中**。结果来自索引查询，不扫 canvas JSON。
+
+Scenario-based test：`scenario: the same group filters at either dimension depending on the view`
+
+Given：
+
+- 复盘 E1 在 entry 级带 `setup:h2`；复盘 E2 只在某标注上带 `setup:h2`。
+
+Expect：
+
+- 把 `setup:h2` 放 **Entry 维度** → 命中 E1、不命中 E2；放 **Annotation 维度** → 命中 E2、不命中 E1（level 由视图决定，非 group 声明）。
+
+Scenario-based test：`scenario: a number result predicate narrows within the co-occurring annotation`
+
+Given：
+
+- 复盘各含一枚 `setup:h2` 标注，result `r-multiple` 分别为 `2.0` 与 `-1.0`。
+
+Expect：
+
+- `annotation=[{setup:[h2]}], results=[{dimension: r-multiple, gte: 1}]` 只命中带 `2.0` 那枚所在的复盘。
+
+Scenario-based test：`scenario: one entry appears under multiple views with no second stored row`
+
+Given：
+
+- 一张复盘的两枚标注分别带 `setup:h2` 与 `setup:wedge`。
+
+Expect：
+
+- `annotation=[{setup:[h2]}]` 与 `annotation=[{setup:[wedge]}]` 都命中这张复盘；`entries` 表仍只有一行，无为第二个视图复制。
+
+Scenario-based test：`scenario: context-sensitive counts recompute under the active filter`
+
+Given：
+
+- 5 张复盘，其中 3 张 entry 带 `day-structure:bull`，各复盘的 `setup` 分布不一。
+
+Expect：
+
+- 无筛选时 pivot-by-`setup` 的桶计数是全局；加 Entry 维度 `day-structure:bull` 后，桶计数只数这 3 张牛市日复盘里的 `setup` 分布。
 
 Scenario-based test：`scenario: a saved view re-runs its query, it is not a folder`
 
 Given：
 
-- 用户把 `<group-a>:<A> AND <group-b>:<X>` 存为一个 SavedView。
-- 之后新增一个满足该条件的 annotation。
+- 把某 `ViewQuery` 存成 SavedView；之后新增一张满足该查询的复盘 / 标注。
 
 Expect：
 
-- 打开该 SavedView 时重跑查询，新命中自动出现。
-- SavedView 不物理装载 artifact，只保存查询。
+- 重跑该 SavedView，新命中自动出现；`saved_views` 只存 `query_json`，不装载 artifact；删除该 SavedView 不影响任何复盘。
 
-Scenario-based test：`scenario: tag counts update as tags change`
+**实现状态（迭代 1 后端 + 迭代 2 UI 均已落地，55/55 e2e 全绿）**
 
-Given：
-
-- 某 `<group>:<A>` 当前有 N 个命中。
-
-Expect：
-
-- 新增/移除一个带 `<group>:<A>` 的 annotation 后，该 tag 计数变为 N±1，无需手工维护。
+- **两维度查询引擎已落地。** `shared/domain.ts` 新增 `TagPredicate` / `ResultPredicate` / `ViewQuery`（`entry` / `annotation` / `results` 三数组）/ `ViewMatch`；`store/viewQuery.ts` 的 `runViewQuery`（**Entry 维度** `entry_tags` 存在求交 ∩ **Annotation 维度**共现：所有 tag/result 谓词 `EXISTS` 在同一 `annotations.id` 上）返回命中 Entry + 共现命中 annotation id；`queryEntriesByView`（复用 `entryStore.summariesForIds`，newest-first）；`countGroupValuesUnderView`（随上下文计数：命中集 ∩ 每个注册表值的并集命中）。**level 由查询决定**（谓词放哪个数组），不在 group 上声明；注册表与 Slice 6 打标签 UI 未改。
+- **SavedView 已落地。** `store/savedViewStore.ts`（create / list / get / delete，复用既有 `saved_views` 表，**无需 migration**）；`createSavedView` 存 `JSON.stringify(ViewQuery)`；重跑 = 解析 `queryJson` 再 `runViewQuery`，新命中自动出现；删除只删查询、不动任何复盘。
+- **契约边界**：`store/validation.ts` 的 `viewQuerySchema`（`in` 为原文 string、`gte` / `lte` 有限 number、至少约束一项）+ `savedViewNameSchema`；typed IPC `view:run` / `view:query-entries` / `view:count-group-values` / `view:create-saved` / `view:list-saved` / `view:get-saved` / `view:delete-saved`，全 zod 边界校验、preload 白名单桥接。
+- **测试**：`tests/e2e/view-query.spec.ts`（6 项：entry 存在 ∧ 单标注共现、同一 group 两维度择一、number result 阈值收窄、一 Entry 多视图零复制、随上下文计数、SavedView 活查询非文件夹）。**53/53 e2e 全绿**。
+- 已验证命令：`npm run typecheck`、`npm run lint`、`npm run build`、`npm test`（Playwright + Electron，55 项）。
+- **迭代 2（UI）已落地。** Ribbon `Browse` 页更名为 **`View`**（等高 band 不变；`Filter` 组「Edit filter… / Clear / 摘要」+ `Saved views` 组快速加载下拉）；`shell/ViewBuilder.tsx` 两栏模态构建器——**Entry conditions（whole review）**与 **Annotation conditions（one trade）**，各 group 下值作 `vchip` 开关，Annotation 栏含 **result 谓词**（string→`distinctResultValues` 取到的值 chips、number→min/max），底部**保存 / 加载 / 删除**视图；左栏 `GroupBrowser` 顶部 **filter bar**（entry chip 绿、annotation chip 蓝、Clear），buckets 在**筛选幸存者**上分桶、计数随上下文；打开命中复盘时 `canvasController.flashAnnotationHighlight(ids)` 高亮**共现命中的那枚标注**（沿用琥珀光晕、派生不落库）。新增只读 IPC `view:result-values`。测试 `tests/e2e/view-ui.spec.ts`（2 项：构建器收窄 + 双色 chip、SavedView 列入选择器且重跑）+ `ribbon.spec.ts` 更名断言。
 
 ## 11. Slice 8：Statistics
 
@@ -636,9 +670,9 @@ Expect：
 实现范围：
 
 - 在 Slice 6 的 Settings 之上，为每个 group / 值 / result 维度显示**使用计数**（读 Annotation-Tag Index / entry tags / annotation_results），供演化操作参考。
-- 改显示名：稳定 id 不变时只改 label；改 id 则批量迁移全部引用。
+- 改显示名：**只改显示 label，稳定 id 不变**（就地铅笔编辑）；改 id（含批量迁移全部引用）留待后续。
 - 合并两个 tag 值（把 A 的引用并入 B 并删除 A）；合并 / 删除 result 维度同理。
-- 删除 group / tag 值 / result 维度：显式（带确认）级联从 `entry_tags` / `annotation_tags` / `annotation_results` 移除引用,不留悬挂引用。
+- 删除 group / tag 值 / result 维度 = **软删除（归档）**：对**有使用**的项二次确认后置 `archived=1`（隐藏出快捷选择 / pivot / 活跃 Settings），引用（`entry_tags` / `annotation_tags` / `annotation_results`）与计数**不动**、可从 Archived 恢复；未使用的项直接归档。**不做**破坏性级联移除引用。
 - 全部经 store API,索引、计数、统计随之一致。
 
 Scenario-based test：`scenario: renaming a tag value updates every reference and its query`
@@ -669,7 +703,18 @@ Given：
 
 Expect：
 
-- 删除后 `annotation_results` 无该维度行,统计不再列出它,其它维度不受影响。
+- 软删除（归档）后该维度不在活跃词表 / 统计中列出，但 `annotation_results` 行**保留**（可 Restore 复原），其它维度不受影响。
+
+**实现状态（重命名 + 软删除 + 二次确认已落地；合并 / 改 id 迁移未做。63/63 e2e 全绿）**
+
+- migration `007`（`user_version` → 7）给 `tag_groups` / `tag_values` / `result_dimensions` / `result_dimension_values` 各加 `archived INTEGER NOT NULL DEFAULT 0` 列。
+- **重命名 = 只改显示 label，稳定 id 不变**：`EditableName`（铅笔 → 就地输入，Enter/失焦提交、Esc 取消）复用 `defineGroup` / `defineValue` / `defineResultDimension` 的 upsert（同 id + 新 label）。因 `ON CONFLICT DO UPDATE … archived = 0`，「声明」同时**复活**同 id 的归档项（Add 重新输入即恢复）。result **值**逐字存储、其本身即 label，故不提供重命名。
+- **删除 = 软删除（归档）**：`deleteGroup` / `deleteValue` / `deleteResultDimension` / `deleteResultValue` 改为 `UPDATE archived = 1`；`listGroups` / `listResultVocabulary` 过滤 `archived = 0`；`restore*` 置回 0；`listArchivedGroups` / `listArchivedResults` 列出归档项。引用与计数完全不动——归档纯粹是词表层。
+- **对有使用的项二次确认**：Settings 内删除按钮在 `count > 0` 时弹 `ConfirmDialog`（"N reviews use this…"，可 Cancel / Archive），未使用项直接软删；两个 Settings 底部有可折叠 **Archived** 区，每项带 Restore。
+- **使用计数**：`listGroups` 每值 distinct-entry 计数（Slice 6 已有）；result 现每维度 + 每值 distinct-entry 计数（`countEntriesForDimension` / `countEntriesForResultValue`，读 `annotation_results`），`ResultDimensionView` / `ResultDimensionValue` 带 `count`。
+- 新增 domain 契约：`ArchivedVocab` / `ArchivedResults`（+ 其元素类型）；IPC 增 `vocab:restore-group` / `vocab:restore-value` / `vocab:list-archived` / `result:restore-dimension` / `result:restore-value` / `result:list-archived`。
+- **未做（留本 slice 续做）**：改 id 的批量引用迁移、合并两个 tag 值 / result 维度。
+- 验证命令：`npm run typecheck && npm run lint && npm run build && npx playwright test`。测试：重写 `result-vocab.spec.ts` 的删除断言为软删 / 归档 / 恢复 / 重命名保 id+用量；新增 `vocab-manage.spec.ts` 3 个 UI 测试（重命名只改 label 保 id、未使用值静默归档 + 恢复、有使用值二次确认 + 归档 + 恢复且引用不动）。
 
 ## 13. Slice 10：编辑与生命周期（post-MVP）
 

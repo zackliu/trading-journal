@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { TagGroup, TagGroupView, TagValue } from '../../../shared/domain';
+import type { ArchivedVocab, TagGroup, TagGroupView, TagValue } from '../../../shared/domain';
+import { ConfirmDialog } from './ConfirmDialog';
+import { EditableName } from './EditableName';
 import { Icon } from './icons';
 import { slugify } from './slug';
 import { SortableList, type DragHandle } from './SortableList';
 
 interface Props {
   groups: TagGroupView[];
+  archived: ArchivedVocab;
   onDefineGroup: (group: TagGroup) => void;
   onDeleteGroup: (id: string) => void;
   onDefineValue: (value: TagValue) => void;
@@ -13,21 +16,46 @@ interface Props {
   onSetPinned: (id: string, pinned: boolean) => void;
   onReorderGroups: (ids: string[]) => void;
   onReorderValues: (groupId: string, values: string[]) => void;
+  onRestoreGroup: (id: string) => void;
+  onRestoreValue: (groupId: string, value: string) => void;
   onClose: () => void;
 }
 
+type PendingDelete =
+  | { kind: 'group'; groupId: string; label: string; count: number }
+  | { kind: 'value'; groupId: string; value: string; label: string; count: number };
+
 /**
- * The independent Settings window (Home → Settings): declare / delete classification groups and
- * their values, and pin groups to the ribbon quick-pick. This is the vocabulary registry's editor —
- * groups and values exist here independently of any review using them. `date` is structural and
- * never appears here. Rename / merge (with reference migration) is a later slice.
+ * The independent Settings window (Home → Settings): declare classification groups and their values,
+ * rename their display labels in place (the stable id never changes), pin groups to the ribbon
+ * quick-pick, and archive entries. This is the vocabulary registry's editor — groups and values exist
+ * here independently of any review using them. Deleting an entry that reviews still use is a
+ * recoverable archive (confirmed first, then listed under Archived); `date` is structural and never
+ * appears here.
  */
 export function SettingsDialog(props: Props): JSX.Element {
-  const { groups } = props;
+  const { groups, archived } = props;
   const [groupName, setGroupName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingDelete | null>(null);
   const closeRef = useRef(props.onClose);
   closeRef.current = props.onClose;
+
+  const requestDeleteGroup = (group: TagGroupView): void => {
+    const count = group.values.reduce((n, v) => n + v.count, 0);
+    if (count > 0) setPending({ kind: 'group', groupId: group.id, label: group.label, count });
+    else props.onDeleteGroup(group.id);
+  };
+  const requestDeleteValue = (groupId: string, value: string, label: string, count: number): void => {
+    if (count > 0) setPending({ kind: 'value', groupId, value, label, count });
+    else props.onDeleteValue(groupId, value);
+  };
+  const confirmDelete = (): void => {
+    if (!pending) return;
+    if (pending.kind === 'group') props.onDeleteGroup(pending.groupId);
+    else props.onDeleteValue(pending.groupId, pending.value);
+    setPending(null);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -87,16 +115,100 @@ export function SettingsDialog(props: Props): JSX.Element {
               items={groups}
               getKey={(g) => g.id}
               onReorder={props.onReorderGroups}
-              renderItem={(group, handle) => <GroupRow group={group} handle={handle} {...props} />}
+              renderItem={(group, handle) => (
+                <GroupRow
+                  group={group}
+                  handle={handle}
+                  requestDeleteGroup={requestDeleteGroup}
+                  requestDeleteValue={requestDeleteValue}
+                  {...props}
+                />
+              )}
             />
           )}
         </div>
+
+        <ArchivedSection archived={archived} onRestoreGroup={props.onRestoreGroup} onRestoreValue={props.onRestoreValue} />
+
+        {pending ? (
+          <ConfirmDialog
+            title={pending.kind === 'group' ? 'Archive group?' : 'Archive value?'}
+            message={`“${pending.label}” is used by ${pending.count} review${
+              pending.count === 1 ? '' : 's'
+            }. It will be hidden from the ribbon but kept, and you can restore it from Archived below.`}
+            confirmLabel="Archive"
+            onConfirm={confirmDelete}
+            onCancel={() => setPending(null)}
+          />
+        ) : null}
       </div>
     </div>
   );
 }
 
-function GroupRow(props: Props & { group: TagGroupView; handle: DragHandle }): JSX.Element {
+function ArchivedSection({
+  archived,
+  onRestoreGroup,
+  onRestoreValue,
+}: {
+  archived: ArchivedVocab;
+  onRestoreGroup: (id: string) => void;
+  onRestoreValue: (groupId: string, value: string) => void;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const total = archived.groups.length + archived.values.length;
+  if (total === 0) return null;
+
+  return (
+    <div className={`archived${open ? ' is-open' : ''}`} data-testid="settings-archived">
+      <button type="button" className="archived__toggle" data-testid="settings-archived-toggle" onClick={() => setOpen((v) => !v)}>
+        <Icon name={open ? 'view' : 'browse'} />
+        Archived ({total})
+      </button>
+      {open ? (
+        <div className="archived__list">
+          {archived.groups.map((g) => (
+            <div className="archived__row" key={`g:${g.id}`} data-testid={`settings-archived-group-${g.id}`}>
+              <span className="archived__kind">group</span>
+              <span className="archived__name">{g.label}</span>
+              <button
+                type="button"
+                className="archived__restore"
+                data-testid={`settings-restore-group-${g.id}`}
+                onClick={() => onRestoreGroup(g.id)}
+              >
+                Restore
+              </button>
+            </div>
+          ))}
+          {archived.values.map((v) => (
+            <div className="archived__row" key={`v:${v.groupId}:${v.value}`} data-testid={`settings-archived-value-${v.groupId}-${v.value}`}>
+              <span className="archived__kind">{v.groupLabel}</span>
+              <span className="archived__name">{v.label ?? v.value}</span>
+              <button
+                type="button"
+                className="archived__restore"
+                data-testid={`settings-restore-value-${v.groupId}-${v.value}`}
+                onClick={() => onRestoreValue(v.groupId, v.value)}
+              >
+                Restore
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GroupRow(
+  props: Props & {
+    group: TagGroupView;
+    handle: DragHandle;
+    requestDeleteGroup: (group: TagGroupView) => void;
+    requestDeleteValue: (groupId: string, value: string, label: string, count: number) => void;
+  },
+): JSX.Element {
   const { group, handle } = props;
   const [value, setValue] = useState('');
   const [error, setError] = useState(false);
@@ -125,7 +237,11 @@ function GroupRow(props: Props & { group: TagGroupView; handle: DragHandle }): J
         >
           <Icon name="grip" />
         </button>
-        <span className="sgroup__name">{group.label}</span>
+        <EditableName
+          value={group.label}
+          testId={`settings-group-name-${group.id}`}
+          onSave={(label) => props.onDefineGroup({ id: group.id, label, pinned: group.pinned })}
+        />
         <span className="sgroup__id">{group.id}</span>
         <label className="sgroup__pin" title="Show as quick-pick on the Review / Annotation tabs">
           <input
@@ -141,7 +257,7 @@ function GroupRow(props: Props & { group: TagGroupView; handle: DragHandle }): J
           className="sgroup__del"
           data-testid={`settings-del-group-${group.id}`}
           title="Delete group"
-          onClick={() => props.onDeleteGroup(group.id)}
+          onClick={() => props.requestDeleteGroup(group)}
         >
           <Icon name="trash" />
         </button>
@@ -157,14 +273,18 @@ function GroupRow(props: Props & { group: TagGroupView; handle: DragHandle }): J
                 <button type="button" className="grip grip--sm" aria-label="Drag to reorder value" {...vhandle}>
                   <Icon name="grip" />
                 </button>
-                <span className="svalue__name">{v.label ?? v.value}</span>
+                <EditableName
+                  value={v.label ?? v.value}
+                  testId={`settings-value-name-${group.id}-${v.value}`}
+                  onSave={(label) => props.onDefineValue({ groupId: group.id, value: v.value, label })}
+                />
                 <span className="svalue__count">{v.count}</span>
                 <button
                   type="button"
                   className="svalue__x"
                   aria-label={`delete ${v.value}`}
                   data-testid={`settings-del-value-${group.id}-${v.value}`}
-                  onClick={() => props.onDeleteValue(group.id, v.value)}
+                  onClick={() => props.requestDeleteValue(group.id, v.value, v.label ?? v.value, v.count)}
                 >
                   ×
                 </button>

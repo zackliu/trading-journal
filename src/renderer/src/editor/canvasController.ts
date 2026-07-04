@@ -1239,22 +1239,36 @@ export class CanvasController {
   }
 
   /**
-   * Briefly halo the annotations carrying `tag` (~1.5s fade) when a review is opened from a browse
-   * bucket. Pure render transform: computed from the active tag + live annotation bounds, drawn on
-   * the page in `after:render`, never an object / never persisted. No viewport change, no dimming.
+   * Briefly halo the annotations carrying `tag` when a review is opened from a value bucket. Pure
+   * render transform: computed from the active tag + live bounds, drawn in `after:render`, never an
+   * object / never persisted. No viewport change, no dimming.
    */
   flashTagHighlight(tag: Tag): void {
-    const bounds = this.canvas
-      .getObjects()
-      .filter((o) => {
-        const a = tjMeta(o);
-        if (typeof a.tjId !== 'string' || this.regionOf(o) === 'strip') return false;
-        return (a.tjTags ?? []).some((t) => t.group === tag.group && t.value === tag.value);
-      })
-      .map((o) => {
-        o.setCoords();
-        return o.getBoundingRect();
-      });
+    this.flashObjects(
+      this.taggableObjects().filter((o) =>
+        (tjMeta(o).tjTags ?? []).some((t) => t.group === tag.group && t.value === tag.value),
+      ),
+    );
+  }
+
+  /** Briefly halo specific annotations by id — the View-match highlight (the co-occurring trade). */
+  flashAnnotationHighlight(ids: string[]): void {
+    if (ids.length === 0) return;
+    const want = new Set(ids);
+    this.flashObjects(this.taggableObjects().filter((o) => want.has(tjMeta(o).tjId as string)));
+  }
+
+  /** Page annotations only (carry a tjId, not a strip stamp) — the highlight candidates. */
+  private taggableObjects(): FabricObject[] {
+    return this.canvas.getObjects().filter((o) => typeof tjMeta(o).tjId === 'string' && this.regionOf(o) !== 'strip');
+  }
+
+  /** Start the transient halo over these objects' live bounds (derived, never persisted). */
+  private flashObjects(objs: FabricObject[]): void {
+    const bounds = objs.map((o) => {
+      o.setCoords();
+      return o.getBoundingRect();
+    });
     if (bounds.length === 0) return;
     this.flash = { bounds, start: performance.now() };
     cancelAnimationFrame(this.flashRAF);
