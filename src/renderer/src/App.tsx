@@ -55,6 +55,9 @@ export function App(): JSX.Element {
   const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
   const selectedEntryIdRef = useRef(selectedEntryId);
+  const entriesRef = useRef(entries);
+  const switchToRef = useRef<(id: string | null) => Promise<void>>(async () => {});
+  const wheelNavAtRef = useRef(0);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -128,9 +131,13 @@ export function App(): JSX.Element {
   useEffect(() => {
     selectedEntryIdRef.current = selectedEntryId;
   }, [selectedEntryId]);
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
+      if (nextId === selectedEntryIdRef.current) return; // already open — re-selecting is a no-op
       if (editorState.dirty) await saveNow();
       controllerRef.current = null;
       setSelectedEntryId(nextId);
@@ -141,6 +148,22 @@ export function App(): JSX.Element {
     },
     [editorState.dirty, saveNow, refresh],
   );
+  useEffect(() => {
+    switchToRef.current = switchTo;
+  }, [switchTo]);
+
+  // Wheel past a stage edge steps through the rail: down = next (further down the list), up = previous.
+  const onWheelNavigate = useCallback((dir: 1 | -1): void => {
+    const now = Date.now();
+    if (now - wheelNavAtRef.current < 450) return; // one step per scroll gesture
+    const list = entriesRef.current;
+    const idx = list.findIndex((e) => e.id === selectedEntryIdRef.current);
+    if (idx < 0) return;
+    const target = idx + dir;
+    if (target < 0 || target >= list.length) return; // at the ends, stay put
+    wheelNavAtRef.current = now;
+    void switchToRef.current(list[target].id);
+  }, []);
 
   const createNew = useCallback(async () => {
     setBusy(true);
@@ -154,6 +177,18 @@ export function App(): JSX.Element {
       setBusy(false);
     }
   }, [switchTo]);
+
+  // Ctrl/Cmd+N creates a new blank review.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        void createNew();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [createNew]);
 
   // Paste/drop an image: add it as a movable object on the open review, or capture a new one.
   const addImage = useCallback(
@@ -491,6 +526,7 @@ export function App(): JSX.Element {
               entryId={selectedEntryId}
               onReady={onReady}
               onLoaded={onEditorLoaded}
+              onWheelNavigate={onWheelNavigate}
             />
           ) : (
             <div className="empty-state" data-testid="empty-state">
