@@ -154,9 +154,9 @@ Expect：
 **A. 主界面外壳（App Shell，一次把布局立好；除已接行为的部分外多为占位）**
 
 - **单一 Office 式 Ribbon（无模式切换、无返回）**：顶部常驻一条 Ribbon（品牌 + 标签页 `Home / Draw / Tags / Browse / Stats`，每页内是带标题的分组命令），底部一条状态条（健康点 + dirty 标记 + zoom 控件）。命令按上下文启用 / 禁用：无复盘打开时 `Draw` 工具与删除置灰，无选中对象时删除所选 / 排列置灰，画布未脏时 Save 置灰；打开复盘自动切到 `Draw` 页。
-- **三区主体，无 Daily / 编辑器两态切换**：左栏（group→tag 导航 + 复盘缩略图廊）｜中间（打开复盘时是 Canvas 编辑器，否则「开始复盘」空状态）｜右栏 Stamp 库（本 slice 为占位，Slice 5 接入）。同一外壳常驻，打开复盘即在中间渲染画布，不再有「进编辑器 / 返回」两态。
+- **主体左栏 + 中间画布，无 Daily / 编辑器两态切换**：左栏（group→tag 导航 + 复盘缩略图廊）｜中间（打开复盘时是 Canvas 编辑器，否则「开始复盘」空状态）。同一外壳常驻，打开复盘即在中间渲染画布，不再有「进编辑器 / 返回」两态。**Stamp 印章条不是独立右栏——自 Slice 5 起它并入中间这张画布**（复盘页右侧、一条细分隔线、共享同一缩放，见 §8）。
 - **本 slice 已接行为的部分**：`Home`（新建 / 删除复盘）、`Draw`（全部画布工具 / 样式 / 排列 / 保存，见 B）、左栏复盘缩略图廊 + 右键「删除复盘」、状态栏 zoom 控件。
-- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：右栏 = **Stamp 库**（可复用组件，Slice 5）、`Tags` 页 = entry 级 tag 与 `date`（Slice 6；词表 / 维度管理 Slice 10 后续也在此页）、左栏 group→tag 两层导航的**浏览行为**与 `Browse` 页（Slice 8）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 9）。标注的 tag / result 编辑不再用常驻面板，而是 Slice 4 的**右键浮窗**。
+- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页 = entry 级 tag 与 `date`（Slice 6；词表 / 维度管理 Slice 10 后续也在此页）、左栏 group→tag 两层导航的**浏览行为**与 `Browse` 页（Slice 8）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 9）。标注的 tag / result 编辑不再用常驻面板，而是 Slice 4 的**右键浮窗**。
 - 这些占位是**非功能骨架**（图标、按钮、空面板、区域标题），真正行为在各自 slice 接入，不在本 slice 实现。
 
 **B. Canvas 标注层（本 slice 真正实现的能力）**
@@ -314,19 +314,20 @@ Expect：
 
 ## 8. Slice 5：Stamp 库（可复用绘图调色板）
 
-目标：右栏是一个**全局共享的 Stamp 库**——一块自由布局的小画布，装用户自己攒的可复用绘图印章。用户把画布上画好的标记存成 stamp，以后从右栏一拖即在复盘上落一份**连 tag 一起带来**的副本，省去「重复画 + 重复打标签」。stamp 只含绘图、不含截图。
+目标：Stamp 库是主复盘画布**同一张画布上**的一条**印章条（strip）**——复盘页在左、一条**很窄的分隔线**、右边是装用户可复用绘图印章的印章条；页与条**都是白色、共享同一缩放**。用户把画好的标记存成 stamp，以后从印章条一拖即在复盘页上落一份**连 tag 一起带来**的副本，省去「重复画 + 重复打标签」。因为页与条同处一张画布、同一缩放，拖入 / 拖出**尺寸一致、拖动连续不消失**。stamp 只含绘图、不含截图。
 
-**用户动作流程与直觉逻辑**：用户画了个满意的标记（比如一个红框配“DT”），想以后复用——他 **Ctrl+C / Ctrl+V** 复制出一个孪生体（原件留在这张复盘里），解开右栏顶部的**布局锁**，把孪生体拖进右栏，它就成了一枚印章。以后任何复盘里，他从右栏把印章往画布一拖：跟着光标的是**半透明的影子**，一落到画布就**变成实体**的一份副本，**连当初的 tag 一起带过来**，而右栏里的印章原样不动。直觉上「右栏是我的调色板，我从里面取用、取多少它都在」「往外拖是复制、（解锁后）往里拖是收纳」——所以往外绝不能把印章抠走，往里则是把我特意做好的那一份存进去。
+**用户动作流程与直觉逻辑**：用户画了个满意的标记（比如一个红框配“DT”），想以后复用——他解开顶部的**调色板锁**，把它拖过那条分隔线进印章条，它就地**变成一枚 stamp**。以后任何复盘里（默认锁定），他在印章上按下往复盘页一拖：跟着光标滑过分隔线的是**一份半透明的副本**（**印章原件在条里纹丝不动**）、**尺寸不变**，一松手落到复盘页就**变成实体**、**连当初的 tag 一起带过来**。直觉上「复盘页和调色板是连在一起的一整张纸，我在同一张纸上平移取用」「**锁定**时往外拖是复制（半透明副本落地成实体、原件不动）；**解锁**时整块画布如一体，在页与条之间**自由移动**——把 stamp 拖到页就是把它**移出调色板**（不是复制）、把绘图拖进条就是收纳。」
 
 实现范围：
 
-- **Stamp 库 = 一份全局 canvas 文档**（自由布局，每个 stamp 是带 `tjTags` 的绘图对象；**只含绘图、不含截图**），复用现有画布 / 标注序列化；**全局共享、跨复盘**，独立于任何 Entry，存一份（新的 **Stamp store** 边界）。
-- **布局锁（默认锁定）**：库顶部一个锁。锁定态只能从库往外拖副本；解锁态才能 ① 在库内自由挪动布局、② 从主画布把绘图拖入库。
-- **拖出＝复制到画布**：从 stamp 拖向主画布，跟随光标的是**半透明幽灵**，落到画布那一刻生成实体——一个**新 annotation（新 `tjId`）**，**带出几何 + 样式 + tag，不带 result / links**（result 是某笔交易的结果、link 指向具体标注 id，复制它们无意义）。落下的副本即刻按其 tag 进入该复盘的索引、可被查询。**原 stamp 不动、库不变**（拖出不写库）。
-- **拖入＝移动进库（仅解锁）**：把主画布上一个绘图对象搬进库——它**离开复盘、成为 stamp**（带着它当时的 tag）。配合 Ctrl+C/V 的正确用法：先复制孪生体（原件留在复盘），再把孪生体移进库。写库文档 + 写该复盘各自保存。
+- **Stamp 库 = 主画布右侧的印章条**：与复盘页同处**一张 Fabric 画布**（`page[0..pageW] ｜ gap 分隔线 ｜ strip`），**共享同一缩放**、跨区拖动**连续不裁剪**。对象归属由**位置分区**决定（中心 x 落在页区还是条区）。页与条都是白色纸面，只由一条很窄的分隔带区分。**只含绘图、不含截图**。
+- **存储按区拆分**：`serializePage()` 只写页区对象 → Entry 的 `canvas_json`；`serializeStrip()` 只写条区对象 → 全局 **Stamp store**（存一份、跨复盘、独立于任何 Entry）；`serializeAll()` 供撤销 / 重做。`extractAnnotations()` 只投影**页区**标注（条区 stamp 不进 Entry 索引）。
+- **调色板锁（默认锁定）**：功能区一个锁。**锁定态 = 固定库**：条里 stamp 拖到页 = **复制**（半透明幽灵→实体、原件不动、新 id）；条内挪动 / 页对象拖进条一律**弹回**（不改库、不新增）。**解锁态 = 整块画布如一体**：在页与条之间自由移动——把 stamp 拖到页 = **移出调色板**（成为该页标注、**同 id**、非复制，库相应少一枚）、把绘图拖进条 = **变成 stamp**、条内挪动 = rearrange。
+- **拖出＝复制到页（半透明幽灵→实体）**：锁定态在 stamp 上按下拖动，跟随光标的是**一份半透明副本（幽灵）**——**印章原件不选中、不移动**；落到页那一刻幽灵变实体，是一个**新 annotation（新 `tjId`）**，**带几何 + 样式 + tag，不带 result / links**（result 是某笔交易的结果、link 指向具体标注 id，复制它们无意义）。落下副本即刻按其 tag 进入该复盘索引、可查。**库不变**（拖出不写库）。
+- **拖入＝移动进条（仅解锁）**：把页上一个绘图拖过分隔线进条 → 它**离开复盘、成为 stamp**（带当时的 tag）；写库 + 写该复盘。因同画布同缩放，尺寸与拖动都连续一致。截图（无 `tjId`）拖进条会被弹回（截图不能当 stamp）。
 - **Ctrl+C / Ctrl+V ＝统一的「把剪贴板粘到页面」**：Ctrl+C 复制选中绘图到内部剪贴板；Ctrl+V 把剪贴板内容作为**页面上的对象**粘上——有内部复制的绘图就粘一份副本（略偏移）、否则系统剪贴板里的截图就粘一张图片对象（**与既有截图粘贴同一机制，不特判截图**）。
 - **单个对象为单位**：不做组合 stamp（一次拖一个对象）。
-- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；库内也可对某个 stamp 右键浮窗改它的 tag（与 Slice 4 同一浮窗）。
+- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；条里也可对某个 stamp 右键浮窗改它的 tag（与 Slice 4 同一浮窗）。
 
 Scenario-based test：`scenario: dragging a stamp onto a review drops a tagged copy while the palette keeps the stamp`
 
@@ -358,7 +359,7 @@ Given：
 Expect：
 
 - 锁定时无法把它拖入库；解锁后拖入 → 它从该复盘消失、成为库里一个带原 tag 的 stamp。
-- 换一个复盘打开，右栏同样有这个新 stamp（库全局、不属于单一 Entry）。
+- 换一个复盘打开，印章条里同样有这个新 stamp（库全局、不属于单一 Entry）。
 
 Scenario-based test：`scenario: copy-paste duplicates a drawing as an independent annotation`
 
@@ -370,9 +371,17 @@ Expect：
 
 - Ctrl+C 后 Ctrl+V → 旁边出现一份副本；两者是**各自独立**的 annotation（不同 `tjId`），原件不受影响。
 
-**实现状态（未实现）**
+**实现状态（已落地，25/25 e2e 全绿）**
 
-- 未实现。Slice 3 外壳已把右栏留作 Stamp 库占位；本 slice 新增 **Stamp store**（全局 canvas 文档、存一份）、右栏的锁 / 自由布局 / 拖出复制（幽灵→实体）/ 拖入移动，以及画布内 Ctrl+C/Ctrl+V（与截图粘贴统一）。
+- **Slice 5 (stamp palette) implemented as ONE continuous canvas.** 复盘页与 stamp 印章条同处一张 Fabric 画布：`page[0..2500] ｜ gap(20, 细分隔带) ｜ strip(760)`、`sceneH = pageH`、整张背景 `#ffffff`，**共享一个缩放**（fit 覆盖整条场景）。对象归属由 `regionOf()`（中心 x ≥ `pageW + GAP/2` 即条区）判定。因同画布同缩放，**拖入 / 拖出尺寸一致、跨区拖动连续不消失**——这正是本次从「独立右栏画布（`zoom=1`，拖动会被裁剪 / 尺寸跳变）」重做为单画布的原因。
+- **Stamp store（持久化边界）**：migration `002` bumps `user_version` → 2，单例 `stamp_library(id=1, canvas_json, updated_at)`；`stampStore.ts` 的 `getStampLibrary` / `saveStampLibrary` 走 typed `stamp:*` IPC（zod 校验、renderer 不开 SQLite）。全局、跨复盘、独立于任何 Entry。
+- **按区拆分存储**：`CanvasController.serializePage()`→Entry 的 `canvas_json`、`serializeStrip()`→库、`serializeAll()`→undo/redo；`extractAnnotations()` 只投影页区标注。stamp 存**统一场景坐标**（pageW 固定 2500，不做偏移）。`App.persist()` 一次写 Entry 页 + 库。分隔带是 `tjChrome` 背景对象（`excludeFromExport`、不入分区 / 序列化 / 标注逻辑）。
+- **调色板锁（默认锁定，功能区 `stamp-lock` 开关 → `setPaletteLocked`，切换即 `applyTool` 重算可选态）**：锁定态下条区 stamp 不可选中（但 evented、光标 `copy`），在其上按下拖动走**幽灵路径**：`startGhostDrag` 克隆一份 `tjGhost` 半透明副本跟随光标（拖拽期 `canvas.selection=false` 无框选），`finishGhostDrag` 在页区松手则 `solidifyCopy`（从**源对象**而非幽灵重建，新 `tjId`、去 result/links，即使异步幽灵未渲染也能落地）。**解锁后条区 stamp 可选中**，拖拽走 `handleDrop`（记 `dragHome` / `didMove`，mouse:up 结算）：解锁 strip→page = **移出**（同对象、同 `tjId` 落到页、离开库，因库 stamp 从不被投影故不会撞 id）；解锁 page→strip(绘图) = 变 stamp；解锁 strip→strip = rearrange；锁定 page→strip / 截图→strip = 弹回。任何触及条区的操作 `onStripChanged → App.persist()`（同存 Entry 页 + 库）。
+- **不变式：库存 stamp 永远在条区（修复重大 bug）**。`loadEntry` 加载库 stamp 时，若某 stamp 落在页区（旧分栏版本把 stamp 存在 ~0–240 的页区坐标）就**将其平移进条区**。否则这类 stamp 会（a）渲染在每个复盘的**页上**（“new 复盘主界面有东西”），（b）被多个 Entry 当作页区标注**投影**——`annotations.id` 是全局主键，于是第二个 Entry 保存时 `UNIQUE constraint failed: annotations.id`。因条区 stamp 被 `extractAnnotations` 排除，保证在条区即保证从不被投影。
+- **共享标注模型** 仍在 `editor/annotations.ts`（`ArrowPoly` / `TextBoxAnnotation` 及控件挂载、`TJ_PROPS`，类只注册一次），页与条共用。Ctrl+C/V 统一「粘到页面」不变；条里 stamp 右键走 Slice 4 同一浮窗改 tag。
+- **布局**：独立右栏列已移除，`.body` 两列（`224px minmax(0, 1fr)`）、`.app` 加 `grid-template-columns: minmax(0, 1fr)` 防止宽画布把网格撑破视口（否则条区会被推到窗外）。`TagPopover` 视口 clamp 改为随内容变化用 `ResizeObserver` 重夹（结果维度展开时 Save 不再溢出屏幕）。
+- 旧 `StampRailController` / `shell/StampRail.tsx` / DOM 幽灵拖拽编排已删除。`tests/e2e/stamp-library.spec.ts` 改为在**同一画布**内按 场景坐标 → 元素比例 定位拖拽（page ↔ strip）。
+- **顺带修的 UX**：在已有复盘打开时点 `Home` → `New` 建新复盘，Ribbon 现在会随 `entryId` 变化自动切回 `Draw` 页（原先停在 `Home`，新复盘看不到画笔工具）。新增 `tests/e2e/regression.spec.ts` 用**真实操作序列**兜底两个 bug：旧页坐标 stamp 被治愈进条区且不再投影为标注、连开多份复盘反复保存不再撞 `annotations.id`、空白新复盘页为空。stamp scenario 增加「解锁后拖出 = 同 id 移出（非复制）、库清空」一项。既有 21 项 + stamp 5 项 + regression 3 项共 **29 项 e2e 全绿**。
 
 ## 9. Slice 6：Entry Tags
 
@@ -474,7 +483,7 @@ Expect：
 
 - 左栏 group→tag 导航接入行为：两层可折叠——第一层 group，第二层 group 内的 tag；选中 tag = 跑查询 `tag == 该 tag`（外壳已有「All reviews」入口与缩略图廊容器，本 slice 让 group→tag 选择真正驱动过滤）。
 - 缩略图廊按选中 tag 过滤：命中的 Entry 竖排列出（复用 Slice 3 左栏缩略图廊，不新建列表）。
-- 中间画布渲染：点某张缩略图 → 中间 Canvas 渲染该 Entry 的完整大图（复用 Slice 3 画布；右栏仍是 Stamp 库，不是第二个大图栏）。
+- 中间画布渲染：点某张缩略图 → 中间 Canvas 渲染该 Entry 的完整大图（复用 Slice 3/5 画布；右侧仍是 Stamp 印章条，不是第二个大图栏）。
 - 短暂高亮：若该 tag 贴在某些 annotation 上，渲染时对这些 annotation 做**短暂高亮**（不缩放视口、不持久淡化其余）；entry 级 tag 只把整张图纳入，无高亮目标。
 - 高亮从「当前 tag + annotation bounds」在 render 期算出，不写库。
 - Daily Review = 选中 `date` 这个结构性 group 浏览、按时间排，不是独立特例。

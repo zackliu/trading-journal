@@ -33,6 +33,8 @@ export interface IpcApi {
   getEntry(id: string): Promise<Entry | null>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
   locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;
+  getStampLibrary(): Promise<{ canvasJson: string }>;
+  saveStampLibrary(canvasJson: string): Promise<void>;
 }
 
 export const IpcChannel = {
@@ -51,4 +53,6 @@ export const IpcChannel = {
   getEntry: 'store:get-entry',
   queryAnnotationsByTag: 'store:query-annotations-by-tag',
   locateAnnotation: 'store:locate-annotation',
+  getStampLibrary: 'stamp:get-library',
+  saveStampLibrary: 'stamp:save-library',
 } as const;

@@ -20,6 +20,8 @@ const api: IpcApi = {
   getEntry: (id) => ipcRenderer.invoke(IpcChannel.getEntry, id),
   queryAnnotationsByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryAnnotationsByTag, tag),
   locateAnnotation: (annotationId) => ipcRenderer.invoke(IpcChannel.locateAnnotation, annotationId),
+  getStampLibrary: () => ipcRenderer.invoke(IpcChannel.getStampLibrary),
+  saveStampLibrary: (canvasJson) => ipcRenderer.invoke(IpcChannel.saveStampLibrary, canvasJson),
 };
 
 contextBridge.exposeInMainWorld('api', api);

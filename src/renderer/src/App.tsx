@@ -47,10 +47,14 @@ export function App(): JSX.Element {
   const [popover, setPopover] = useState<{ annotation: AnnotationSelection; x: number; y: number } | null>(null);
   const [dimensions, setDimensions] = useState<ResultDimension[]>([]);
   const [linkClipboard, setLinkClipboard] = useState<{ entryId: string; annotationId: string } | null>(null);
+  const [stampLocked, setStampLocked] = useState(true);
   const controllerRef = useRef<CanvasController | null>(null);
   const pendingSelectRef = useRef<string | null>(null);
   const styleRef = useRef(style);
   const saveRef = useRef<() => Promise<void>>(async () => {});
+  const stampLockedRef = useRef(stampLocked);
+  const selectedEntryIdRef = useRef(selectedEntryId);
+  const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
 
   const refresh = useCallback(async () => {
     setEntries(await window.api.listEntries());
@@ -79,10 +83,12 @@ export function App(): JSX.Element {
 
   const entryOpen = selectedEntryId !== null;
 
-  const saveCanvas = useCallback(async () => {
+  // Persist both stores from the one canvas: page-region objects → the Entry, strip → the stamp library.
+  const persist = useCallback(async () => {
     const controller = controllerRef.current;
     if (!controller || !selectedEntryId) return;
-    await window.api.updateEntryCanvas(selectedEntryId, controller.serialize(), controller.extractAnnotations());
+    await window.api.updateEntryCanvas(selectedEntryId, controller.serializePage(), controller.extractAnnotations());
+    await window.api.saveStampLibrary(controller.serializeStrip());
     controller.markSaved();
   }, [selectedEntryId]);
 
@@ -90,12 +96,19 @@ export function App(): JSX.Element {
     styleRef.current = style;
   }, [style]);
   useEffect(() => {
-    saveRef.current = saveCanvas;
-  }, [saveCanvas]);
+    saveRef.current = persist;
+  }, [persist]);
+  useEffect(() => {
+    stampLockedRef.current = stampLocked;
+    controllerRef.current?.setPaletteLocked(stampLocked);
+  }, [stampLocked]);
+  useEffect(() => {
+    selectedEntryIdRef.current = selectedEntryId;
+  }, [selectedEntryId]);
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
-      if (editorState.dirty) await saveCanvas();
+      if (editorState.dirty) await persist();
       controllerRef.current = null;
       setSelectedEntryId(nextId);
       setTool('select');
@@ -103,7 +116,7 @@ export function App(): JSX.Element {
       setPopover(null);
       await refresh();
     },
-    [editorState.dirty, saveCanvas, refresh],
+    [editorState.dirty, persist, refresh],
   );
 
   const createNew = useCallback(async () => {
@@ -129,7 +142,7 @@ export function App(): JSX.Element {
           const { hash } = await window.api.storeImage(bytes);
           const { isFirst } = await controllerRef.current.addImage(`tj-image://${hash}`);
           if (isFirst) await window.api.setEntryImage(selectedEntryId, hash);
-          await saveCanvas();
+          await persist();
           await refresh();
         } else {
           const entry = await window.api.ingestImageEntry(bytes);
@@ -141,7 +154,7 @@ export function App(): JSX.Element {
         setBusy(false);
       }
     },
-    [selectedEntryId, saveCanvas, refresh, switchTo],
+    [selectedEntryId, persist, refresh, switchTo],
   );
 
   const removeEntry = useCallback(
@@ -161,6 +174,14 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent): void => {
+      // Unified "paste to page": an internally copied drawing pastes an independent copy;
+      // otherwise a system-clipboard screenshot pastes as an image object (the ingest path).
+      const clip = drawingClipboardRef.current;
+      if (clip && selectedEntryIdRef.current && controllerRef.current) {
+        event.preventDefault();
+        void controllerRef.current.pasteSerializedAnnotation(clip).then(() => saveRef.current());
+        return;
+      }
       const items = event.clipboardData?.items;
       if (!items) return;
       for (let i = 0; i < items.length; i += 1) {
@@ -178,6 +199,22 @@ export function App(): JSX.Element {
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
   }, [addImage]);
+
+  // Ctrl+C copies the selected drawing into an internal clipboard (for the unified Ctrl+V paste).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'c') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const copied = controllerRef.current?.copyActiveAnnotation() ?? null;
+      if (copied) {
+        drawingClipboardRef.current = copied;
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>): void => {
@@ -280,6 +317,9 @@ export function App(): JSX.Element {
       if (items.length > 0) setMenu({ x: r.x, y: r.y, items });
     });
     controller.onZoom(setZoom);
+    // Any edit that may have changed the stamp strip persists both the Entry page and the library.
+    controller.onStripChanged(() => void saveRef.current());
+    controller.setPaletteLocked(stampLockedRef.current);
     controller.setStyle(styleRef.current);
   }, []);
 
@@ -328,12 +368,14 @@ export function App(): JSX.Element {
     (edits: AnnotationEdits) => {
       if (popover) {
         controllerRef.current?.applyAnnotationEdits(popover.annotation.id, edits.tags, edits.result, edits.links);
-        void saveCanvas();
+        void persist();
       }
       setPopover(null);
     },
-    [popover, saveCanvas],
+    [popover, persist],
   );
+
+  const onToggleStampLock = useCallback(() => setStampLocked((v) => !v), []);
   const jumpToAnnotation = useCallback(
     async (annotationId: string) => {
       setPopover(null);
@@ -360,6 +402,7 @@ export function App(): JSX.Element {
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <Ribbon
         entryOpen={entryOpen}
+        entryId={selectedEntryId}
         hasSelection={editorState.hasSelection}
         tool={tool}
         style={style}
@@ -377,17 +420,19 @@ export function App(): JSX.Element {
         onDeleteSelected={() => controllerRef.current?.deleteSelected()}
         onBringToFront={() => {
           controllerRef.current?.bringToFront();
-          void saveCanvas();
+          void persist();
         }}
         onSendToBack={() => {
           controllerRef.current?.sendToBack();
-          void saveCanvas();
+          void persist();
         }}
         onFitToCanvas={() => {
           controllerRef.current?.fitActiveToCanvas();
-          void saveCanvas();
+          void persist();
         }}
-        onSave={() => void saveCanvas()}
+        onSave={() => void persist()}
+        stampLocked={stampLocked}
+        onToggleStampLock={onToggleStampLock}
       />
 
       <div className="body">
@@ -447,11 +492,6 @@ export function App(): JSX.Element {
             </div>
           )}
         </main>
-
-        <aside className="inspector" data-testid="stamp-rail">
-          <div className="rail__title">Stamps</div>
-          <div className="placeholder">Your reusable stamp palette lives here · Slice 5</div>
-        </aside>
       </div>
 
       <StatusBar

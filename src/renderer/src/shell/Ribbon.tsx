@@ -4,6 +4,7 @@ import { Icon, type IconName } from './icons';
 
 interface RibbonProps {
   entryOpen: boolean;
+  entryId: string | null;
   hasSelection: boolean;
   tool: Tool;
   style: DrawStyle;
@@ -21,6 +22,8 @@ interface RibbonProps {
   onSendToBack: () => void;
   onFitToCanvas: () => void;
   onSave: () => void;
+  stampLocked: boolean;
+  onToggleStampLock: () => void;
 }
 
 const TABS = ['Home', 'Draw', 'Tags', 'Browse', 'Stats'];
@@ -75,11 +78,11 @@ function Placeholder({ text }: { text: string }): JSX.Element {
 }
 
 export function Ribbon(props: RibbonProps): JSX.Element {
-  const { entryOpen, hasSelection, style } = props;
+  const { entryOpen, entryId, hasSelection, style } = props;
   const [active, setActive] = useState(0);
 
-  // Opening a review reveals the drawing tools; closing it returns to Home.
-  useEffect(() => setActive(entryOpen ? 1 : 0), [entryOpen]);
+  // Opening (or switching to) a review reveals the drawing tools; closing it returns to Home.
+  useEffect(() => setActive(entryOpen ? 1 : 0), [entryOpen, entryId]);
 
   return (
     <div className="ribbon" data-testid="ribbon">
@@ -265,8 +268,21 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 onClick={props.onFitToCanvas}
               />
             </Group>
-            <Group label="Stamp">
-              <IconButton icon="stamp" title="Save as stamp" disabled />
+            <Group label="Palette">
+              <button
+                type="button"
+                className={`rtext${props.stampLocked ? '' : ' is-active'}`}
+                data-testid="stamp-lock"
+                disabled={!entryOpen}
+                title={
+                  props.stampLocked
+                    ? 'Palette locked — drag a stamp onto the page to use it. Unlock to add / rearrange stamps.'
+                    : 'Palette unlocked — drag a drawing into the strip to store it, or rearrange. Click to lock.'
+                }
+                onClick={props.onToggleStampLock}
+              >
+                <Icon name={props.stampLocked ? 'lock' : 'unlock'} /> {props.stampLocked ? 'Locked' : 'Unlocked'}
+              </button>
             </Group>
             <Group label="Entry">
               <button

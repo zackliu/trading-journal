@@ -88,4 +88,10 @@ export const store = {
 
   locateAnnotation: (page: Page, annotationId: string): Promise<{ entryId: string } | null> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.locateAnnotation(x), annotationId),
+
+  getStampLibrary: (page: Page): Promise<{ canvasJson: string }> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.getStampLibrary()),
+
+  saveStampLibrary: (page: Page, canvasJson: string): Promise<void> =>
+    page.evaluate((j) => (globalThis as unknown as WindowWithApi).api.saveStampLibrary(j), canvasJson),
 };

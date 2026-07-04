@@ -6,6 +6,7 @@ import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
 import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, setEntryImage, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
 import { listResultDimensions, upsertResultDimension } from './store/resultDimensions';
+import { getStampLibrary, saveStampLibrary } from './store/stampStore';
 import {
   annotationsSchema,
   canvasJsonSchema,
@@ -134,6 +135,11 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.locateAnnotation, (_event, annotationId: unknown) =>
     locateAnnotation(requireDb(), idSchema.parse(annotationId)),
   );
+
+  ipcMain.handle(IpcChannel.getStampLibrary, () => getStampLibrary(requireDb()));
+  ipcMain.handle(IpcChannel.saveStampLibrary, (_event, canvasJson: unknown) =>
+    saveStampLibrary(requireDb(), canvasJsonSchema.parse(canvasJson)),
+  );
 }
 
 function createWindow(): void {
@@ -141,7 +147,7 @@ function createWindow(): void {
     width: 1024,
     height: 720,
     show: false,
-    backgroundColor: '#0e1116',
+    backgroundColor: '#f1eee7',
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

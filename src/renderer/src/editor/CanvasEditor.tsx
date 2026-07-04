@@ -33,9 +33,13 @@ export function CanvasEditor({ entryId, onReady, onLoaded }: Props): JSX.Element
     measure();
 
     void (async () => {
-      const entry = await window.api.getEntry(entryId);
+      const [entry, lib] = await Promise.all([window.api.getEntry(entryId), window.api.getStampLibrary()]);
       if (!entry || disposed) return;
-      await controller.loadEntry(entry.canvasJson, entry.image ? `tj-image://${entry.image.hash}` : null);
+      await controller.loadEntry(
+        entry.canvasJson,
+        entry.image ? `tj-image://${entry.image.hash}` : null,
+        lib.canvasJson,
+      );
       if (!disposed) onLoaded?.();
     })();
 

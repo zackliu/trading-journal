@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Result, ResultDimension, Tag } from '../../../shared/domain';
 import type { AnnotationSelection } from '../editor/canvasController';
 import { Icon } from './icons';
@@ -35,6 +35,24 @@ export function TagPopover(props: Props): JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(props.onCancel);
   cancelRef.current = props.onCancel;
+
+  // Anchor at the click, but clamp so the whole popover (incl. its Save button) stays on-screen —
+  // re-clamping when its height changes (e.g. the result-dimension section expands).
+  const [pos, setPos] = useState({ x: props.x, y: props.y });
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const reclamp = (): void => {
+      const m = 8;
+      const x = Math.max(m, Math.min(props.x, window.innerWidth - el.offsetWidth - m));
+      const y = Math.max(m, Math.min(props.y, window.innerHeight - el.offsetHeight - m));
+      setPos({ x, y });
+    };
+    reclamp();
+    const ro = new ResizeObserver(reclamp);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [props.x, props.y]);
 
   const [tags, setTags] = useState<Tag[]>(annotation.tags);
   const [links, setLinks] = useState<string[]>(annotation.links);
@@ -125,7 +143,7 @@ export function TagPopover(props: Props): JSX.Element {
       ref={rootRef}
       className="tagpop"
       data-testid="tag-popover"
-      style={{ left: props.x, top: props.y }}
+      style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
       <section className="insp__section">

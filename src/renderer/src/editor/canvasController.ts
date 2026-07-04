@@ -1,19 +1,31 @@
 import {
   Canvas,
   FabricImage,
+  Gradient,
   Line,
   PencilBrush,
   Polyline,
   Rect,
-  Textbox,
-  classRegistry,
-  controlsUtils,
-  type Control,
+  util,
   type FabricObject,
   type TPointerEvent,
   type TPointerEventInfo,
 } from 'fabric';
 import type { Annotation, Result, Tag } from '../../../shared/domain';
+import {
+  ArrowPoly,
+  TextBoxAnnotation,
+  TJ_PROPS,
+  attachSegmentControls,
+  attachTextControls,
+  ensureAnnotation,
+  isAnnotation,
+  isChrome,
+  isGhost,
+  isLocked,
+  reattachControls,
+  tjMeta,
+} from './annotations';
 
 export type Tool = 'select' | 'rect' | 'line' | 'arrow' | 'hline' | 'text' | 'draw';
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
@@ -55,8 +67,14 @@ export interface CanvasContextRequest {
   annotation: AnnotationSelection | null;
 }
 
+type Region = 'page' | 'strip';
+
 const MIN_DRAG = 3;
 const DEFAULT_PAGE = { width: 2500, height: 1600 };
+// The stamp strip lives to the right of the review page on the SAME canvas, so both share one
+// zoom (drag-in / drag-out keep their size) and dragging across is continuous (never clipped).
+const GAP = 20; // scene px between page and strip — a thin divider band
+const STRIP_W = 760; // scene px width of the stamp strip
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 
@@ -70,131 +88,6 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-/** A locked object is pinned: not selectable/movable, but still right-clickable. */
-interface LockFlag {
-  tjLocked?: boolean;
-}
-
-function isLocked(o: FabricObject): boolean {
-  return (o as unknown as LockFlag).tjLocked === true;
-}
-
-/** Annotation payload carried by any drawable object (screenshots carry none). */
-interface TjAnnotated {
-  tjId?: string;
-  tjTags?: Tag[];
-  tjResult?: Result;
-  tjLinks?: string[];
-}
-
-function annData(o: FabricObject): TjAnnotated {
-  return o as unknown as TjAnnotated;
-}
-
-function isAnnotation(o: FabricObject): boolean {
-  return typeof annData(o).tjId === 'string';
-}
-
-/** Stamp a fresh annotation identity on a newly drawn object (id + empty tag list). */
-function ensureAnnotation(o: FabricObject): void {
-  const a = annData(o);
-  if (!a.tjId) {
-    a.tjId = crypto.randomUUID();
-    a.tjTags = [];
-  }
-}
-
-/** Arrow = a two-point polyline that also renders an arrowhead at its end point. */
-class ArrowPoly extends Polyline {
-  static override type = 'ArrowPoly';
-
-  override _render(ctx: CanvasRenderingContext2D): void {
-    super._render(ctx);
-    const pts = this.points;
-    const n = pts.length;
-    if (n < 2) return;
-    const a = pts[n - 2];
-    const b = pts[n - 1];
-    const angle = Math.atan2(b.y - a.y, b.x - a.x);
-    const size = 9 + (this.strokeWidth || 1) * 2.4;
-    ctx.save();
-    ctx.translate(b.x - this.pathOffset.x, b.y - this.pathOffset.y);
-    ctx.rotate(angle);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(-size, -size * 0.5);
-    ctx.lineTo(-size, size * 0.5);
-    ctx.closePath();
-    ctx.fillStyle = typeof this.stroke === 'string' ? this.stroke : '#000000';
-    ctx.fill();
-    ctx.restore();
-  }
-}
-classRegistry.setClass(ArrowPoly, 'ArrowPoly');
-
-/** Give a line / arrow polyline draggable endpoint handles instead of image-style controls. */
-function attachSegmentControls(obj: FabricObject): void {
-  if (!(obj instanceof Polyline)) return;
-  obj.controls = controlsUtils.createPolyControls(obj, { render: controlsUtils.renderCircleControl });
-  obj.hasBorders = false;
-  obj.objectCaching = false;
-}
-
-/** Text = an editable text box that draws its own bordered / filled rectangle behind the text. */
-class TextBoxAnnotation extends Textbox {
-  static override type = 'TextBoxAnnotation';
-  declare boxStroke?: string;
-  declare boxStrokeWidth?: number;
-  declare boxFill?: string;
-  declare boxDash?: number[] | null;
-
-  override _render(ctx: CanvasRenderingContext2D): void {
-    const pad = 6;
-    const w = this.width + pad * 2;
-    const h = this.height + pad * 2;
-    ctx.save();
-    if (this.boxFill && this.boxFill !== 'transparent') {
-      ctx.fillStyle = this.boxFill;
-      ctx.fillRect(-w / 2, -h / 2, w, h);
-    }
-    if (this.boxStroke && (this.boxStrokeWidth ?? 0) > 0) {
-      ctx.strokeStyle = this.boxStroke;
-      ctx.lineWidth = this.boxStrokeWidth ?? 1;
-      if (this.boxDash) ctx.setLineDash(this.boxDash);
-      ctx.strokeRect(-w / 2, -h / 2, w, h);
-    }
-    ctx.restore();
-    super._render(ctx);
-  }
-}
-classRegistry.setClass(TextBoxAnnotation, 'TextBoxAnnotation');
-
-/**
- * Office “resize-to-fit-text” controls: every handle (sides + corners) changes only the
- * WIDTH (text rewraps, font/border never scale); height auto-fits the content, so there is
- * no height handle. Width has priority — you cannot reduce line count by shrinking height.
- */
-function attachTextControls(obj: FabricObject): void {
-  if (!(obj instanceof TextBoxAnnotation)) return;
-  const base = controlsUtils.createTextboxDefaultControls();
-  const asWidth = (c: Control): Control => {
-    c.actionHandler = controlsUtils.changeWidth;
-    c.actionName = 'resizing';
-    c.cursorStyleHandler = () => 'ew-resize';
-    return c;
-  };
-  obj.controls = {
-    ml: base.ml,
-    mr: base.mr,
-    tl: asWidth(base.tl),
-    tr: asWidth(base.tr),
-    bl: asWidth(base.bl),
-    br: asWidth(base.br),
-    mtr: base.mtr,
-  };
-  obj.objectCaching = false;
-}
-
 function snapTo45(x1: number, y1: number, x2: number, y2: number): [number, number] {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -204,16 +97,26 @@ function snapTo45(x1: number, y1: number, x2: number, y2: number): [number, numb
   return [x1 + len * Math.cos(angle), y1 + len * Math.sin(angle)];
 }
 
+/** Live state of a locked-palette drag-out: a translucent copy tracks the cursor; the source never moves. */
+interface GhostDrag {
+  source: FabricObject; // the pinned stamp being copied out
+  obj: FabricObject | null; // the translucent clone (null until the async enliven resolves)
+  grab: { dx: number; dy: number }; // cursor offset within the object at grab time
+  lastP: { x: number; y: number }; // latest scene-space cursor position
+  opacity: number; // the source's real opacity, restored on the solid copy
+  moved: boolean; // whether the cursor has moved since grab (a plain click makes no copy)
+}
+
 /**
- * Imperative Fabric wrapper for one Entry's review page. Lives outside React:
- * React owns the surrounding shell/ribbon and calls these methods; the canvas is
- * mounted once and never re-rendered by the framework.
+ * Imperative Fabric wrapper for one Entry's review page AND the global stamp palette, rendered as
+ * one continuous white surface: the review page on the left, a thin divider, then the stamp strip
+ * on the right. Both share a single zoom, so a drawing keeps its size when dragged between them and
+ * the drag is never clipped at a canvas edge. Storage still splits by region — page-region objects
+ * belong to the Entry, strip-region objects are global stamps.
  *
- * The canvas is a white "page" that *is* the review. Screenshots are movable /
- * resizable image objects on the page (referenced by `tj-image://<hash>`, never
- * base64-embedded); annotations are objects too. Geometry is in page-pixel
- * coordinates; a fit zoom scales the view only. Page size travels in the JSON
- * as `tjPage` so it reloads exactly.
+ * Lives outside React: React owns the surrounding shell/ribbon and calls these methods; the canvas
+ * is mounted once and never re-rendered by the framework. Geometry is page-pixel coordinates; a fit
+ * zoom scales the view only. Page size travels in the Entry JSON as `tjPage`.
  */
 export class CanvasController {
   private readonly canvas: Canvas;
@@ -244,10 +147,16 @@ export class CanvasController {
   private pageH = DEFAULT_PAGE.height;
   private zoom = 1;
   private fitMode = true;
+  private paletteLocked = true;
+  private dragHome: { obj: FabricObject; left: number; top: number; region: Region } | null = null;
+  private didMove = false;
+  // A locked-palette drag pulls out a translucent COPY (the original stays put) that lands solid on the page.
+  private ghostDrag: GhostDrag | null = null;
   private stateCb: ((s: EditorState) => void) | null = null;
   private toolCb: ((t: Tool) => void) | null = null;
   private contextCb: ((r: CanvasContextRequest) => void) | null = null;
   private zoomCb: ((z: { percent: number; fitMode: boolean }) => void) | null = null;
+  private stripChangedCb: (() => void) | null = null;
   private contextTarget: FabricObject | null = null;
   private newTextBox: TextBoxAnnotation | null = null;
 
@@ -257,14 +166,22 @@ export class CanvasController {
       preserveObjectStacking: true,
       fireRightClick: true,
       stopContextMenu: true,
+      // Office-style corners: dragging a corner stretches width and height freely; hold Shift to keep aspect.
+      uniformScaling: false,
     });
     this.canvas.on('mouse:down', (opt) => this.onDown(opt));
     this.canvas.on('mouse:move', (opt) => this.onMove(opt));
     this.canvas.on('mouse:up', () => this.onUp());
+    this.canvas.on('object:moving', () => {
+      this.didMove = true;
+    });
     this.canvas.on('path:created', (e) => {
       const path = (e as unknown as { path?: FabricObject }).path;
-      if (path) ensureAnnotation(path);
-      this.pushHistory();
+      if (path) {
+        ensureAnnotation(path);
+        this.pushHistory();
+        if (this.regionOf(path) === 'strip') this.stripChangedCb?.();
+      }
     });
     this.canvas.on('object:modified', () => this.pushHistory());
     this.canvas.on('selection:created', () => this.emit());
@@ -291,39 +208,112 @@ export class CanvasController {
     this.emitZoom();
   }
 
-  /** The visible stage area (px). Re-fits the page while in fit mode. */
+  /** Fired after an edit that may have changed the stamp strip, so the shell can persist both stores. */
+  onStripChanged(cb: () => void): void {
+    this.stripChangedCb = cb;
+  }
+
+  /** The visible stage area (px). Re-fits the surface while in fit mode. */
   setViewport(w: number, h: number): void {
     this.availW = Math.max(1, w);
     this.availH = Math.max(1, h);
     if (this.fitMode && !this.restoring) this.applyFit();
   }
 
-  async loadEntry(canvasJson: string, coverUrl: string | null): Promise<void> {
+  // ---- Scene = page + gap + strip, all on one canvas. ----
+
+  private sceneW(): number {
+    return this.pageW + GAP + STRIP_W;
+  }
+
+  private sceneH(): number {
+    return this.pageH;
+  }
+
+  /** Which paper an object sits on, by its centre (the strip starts after the divider). */
+  private regionOf(obj: FabricObject): Region {
+    return obj.getCenterPoint().x >= this.pageW + GAP / 2 ? 'strip' : 'page';
+  }
+
+  /** The (non-serialized) seam between the two white papers: a soft warm light-shadow groove, not a hard line. */
+  private addChrome(): void {
+    for (const o of this.canvas.getObjects()) if (isChrome(o)) this.canvas.remove(o);
+    const divider = new Rect({
+      left: this.pageW,
+      top: 0,
+      width: GAP,
+      height: this.pageH,
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+      // A gentle recessed valley: shadow deepest at the centre, fading to fully transparent at both
+      // edges so it melts into the white page on the left and the white strip on the right.
+      fill: new Gradient({
+        type: 'linear',
+        gradientUnits: 'pixels',
+        coords: { x1: 0, y1: 0, x2: GAP, y2: 0 },
+        colorStops: [
+          { offset: 0, color: 'rgba(116, 104, 82, 0)' },
+          { offset: 0.3, color: 'rgba(96, 84, 62, 0.05)' },
+          { offset: 0.5, color: 'rgba(72, 62, 44, 0.13)' },
+          { offset: 0.7, color: 'rgba(96, 84, 62, 0.05)' },
+          { offset: 1, color: 'rgba(116, 104, 82, 0)' },
+        ],
+      }),
+    });
+    tjMeta(divider).tjChrome = true;
+    this.canvas.add(divider);
+    this.canvas.sendObjectToBack(divider);
+  }
+
+  async loadEntry(canvasJson: string, coverUrl: string | null, stampJson: string): Promise<void> {
     this.restoring = true;
-    const parsed = safeParse(canvasJson);
-    if (parsed && Array.isArray(parsed.objects) && parsed.objects.length > 0) {
-      await this.hydrate(parsed);
-    } else {
-      this.canvas.remove(...this.canvas.getObjects());
-      this.canvas.backgroundImage = undefined;
-      this.canvas.backgroundColor = '#ffffff';
-      this.pageW = DEFAULT_PAGE.width;
-      this.pageH = DEFAULT_PAGE.height;
-      if (coverUrl) {
-        // No stored objects but a cover exists: materialise it as the base image.
-        const img = await FabricImage.fromURL(coverUrl);
-        this.placeContained(img, true);
-        this.canvas.add(img);
-        this.canvas.sendObjectToBack(img);
-      }
+    const pageData = safeParse(canvasJson);
+    const stripData = safeParse(stampJson);
+    const page = (pageData?.tjPage as { width?: number; height?: number } | undefined) ?? DEFAULT_PAGE;
+    this.pageW = Math.max(1, Math.round(page.width ?? DEFAULT_PAGE.width));
+    this.pageH = Math.max(1, Math.round(page.height ?? DEFAULT_PAGE.height));
+
+    const pageObjs = (pageData?.objects as unknown[] | undefined) ?? [];
+    const stripObjs = (stripData?.objects as unknown[] | undefined) ?? [];
+
+    this.canvas.remove(...this.canvas.getObjects());
+    this.canvas.backgroundImage = undefined;
+    this.canvas.backgroundColor = '#ffffff';
+
+    const combined = [...pageObjs, ...stripObjs];
+    if (combined.length > 0) {
+      const objs = await util.enlivenObjects<FabricObject>(combined);
+      const stripStart = pageObjs.length;
+      const stripX = this.pageW + GAP;
+      objs.forEach((obj, i) => {
+        reattachControls(obj);
+        // Invariant: a library stamp lives in the strip region. Heal any stamp that arrives at
+        // page coordinates (data from before the unified canvas) so it never bleeds onto the page
+        // or gets projected as an Entry annotation.
+        if (i >= stripStart && this.regionOf(obj) === 'page') {
+          obj.set({ left: (obj.left ?? 0) + stripX });
+          obj.setCoords();
+        }
+        this.canvas.add(obj);
+      });
     }
+    if (pageObjs.length === 0 && coverUrl) {
+      // Fresh page but a cover exists: materialise it as the base image.
+      const img = await FabricImage.fromURL(coverUrl);
+      this.placeContained(img, true);
+      this.canvas.add(img);
+      this.canvas.sendObjectToBack(img);
+    }
+
+    this.addChrome();
     this.fitMode = true;
     this.refreshZoom();
     this.applyTool('select');
     this.canvas.requestRenderAll();
     this.restoring = false;
 
-    this.history = [this.serialize()];
+    this.history = [this.serializeAll()];
     this.histIndex = 0;
     this.savedIndex = 0;
     this.emit();
@@ -333,16 +323,16 @@ export class CanvasController {
     const page = (data.tjPage as { width?: number; height?: number } | undefined) ?? DEFAULT_PAGE;
     await this.canvas.loadFromJSON(data);
     for (const obj of this.canvas.getObjects()) {
-      attachSegmentControls(obj);
-      attachTextControls(obj);
+      reattachControls(obj);
     }
     this.canvas.backgroundImage = undefined;
     this.canvas.backgroundColor = '#ffffff';
     this.pageW = Math.max(1, Math.round(page.width ?? DEFAULT_PAGE.width));
     this.pageH = Math.max(1, Math.round(page.height ?? DEFAULT_PAGE.height));
+    this.addChrome();
   }
 
-  // ---- Zoom: the page is a fixed size; zoom only scales the view. ----
+  // ---- Zoom: the surface is a fixed size; zoom only scales the view. ----
 
   private refreshZoom(): void {
     if (this.fitMode) this.applyFit();
@@ -350,8 +340,8 @@ export class CanvasController {
   }
 
   private computeFitZoom(): number {
-    // Leave a small margin so the fitted page never touches the edges (no scrollbars).
-    const raw = Math.min(this.availW / this.pageW, this.availH / this.pageH) * 0.98;
+    // Leave a small margin so the fitted surface never touches the edges (no scrollbars).
+    const raw = Math.min(this.availW / this.sceneW(), this.availH / this.sceneH()) * 0.98;
     return clamp(raw, MIN_ZOOM, MAX_ZOOM);
   }
 
@@ -362,15 +352,15 @@ export class CanvasController {
 
   private applyZoom(): void {
     this.canvas.setDimensions({
-      width: Math.round(this.pageW * this.zoom),
-      height: Math.round(this.pageH * this.zoom),
+      width: Math.round(this.sceneW() * this.zoom),
+      height: Math.round(this.sceneH() * this.zoom),
     });
     this.canvas.setZoom(this.zoom);
     this.canvas.requestRenderAll();
     this.emitZoom();
   }
 
-  /** Auto-scale so the whole page fits the stage; grows with the window. */
+  /** Auto-scale so the whole surface fits the stage; grows with the window. */
   fitToViewport(): void {
     this.fitMode = true;
     this.applyFit();
@@ -418,7 +408,7 @@ export class CanvasController {
     });
   }
 
-  /** Insert a screenshot as a movable image object (does not resize the page). */
+  /** Insert a screenshot as a movable image object on the review page (never resizes the page). */
   async addImage(imageUrl: string): Promise<{ isFirst: boolean }> {
     const img = await FabricImage.fromURL(imageUrl);
     const isFirst = this.canvas.getObjects().every((o) => !(o instanceof FabricImage));
@@ -470,7 +460,7 @@ export class CanvasController {
   lockActive(): void {
     const obj = this.canvas.getActiveObject();
     if (!obj) return;
-    (obj as unknown as LockFlag).tjLocked = true;
+    tjMeta(obj).tjLocked = true;
     this.canvas.discardActiveObject();
     this.applyTool(this.tool);
     this.canvas.requestRenderAll();
@@ -481,7 +471,7 @@ export class CanvasController {
   unlockContext(): void {
     const obj = this.contextTarget;
     if (!obj) return;
-    (obj as unknown as LockFlag).tjLocked = false;
+    tjMeta(obj).tjLocked = false;
     this.applyTool(this.tool);
     this.canvas.setActiveObject(obj);
     this.canvas.requestRenderAll();
@@ -511,16 +501,28 @@ export class CanvasController {
     this.canvas.isDrawingMode = tool === 'draw';
     this.canvas.selection = tool === 'select';
     for (const obj of this.canvas.getObjects()) {
+      if (isChrome(obj) || isGhost(obj)) {
+        obj.selectable = false;
+        obj.evented = false;
+        continue;
+      }
       if (isLocked(obj)) {
         // Pinned: never grabbable, but still hit-tested so right-click can reach it.
         obj.selectable = false;
         obj.evented = true;
         obj.hoverCursor = 'default';
-      } else {
-        obj.selectable = tool === 'select';
-        obj.evented = tool === 'select';
-        obj.hoverCursor = null;
+        continue;
       }
+      if (this.paletteLocked && isAnnotation(obj) && this.regionOf(obj) === 'strip') {
+        // A locked palette stamp is not draggable in place; pressing it pulls out a translucent copy.
+        obj.selectable = false;
+        obj.evented = tool === 'select';
+        obj.hoverCursor = 'copy';
+        continue;
+      }
+      obj.selectable = tool === 'select';
+      obj.evented = tool === 'select';
+      obj.hoverCursor = null;
     }
     if (tool === 'draw') {
       const brush = new PencilBrush(this.canvas);
@@ -539,6 +541,18 @@ export class CanvasController {
     return this.tool;
   }
 
+  /**
+   * Locked (default): the strip is a fixed library — a drag pulls out a translucent COPY (ghost).
+   * Unlocked: the whole surface is one canvas — stamps move freely across the divider (drag a stamp
+   * out onto the page = move it out of the palette; drag a drawing in = it becomes a stamp).
+   * Re-run the tool so stamp selectability matches the new mode immediately.
+   */
+  setPaletteLocked(locked: boolean): void {
+    if (this.paletteLocked === locked) return;
+    this.paletteLocked = locked;
+    this.applyTool(this.tool);
+  }
+
   setStyle(patch: Partial<DrawStyle>): void {
     this.style = { ...this.style, ...patch };
     const active = this.canvas.getActiveObjects();
@@ -546,6 +560,7 @@ export class CanvasController {
     if (active.length > 0) {
       this.canvas.requestRenderAll();
       this.pushHistory();
+      if (active.some((o) => this.regionOf(o) === 'strip')) this.stripChangedCb?.();
     }
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush) {
       const brush = this.canvas.freeDrawingBrush;
@@ -593,10 +608,12 @@ export class CanvasController {
   deleteSelected(): void {
     const active = this.canvas.getActiveObjects();
     if (active.length === 0) return;
+    const touchedStrip = active.some((o) => this.regionOf(o) === 'strip');
     this.canvas.remove(...active);
     this.canvas.discardActiveObject();
     this.canvas.requestRenderAll();
     this.pushHistory();
+    if (touchedStrip) this.stripChangedCb?.();
   }
 
   async undo(): Promise<void> {
@@ -611,20 +628,37 @@ export class CanvasController {
     await this.applyState(this.history[this.histIndex]);
   }
 
-  serialize(): string {
-    const data = this.canvas.toObject([
-      'tjLocked',
-      'boxStroke',
-      'boxStrokeWidth',
-      'boxFill',
-      'boxDash',
-      'tjId',
-      'tjTags',
-      'tjResult',
-      'tjLinks',
-    ]) as Record<string, unknown>;
-    data.tjPage = { width: this.pageW, height: this.pageH };
+  // ---- Serialization: split the one canvas by region. ----
+
+  private editableObjects(): FabricObject[] {
+    return this.canvas.getObjects().filter((o) => !isChrome(o) && !isGhost(o));
+  }
+
+  private objectsJson(objs: FabricObject[], withPage: boolean): string {
+    const data: Record<string, unknown> = { version: '6', objects: objs.map((o) => o.toObject([...TJ_PROPS])) };
+    if (withPage) data.tjPage = { width: this.pageW, height: this.pageH };
     return JSON.stringify(data);
+  }
+
+  /** The review page's objects (+ page size) — the Entry's durable canvas JSON. */
+  serializePage(): string {
+    return this.objectsJson(
+      this.editableObjects().filter((o) => this.regionOf(o) === 'page'),
+      true,
+    );
+  }
+
+  /** The stamp strip's objects — the global stamp library document. */
+  serializeStrip(): string {
+    return this.objectsJson(
+      this.editableObjects().filter((o) => this.regionOf(o) === 'strip'),
+      false,
+    );
+  }
+
+  /** Everything editable (page + strip) — the undo/redo snapshot. */
+  private serializeAll(): string {
+    return this.objectsJson(this.editableObjects(), true);
   }
 
   markSaved(): void {
@@ -642,7 +676,24 @@ export class CanvasController {
       this.onRightClick(opt, e);
       return;
     }
-    if (this.tool === 'select' || this.tool === 'draw') return;
+    if (this.tool === 'select') {
+      // Remember where a drag starts so a cross-region drop can copy / move / snap back.
+      const t = opt.target ?? null;
+      this.didMove = false;
+      if (t && !isChrome(t) && isAnnotation(t) && this.paletteLocked && this.regionOf(t) === 'strip') {
+        // Locked palette: dragging a stamp pulls out a translucent COPY; the original stays put.
+        const p = this.canvas.getScenePoint(opt.e);
+        this.startGhostDrag(t, p.x, p.y);
+        this.dragHome = null;
+        return;
+      }
+      this.dragHome =
+        t && !isChrome(t) && !isLocked(t)
+          ? { obj: t, left: t.left ?? 0, top: t.top ?? 0, region: this.regionOf(t) }
+          : null;
+      return;
+    }
+    if (this.tool === 'draw') return;
     const p = this.canvas.getScenePoint(opt.e);
     this.startX = p.x;
     this.startY = p.y;
@@ -705,6 +756,19 @@ export class CanvasController {
   }
 
   private onMove(opt: TPointerEventInfo<TPointerEvent>): void {
+    if (this.ghostDrag) {
+      const drag = this.ghostDrag;
+      const p = this.canvas.getScenePoint(opt.e);
+      drag.lastP = { x: p.x, y: p.y };
+      drag.moved = true;
+      if (drag.obj) {
+        drag.obj.visible = true;
+        drag.obj.set({ left: p.x - drag.grab.dx, top: p.y - drag.grab.dy });
+        drag.obj.setCoords();
+        this.canvas.requestRenderAll();
+      }
+      return;
+    }
     if (!this.drawing || !this.draft) return;
     const p = this.canvas.getScenePoint(opt.e);
     let x = p.x;
@@ -731,6 +795,15 @@ export class CanvasController {
   }
 
   private onUp(): void {
+    if (this.ghostDrag) {
+      this.finishGhostDrag();
+      return;
+    }
+    if (this.dragHome && this.didMove) {
+      this.handleDrop();
+      this.dragHome = null;
+      this.didMove = false;
+    }
     if (!this.drawing) return;
     this.drawing = false;
     const draft = this.draft;
@@ -761,9 +834,124 @@ export class CanvasController {
       this.canvas.setActiveObject(created);
       this.canvas.requestRenderAll();
       this.pushHistory();
+      if (this.regionOf(created) === 'strip') this.stripChangedCb?.();
     } else {
       this.canvas.requestRenderAll();
     }
+  }
+
+  /**
+   * Resolve a drag that just ended. Region crossings decide the outcome:
+   * pulling a stamp onto the page leaves a fresh copy (the palette keeps the original); dropping a
+   * page drawing into an unlocked strip turns it into a stamp; disallowed moves snap back.
+   */
+  private handleDrop(): void {
+    const home = this.dragHome;
+    if (!home || !this.canvas.getObjects().includes(home.obj)) return;
+    const obj = home.obj;
+    const start = home.region;
+    const end = this.regionOf(obj);
+    const isImg = obj instanceof FabricImage;
+
+    if (this.paletteLocked) {
+      if (end === 'strip') this.snapBack(obj, home); // locked: can't add to the palette by dragging in
+    } else if (isImg && end === 'strip') {
+      this.snapBack(obj, home); // screenshots can't become stamps
+    }
+    // Otherwise the palette is unlocked and the canvas behaves as one continuous surface: a stamp
+    // dragged onto the page MOVES out of the palette, a drawing dragged into the strip becomes a
+    // stamp, and a same-region drag just rearranges — all kept exactly where they were dropped.
+
+    obj.setCoords();
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+    if (start === 'strip' || end === 'strip') this.stripChangedCb?.();
+  }
+
+  private snapBack(obj: FabricObject, home: { left: number; top: number }): void {
+    obj.set({ left: home.left, top: home.top });
+    obj.setCoords();
+  }
+
+  // ---- Locked-palette drag-out: a translucent copy follows the cursor; the original never moves. ----
+
+  private startGhostDrag(source: FabricObject, px: number, py: number): void {
+    const drag: GhostDrag = {
+      source,
+      obj: null,
+      grab: { dx: px - (source.left ?? 0), dy: py - (source.top ?? 0) },
+      lastP: { x: px, y: py },
+      opacity: source.opacity ?? 1,
+      moved: false,
+    };
+    this.ghostDrag = drag;
+    this.canvas.discardActiveObject();
+    this.canvas.selection = false; // no rubber-band marquee while a ghost is being dragged
+    const serialized = source.toObject([...TJ_PROPS]) as Record<string, unknown>;
+    void (async () => {
+      const [g] = await util.enlivenObjects<FabricObject>([serialized]);
+      if (this.ghostDrag !== drag) return; // gesture ended before the clone was ready
+      reattachControls(g);
+      tjMeta(g).tjGhost = true;
+      g.set({ opacity: drag.opacity * 0.45, selectable: false, evented: false });
+      g.visible = drag.moved; // stay hidden until the first move (no flicker on a plain click)
+      g.set({ left: drag.lastP.x - drag.grab.dx, top: drag.lastP.y - drag.grab.dy });
+      g.setCoords();
+      drag.obj = g;
+      this.canvas.add(g);
+      this.canvas.requestRenderAll();
+    })();
+  }
+
+  private finishGhostDrag(): void {
+    const drag = this.ghostDrag;
+    this.ghostDrag = null;
+    this.canvas.selection = this.tool === 'select';
+    if (!drag) return;
+    if (drag.obj) this.canvas.remove(drag.obj);
+    // Solidify only if the copy was actually dragged onto the page (the copy is built from the
+    // source, not the ghost, so it works even if the async ghost never rendered).
+    if (drag.moved && drag.lastP.x < this.pageW + GAP / 2) {
+      void this.solidifyCopy(drag.source, drag.lastP.x - drag.grab.dx, drag.lastP.y - drag.grab.dy, drag.opacity);
+    } else {
+      this.canvas.requestRenderAll();
+    }
+  }
+
+  /** Enliven a serialized drawing into a fresh, independent annotation (new id; optionally drop result/links). */
+  private async reviveClone(
+    serialized: Record<string, unknown>,
+    opts: { dropResultLinks?: boolean } = {},
+  ): Promise<FabricObject> {
+    const [obj] = await util.enlivenObjects<FabricObject>([serialized]);
+    reattachControls(obj);
+    const a = tjMeta(obj);
+    a.tjId = crypto.randomUUID();
+    if (opts.dropResultLinks) {
+      a.tjResult = undefined;
+      a.tjLinks = undefined;
+    }
+    return obj;
+  }
+
+  /** Add a freshly-built object to the page, select it, and record one history step. */
+  private placeNew(obj: FabricObject): void {
+    obj.setCoords();
+    this.canvas.add(obj);
+    this.applyTool('select');
+    this.canvas.setActiveObject(obj);
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+  }
+
+  /** Materialise the dragged-out copy as a solid, independent page annotation (new id, no result / links). */
+  private async solidifyCopy(source: FabricObject, left: number, top: number, opacity: number): Promise<void> {
+    const obj = await this.reviveClone(source.toObject([...TJ_PROPS]) as Record<string, unknown>, {
+      dropResultLinks: true,
+    });
+    obj.set({ left, top, opacity, selectable: true, evented: true });
+    this.placeNew(obj);
+    this.stripChangedCb?.();
   }
 
   private makeSegment(x1: number, y1: number, x2: number, y2: number, arrow: boolean): Polyline {
@@ -818,6 +1006,7 @@ export class CanvasController {
         if (this.newTextBox !== target) this.pushHistory();
       } else {
         this.pushHistory();
+        if (this.regionOf(target) === 'strip') this.stripChangedCb?.();
       }
     }
     this.newTextBox = null;
@@ -826,7 +1015,7 @@ export class CanvasController {
   private pushHistory(): void {
     if (this.restoring) return;
     this.history = this.history.slice(0, this.histIndex + 1);
-    this.history.push(this.serialize());
+    this.history.push(this.serializeAll());
     this.histIndex = this.history.length - 1;
     this.emit();
   }
@@ -841,14 +1030,16 @@ export class CanvasController {
     this.emit();
   }
 
-  // ---- Annotation data: any drawable object carries id + tags + result + links. ----
+  // ---- Annotation data: any page drawing carries id + tags + result + links. ----
 
-  /** The annotations on this page, projected for the index (screenshots are excluded). */
+  /** The review-page annotations, projected for the index (screenshots and stamps are excluded). */
   extractAnnotations(): Annotation[] {
     const out: Annotation[] = [];
     for (const obj of this.canvas.getObjects()) {
-      const a = annData(obj);
-      if (typeof a.tjId !== 'string') continue; // images (screenshots) are not annotations
+      const a = tjMeta(obj);
+      if (typeof a.tjId !== 'string') continue; // images (screenshots) / chrome are not annotations
+      if (isGhost(obj)) continue; // a transient drag-out ghost is not an annotation
+      if (this.regionOf(obj) === 'strip') continue; // strip stamps belong to the palette, not the Entry
       obj.setCoords();
       const box = obj.getBoundingRect();
       const ann: Annotation = {
@@ -865,7 +1056,7 @@ export class CanvasController {
 
   /** Read an annotation object's tag / result / link data (a snapshot for the popover). */
   private readAnnotation(obj: FabricObject): AnnotationSelection {
-    const a = annData(obj);
+    const a = tjMeta(obj);
     return {
       id: a.tjId as string,
       tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
@@ -876,7 +1067,7 @@ export class CanvasController {
 
   /** Select an annotation by id (following a link); false if it is not on this page. */
   selectAnnotationById(annotationId: string): boolean {
-    const obj = this.canvas.getObjects().find((o) => annData(o).tjId === annotationId);
+    const obj = this.canvas.getObjects().find((o) => tjMeta(o).tjId === annotationId);
     if (!obj) return false;
     this.applyTool('select');
     this.canvas.setActiveObject(obj);
@@ -886,14 +1077,31 @@ export class CanvasController {
 
   /** Commit the popover's edits onto an annotation (whole-value replace), then it can be saved. */
   applyAnnotationEdits(id: string, tags: Tag[], result: Result, links: string[]): void {
-    const obj = this.canvas.getObjects().find((o) => annData(o).tjId === id);
+    const obj = this.canvas.getObjects().find((o) => tjMeta(o).tjId === id);
     if (!obj) return;
-    const a = annData(obj);
+    const a = tjMeta(obj);
     a.tjTags = tags.map((t) => ({ group: t.group, value: t.value }));
     a.tjResult = Object.keys(result).length > 0 ? { ...result } : undefined;
     a.tjLinks = links.length > 0 ? [...links] : undefined;
     this.canvas.requestRenderAll();
     this.pushHistory();
+  }
+
+  // ---- Clipboard: Ctrl+C / Ctrl+V duplicates a drawing on the page. ----
+
+  /** Serialize the active annotation for the internal clipboard (Ctrl+C); null if none / a screenshot. */
+  copyActiveAnnotation(): Record<string, unknown> | null {
+    const obj = this.canvas.getActiveObject();
+    if (!obj || !isAnnotation(obj)) return null;
+    return obj.toObject([...TJ_PROPS]) as Record<string, unknown>;
+  }
+
+  /** Paste a serialized drawing as an independent new annotation, offset from the original (Ctrl+V). */
+  async pasteSerializedAnnotation(serialized: Record<string, unknown>): Promise<void> {
+    const obj = await this.reviveClone(serialized);
+    obj.set({ left: (obj.left ?? 0) + 24, top: (obj.top ?? 0) + 24 });
+    this.placeNew(obj);
+    if (this.regionOf(obj) === 'strip') this.stripChangedCb?.();
   }
 
   private emit(): void {
@@ -906,9 +1114,9 @@ export class CanvasController {
   }
 }
 
-function safeParse(json: string): { objects?: unknown[] } | null {
+function safeParse(json: string): { objects?: unknown[]; tjPage?: unknown } | null {
   try {
-    return JSON.parse(json) as { objects?: unknown[] };
+    return JSON.parse(json) as { objects?: unknown[]; tjPage?: unknown };
   } catch {
     return null;
   }

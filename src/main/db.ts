@@ -8,8 +8,9 @@ export interface OpenedDb {
 }
 
 // Ordered migrations. Index i migrates schema version i -> i+1, wrapped in a
-// transaction together with the user_version bump. Slice 1 introduces the schema.
-const MIGRATIONS: Array<(db: Db) => void> = [migration001Initial];
+// transaction together with the user_version bump. Slice 1 introduces the schema;
+// Slice 5 adds the global stamp library.
+const MIGRATIONS: Array<(db: Db) => void> = [migration001Initial, migration002StampLibrary];
 
 /** Open (creating if missing) the SQLite database and run pending migrations. */
 export function openDatabase(sqlitePath: string): OpenedDb {
@@ -95,5 +96,17 @@ function migration001Initial(db: Db): void {
     CREATE INDEX idx_entry_tags_gv ON entry_tags("group", value);
     CREATE INDEX idx_annotation_tags_gv ON annotation_tags("group", value);
     CREATE INDEX idx_annotation_results_dim ON annotation_results(dimension_id);
+  `);
+}
+
+// The global stamp library: one free-layout canvas document, shared across all reviews and
+// stored exactly once (a singleton row). Stamps are drawing objects only — no screenshots.
+function migration002StampLibrary(db: Db): void {
+  db.exec(`
+    CREATE TABLE stamp_library (
+      id          INTEGER PRIMARY KEY CHECK (id = 1),
+      canvas_json TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
   `);
 }

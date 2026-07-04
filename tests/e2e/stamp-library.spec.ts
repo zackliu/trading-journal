@@ -1,0 +1,242 @@
+import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { launchApp, store } from './electronApp';
+
+function tempDataDir(): string {
+  return mkdtempSync(join(tmpdir(), 'tj-stamp-'));
+}
+
+const CANVAS = '.canvas-container';
+// The one surface: page[0..2500] + gap(20) + strip[2520..3280]; height 1600. Must match the controller.
+const SCENE_W = 3280;
+const SCENE_H = 1600;
+
+interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+type Scene = [number, number];
+
+async function canvasBox(page: Page): Promise<Box> {
+  const c = page.locator(CANVAS);
+  await expect(c).toBeVisible();
+  await page.waitForTimeout(300);
+  const b = await c.boundingBox();
+  if (!b) throw new Error('canvas has no bounding box');
+  return b;
+}
+
+/** Scene-pixel point → a canvas-element-relative position (robust to device-pixel scaling). */
+function pos(box: Box, sx: number, sy: number): { x: number; y: number } {
+  return { x: (sx / SCENE_W) * box.width, y: (sy / SCENE_H) * box.height };
+}
+
+/** Press-drag between two scene points on the one canvas (page ↔ strip is continuous). */
+async function dragScene(page: Page, box: Box, from: Scene, to: Scene): Promise<void> {
+  await page.locator(CANVAS).hover({ position: pos(box, from[0], from[1]), force: true });
+  await page.mouse.down();
+  await page.locator(CANVAS).hover({ position: pos(box, (from[0] + to[0]) / 2, (from[1] + to[1]) / 2), force: true });
+  await page.locator(CANVAS).hover({ position: pos(box, to[0], to[1]), force: true });
+  await page.mouse.up();
+}
+
+async function drawRect(page: Page, box: Box, from: Scene, to: Scene): Promise<void> {
+  await page.getByTestId('tool-rect').click();
+  await page.locator(CANVAS).hover({ position: pos(box, from[0], from[1]), force: true });
+  await page.mouse.down();
+  await page.locator(CANVAS).hover({ position: pos(box, to[0], to[1]), force: true });
+  await page.mouse.up();
+}
+
+async function tagAt(page: Page, box: Box, at: Scene, group: string, value: string): Promise<void> {
+  await page.locator(CANVAS).click({ button: 'right', position: pos(box, at[0], at[1]), force: true });
+  await page.getByTestId('menu-tags').click();
+  await expect(page.getByTestId('tag-popover')).toBeVisible();
+  await page.getByTestId('tag-group').fill(group);
+  await page.getByTestId('tag-value').fill(value);
+  await page.getByTestId('tag-add').click();
+  await page.getByTestId('popover-save').click();
+}
+
+function stampCount(canvasJson: string): number {
+  try {
+    const parsed = JSON.parse(canvasJson) as { objects?: unknown[] };
+    return Array.isArray(parsed.objects) ? parsed.objects.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Seed the global stamp library with one tagged rectangle in the strip region, then reload. */
+async function seedStamp(
+  page: Page,
+  tag: { group: string; value: string },
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const json = JSON.stringify({
+    version: '6',
+    objects: [
+      {
+        type: 'Rect',
+        left: 2680,
+        top: 120,
+        width: 100,
+        height: 70,
+        fill: 'transparent',
+        stroke: '#f85149',
+        strokeWidth: 3,
+        tjId: 'seed-stamp',
+        tjTags: [tag],
+        ...extra,
+      },
+    ],
+  });
+  await store.saveStampLibrary(page, json);
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForTimeout(400);
+}
+
+async function openReview(page: Page): Promise<string> {
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected an open review');
+  return id;
+}
+
+// The seeded stamp's centre in scene coords (left 2680 + w/2, top 120 + h/2).
+const STAMP_CENTER: Scene = [2730, 155];
+
+test('dragging a stamp onto the page drops a tagged copy while the palette keeps the stamp', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  await seedStamp(page, { group: 'setup', value: 'wedge-top' });
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Locked palette (default): drag the stamp from the strip onto the review page.
+  await dragScene(page, box, STAMP_CENTER, [900, 700]);
+
+  // The page gained a fresh annotation carrying the stamp's tag (answered by the index).
+  await expect
+    .poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'wedge-top' })).length)
+    .toBe(1);
+  const hits = await store.queryByTag(page, { group: 'setup', value: 'wedge-top' });
+  expect(hits[0]?.entryId).toBe(entryId);
+  expect(hits[0]?.annotationId).not.toBe('seed-stamp'); // a new id, not the stamp itself
+
+  // Dragging out is a copy: the palette still holds the one original stamp, unchanged.
+  expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(1);
+
+  await app.close();
+});
+
+test('a dropped stamp copy carries tags but not result or links', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  await seedStamp(
+    page,
+    { group: 'pattern', value: 'double-top' },
+    { tjResult: { 'r-multiple': 2 }, tjLinks: ['some-other-annotation'] },
+  );
+  await openReview(page);
+  const box = await canvasBox(page);
+
+  await dragScene(page, box, STAMP_CENTER, [900, 700]);
+
+  await expect
+    .poll(async () => (await store.queryByTag(page, { group: 'pattern', value: 'double-top' })).length)
+    .toBe(1);
+  const hits = await store.queryByTag(page, { group: 'pattern', value: 'double-top' });
+  expect(hits[0]?.tags).toEqual([{ group: 'pattern', value: 'double-top' }]);
+  expect(hits[0]?.result).toBeUndefined();
+  expect(hits[0]?.links).toEqual([]);
+
+  await app.close();
+});
+
+test('unlocking the palette lets a page drawing be moved in as a global stamp', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const entry1 = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Draw + tag a page drawing, then try to drag it into the LOCKED strip — it must be refused.
+  await drawRect(page, box, [300, 260], [640, 460]);
+  await tagAt(page, box, [470, 360], 'setup', 'alpha');
+  await dragScene(page, box, [470, 360], [2760, 900]);
+
+  // Refused: the strip is still empty and the drawing still belongs to the review.
+  expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(0);
+  expect((await store.queryByTag(page, { group: 'setup', value: 'alpha' }))[0]?.entryId).toBe(entry1);
+
+  // Unlock, then draw + tag a second drawing and drag THAT one into the strip — now it transfers.
+  await page.getByTestId('stamp-lock').click();
+  await drawRect(page, box, [300, 900], [640, 1100]);
+  await tagAt(page, box, [470, 1000], 'setup', 'beta');
+  await dragScene(page, box, [470, 1000], [2760, 1000]);
+
+  // The drawing left the review and became a global stamp carrying its tag.
+  await expect.poll(async () => stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(1);
+  expect((await store.getStampLibrary(page)).canvasJson).toContain('"value":"beta"');
+  expect(await store.queryByTag(page, { group: 'setup', value: 'beta' })).toHaveLength(0);
+  // The first (locked-refused) drawing is untouched and still in the review.
+  expect(await store.queryByTag(page, { group: 'setup', value: 'alpha' })).toHaveLength(1);
+
+  // The library is global: open a different review and the stamp is still there.
+  await page.getByTestId('tab-home').click();
+  const entry2 = await openReview(page);
+  expect(entry2).not.toBe(entry1);
+  expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(1);
+
+  await app.close();
+});
+
+test('unlocking the palette lets a stamp be dragged out onto the page as a move (same id), not a copy', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  await seedStamp(page, { group: 'setup', value: 'flag' });
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Unlock: the surface behaves as one canvas, so dragging a stamp onto the page MOVES it out.
+  await page.getByTestId('stamp-lock').click();
+  await dragScene(page, box, STAMP_CENTER, [900, 700]);
+
+  // The stamp is now an Entry annotation with the SAME id — a move, not a fresh-id copy.
+  await expect.poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'flag' })).length).toBe(1);
+  const hits = await store.queryByTag(page, { group: 'setup', value: 'flag' });
+  expect(hits[0]?.entryId).toBe(entryId);
+  expect(hits[0]?.annotationId).toBe('seed-stamp');
+
+  // And it left the palette: the library is now empty (contrast with the locked drag-out, which keeps it).
+  expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(0);
+
+  await app.close();
+});
+
+test('copy-paste duplicates a drawing as an independent annotation', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  await drawRect(page, box, [300, 260], [640, 460]);
+  await page.keyboard.press('Control+c');
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true }),
+    ),
+  );
+
+  await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(2);
+  const ids = (await store.getEntry(page, entryId))?.annotations.map((a) => a.id) ?? [];
+  expect(new Set(ids).size).toBe(2);
+
+  await app.close();
+});
