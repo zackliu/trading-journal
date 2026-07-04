@@ -74,15 +74,15 @@ function GroupQuickPick({
   const rest = group.values.filter((v) => !isOn(selected, group.id, v.value));
   const ordered = [...applied, ...rest];
 
-  // Measure how many chips overflow the fixed-width row → the "+N" count (the rest live in the drawer).
+  // Measure how many chips overflow the two-row area (a whole third-row chip → the "+N" count).
   useLayoutEffect(() => {
     const el = chipsRef.current;
     if (!el) return;
     const measure = (): void => {
       const chips = Array.from(el.querySelectorAll<HTMLElement>('[data-chip]'));
-      const w = el.clientWidth;
+      const h = el.clientHeight;
       let n = 0;
-      for (const chip of chips) if (chip.offsetLeft + chip.offsetWidth > w + 1) n += 1;
+      for (const chip of chips) if (chip.offsetTop >= h) n += 1;
       setHidden(n);
     };
     measure();
@@ -127,7 +127,6 @@ function GroupQuickPick({
 
   return (
     <div className="qtag__group" data-testid={`qtag-group-${group.id}`} ref={groupRef}>
-      <div className="qtag__label">{group.label}</div>
       <div className="qtag__vals">
         <div className="qtag__chips" ref={chipsRef}>
           {ordered.map((v) => {
@@ -157,9 +156,10 @@ function GroupQuickPick({
           tabIndex={hidden === 0 ? -1 : 0}
           onClick={toggleDrawer}
         >
-          +{hidden} <span className="qtag__caret" aria-hidden="true" />
+          +{hidden}
         </button>
       </div>
+      <div className="qtag__label">{group.label}</div>
 
       {open ? (
         <div

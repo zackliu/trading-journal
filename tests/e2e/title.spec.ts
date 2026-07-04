@@ -8,7 +8,7 @@ import { launchApp, store } from './electronApp';
 const PNG_A =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
-const TITLE_H = 150; // must match the controller's title-band height
+const TITLE_H = 100; // must match the controller's title-band height
 const CANVAS = '.canvas-container';
 const SCENE_W = 3280;
 const SCENE_H = 1600;

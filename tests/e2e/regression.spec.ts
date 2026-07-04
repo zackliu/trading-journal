@@ -9,7 +9,7 @@ function tempDataDir(): string {
 }
 
 const CANVAS = '.canvas-container';
-const SCENE_W = 3280;
+const SCENE_W = 3482;
 const SCENE_H = 1600;
 
 interface Box {
@@ -96,7 +96,7 @@ test('a legacy page-coordinate library stamp is healed into the strip, never ont
 
   // The library stamp now lives in the strip region (its left is past the page + divider).
   const lib = JSON.parse((await store.getStampLibrary(page)).canvasJson) as { objects?: { left?: number }[] };
-  expect(lib.objects?.[0]?.left ?? 0).toBeGreaterThanOrEqual(2510);
+  expect(lib.objects?.[0]?.left ?? 0).toBeGreaterThanOrEqual(2900);
 
   await app.close();
 });

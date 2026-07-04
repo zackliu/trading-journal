@@ -165,8 +165,8 @@ button {
   gap: 0;
   padding: 8px 12px;
   /* Fixed height so the ribbon's natural height is identical on every tab (Home/Draw/Review/…),
-     regardless of each tab's content. Sized to fit the tallest tab; taller content is clipped. */
-  height: 80px;
+     regardless of each tab's content. Sized to fit two rows on the tallest tab; taller content is clipped. */
+  height: 92px;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -195,6 +195,45 @@ button {
   letter-spacing: 0.3px;
   color: var(--muted);
   text-align: center;
+}
+
+/* Two-row group layouts (Draw): stack controls vertically to stay compact (narrower) with room to grow. */
+.r2 {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+}
+
+.rrow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rgrid {
+  display: grid;
+  gap: 3px;
+  align-content: center;
+}
+
+.rgrid--4 {
+  grid-template-columns: repeat(4, auto);
+}
+
+.rgrid--2 {
+  grid-template-columns: repeat(2, auto);
+}
+
+.rgrid .ricon {
+  width: 27px;
+  height: 27px;
+}
+
+.rtext--sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
 }
 
 .ricon {
@@ -1048,7 +1087,7 @@ button {
 .qtag__group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   max-width: 300px;
   min-width: 0;
   padding: 0 14px;
@@ -1059,10 +1098,12 @@ button {
 }
 
 .qtag__label {
+  margin-top: 4px;
   font-size: 10px;
   letter-spacing: 0.3px;
   color: var(--muted);
   text-transform: uppercase;
+  text-align: center;
 }
 
 .qtag__vals {
@@ -1070,29 +1111,32 @@ button {
   align-items: center;
   gap: 5px;
   min-width: 0;
+  flex: 1;
 }
 
 .qtag__chips {
   position: relative;
   display: flex;
-  gap: 5px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  height: 48px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  flex-wrap: nowrap;
 }
 
 .qchip {
-  height: 24px;
-  padding: 0 11px;
+  height: 22px;
+  padding: 0 10px;
   border: 1px solid var(--line2);
   border-radius: 999px;
   background: var(--panel);
   color: var(--fg);
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
   flex: none;
-  max-width: 150px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1148,16 +1192,17 @@ button {
 .qtag__expand {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
   flex: none;
-  height: 24px;
-  padding: 0 9px;
+  height: 22px;
+  min-width: 26px;
+  padding: 0 6px;
   border: 1px solid var(--line2);
   border-radius: 999px;
   background: var(--panel2);
   color: var(--muted);
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 

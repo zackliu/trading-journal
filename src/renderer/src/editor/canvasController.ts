@@ -1,7 +1,6 @@
 import {
   Canvas,
   FabricImage,
-  Gradient,
   Line,
   PencilBrush,
   Polyline,
@@ -71,19 +70,19 @@ export interface CanvasContextRequest {
 type Region = 'page' | 'strip';
 
 const MIN_DRAG = 3;
-const DEFAULT_PAGE = { width: 2500, height: 1600 };
+const DEFAULT_PAGE = { width: 2900, height: 1600 };
 // The stamp strip lives to the right of the review page on the SAME canvas, so both share one
 // zoom (drag-in / drag-out keep their size) and dragging across is continuous (never clipped).
-const GAP = 20; // scene px between page and strip — a thin divider band
-const STRIP_W = 760; // scene px width of the stamp strip
+const GAP = 12; // scene px between page and strip — a slim divider band
+const STRIP_W = 570; // scene px width of the stamp strip
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const THUMB_W = 400; // list-thumbnail width in px; the review page is captured at this size
-const TITLE_H = 150; // scene px: a title band carved from the page top; the work area is below it
+const TITLE_H = 100; // scene px: a title band carved from the page top; the work area is below it
 const TITLE_FONT = 36;
 const TITLE_PAD = 32; // left/right inset of the title text within the band
 const TITLE_INK = '#33302a';
-const FLASH_MS = 1500; // browse tag-highlight halo lifetime (fades 1→0); derived at render time, never persisted
+const FLASH_MS = 1150; // browse tag-highlight glow lifetime (blooms then fades); derived at render, never persisted
 
 function dashArray(dash: DashStyle, width: number): number[] | null {
   if (dash === 'dashed') return [width * 4, width * 3];
@@ -93,6 +92,24 @@ function dashArray(dash: DashStyle, width: number): number[] | null {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
+}
+
+/** Hermite ease between two edges, returning 0..1 (0 below edge0, 1 above edge1). */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/** Trace a rounded rectangle (no fill/stroke) — used to shape the highlight glow. */
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
 }
 
 function snapTo45(x1: number, y1: number, x2: number, y2: number): [number, number] {
@@ -205,6 +222,15 @@ export class CanvasController {
     this.canvas.on('selection:cleared', () => this.emit());
     this.canvas.on('text:editing:exited', (e) => this.onTextEditExit((e.target as FabricObject | undefined) ?? null));
     this.canvas.on('after:render', () => this.drawFlash());
+    // Resample images at high quality. The 2D context defaults to 'low' (bilinear), which visibly
+    // softens any scaled screenshot; 'high' keeps pasted charts crisp. The context resets this flag
+    // whenever the backing store is resized (every zoom), so re-apply it each frame. Using the event's
+    // context also sharpens the off-screen thumbnail export, which renders through the same path.
+    this.canvas.on('before:render', (opt) => {
+      const ctx = (opt as { ctx?: CanvasRenderingContext2D }).ctx ?? this.canvas.getContext();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+    });
   }
 
   onState(cb: (s: EditorState) => void): void {
@@ -285,28 +311,17 @@ export class CanvasController {
       excludeFromExport: true,
     });
     tjMeta(hairline).tjChrome = true;
+    // A slim hairline marks the boundary between the white page and the white strip — sitting at the
+    // centre of the gap so a sliver of white breathes on either side (no heavy recessed valley).
     const divider = new Rect({
-      left: this.pageW,
+      left: this.pageW + GAP / 2 - 2,
       top: 0,
-      width: GAP,
+      width: 4,
       height: this.pageH,
+      fill: 'rgba(52, 46, 36, 0.42)',
       selectable: false,
       evented: false,
       excludeFromExport: true,
-      // A gentle recessed valley: shadow deepest at the centre, fading to fully transparent at both
-      // edges so it melts into the white page on the left and the white strip on the right.
-      fill: new Gradient({
-        type: 'linear',
-        gradientUnits: 'pixels',
-        coords: { x1: 0, y1: 0, x2: GAP, y2: 0 },
-        colorStops: [
-          { offset: 0, color: 'rgba(116, 104, 82, 0)' },
-          { offset: 0.3, color: 'rgba(96, 84, 62, 0.05)' },
-          { offset: 0.5, color: 'rgba(72, 62, 44, 0.13)' },
-          { offset: 0.7, color: 'rgba(96, 84, 62, 0.05)' },
-          { offset: 1, color: 'rgba(116, 104, 82, 0)' },
-        ],
-      }),
     });
     tjMeta(divider).tjChrome = true;
     this.canvas.add(band, hairline, divider);
@@ -366,6 +381,7 @@ export class CanvasController {
       const stripX = this.pageW + GAP;
       objs.forEach((obj, i) => {
         reattachControls(obj);
+        if (obj instanceof FabricImage) obj.objectCaching = false; // crisp: no intermediate cache resample
         // Invariant: a library stamp lives in the strip region. Heal any stamp that arrives at
         // page coordinates (data from before the unified canvas) so it never bleeds onto the page
         // or gets projected as an Entry annotation.
@@ -403,6 +419,7 @@ export class CanvasController {
     await this.canvas.loadFromJSON(data);
     for (const obj of this.canvas.getObjects()) {
       reattachControls(obj);
+      if (obj instanceof FabricImage) obj.objectCaching = false; // crisp: no intermediate cache resample
     }
     this.canvas.backgroundImage = undefined;
     this.canvas.backgroundColor = '#ffffff';
@@ -468,23 +485,26 @@ export class CanvasController {
   }
 
   /**
-   * Center an image in the work area **below the title band**. `fillPage` scales it to fill that area
-   * as much as possible (may upscale); otherwise it comes in at ≤60% of it, never upscaled. The page
-   * size itself is never changed by an image.
+   * Center an image in the work area **below the title band**. `fillPage` lets the first screenshot
+   * grow up to the full work area; a later paste comes in at ≤60% of it. Neither ever upscales past
+   * native resolution (enlarging a screenshot only interpolates detail away). The page size itself is
+   * never changed by an image.
    */
   private placeContained(img: FabricImage, fillPage: boolean): void {
     const iw = img.width || 1;
     const ih = img.height || 1;
     const areaH = this.pageH - TITLE_H;
     const frac = fillPage ? 1 : 0.6;
-    const cap = fillPage ? Infinity : 1;
-    const scale = Math.min(cap, (this.pageW * frac) / iw, (areaH * frac) / ih);
+    // Cap at 1: a screenshot keeps its native resolution (like a PowerPoint paste) and is only shrunk
+    // to fit the work area when it is larger than the page — never stretched up into a blur.
+    const scale = Math.min(1, (this.pageW * frac) / iw, (areaH * frac) / ih);
     img.scale(scale);
     img.set({
       left: (this.pageW - iw * scale) / 2,
       top: TITLE_H + (areaH - ih * scale) / 2,
       selectable: true,
       evented: true,
+      objectCaching: false, // render straight to the high-quality main context (no cache resample)
     });
   }
 
@@ -1252,21 +1272,51 @@ export class CanvasController {
     this.flashRAF = requestAnimationFrame(tick);
   }
 
-  /** Paint the transient tag-highlight halos onto the page (after Fabric draws the objects). */
+  /**
+   * Paint the transient tag-highlight glow after Fabric draws the objects. It is a soft amber bloom
+   * that swells just past each tagged annotation's border and fades — no hard outline, no wash over
+   * the shape. Drawn in device space as thin strokes whose matching shadow blur does the glowing, so
+   * the feather reads in real pixels; purely derived from the active tag + live bounds, never an
+   * object, never persisted, and skipped while capturing the thumbnail.
+   */
   private drawFlash(): void {
     if (!this.flash || this.capturing) return;
-    const alpha = clamp(1 - (performance.now() - this.flash.start) / FLASH_MS, 0, 1);
+    const t = (performance.now() - this.flash.start) / FLASH_MS;
+    if (t >= 1) return;
+    // A brief bloom: quick ease-in swell to full, then a gentle ease-out fade (never a linear wipe).
+    const alpha = t < 0.16 ? smoothstep(0, 0.16, t) : 1 - smoothstep(0.16, 1, t);
+    if (alpha <= 0.001) return;
+    const bloom = smoothstep(0, 1, t); // 0→1: the halo bleeds a little further out as it dissolves
+
     const ctx = this.canvas.getContext();
-    const [a, b, c, d, e, f] = this.canvas.viewportTransform;
-    const pad = 8 / this.zoom;
+    const vt = this.canvas.viewportTransform;
+    const zoom = vt[0];
+    const grow = 5 * bloom; // device px the glow overflows outward across its life
+    const pad = 3 + grow; // one offset for every layer so the cores coincide (a single line, not rings)
+    const rgb = '243, 172, 80';
+    // Stack three blurs at the SAME offset — tight, mid, wide — so their shadows blend into one smooth
+    // amber bloom (no concentric outlines) while the shared thin core keeps the highlight legible.
+    const rings = [
+      { blur: 10 + grow, a: 0.42 },
+      { blur: 18 + grow * 1.6, a: 0.28 },
+      { blur: 32 + grow * 2.4, a: 0.15 },
+    ];
     ctx.save();
-    ctx.transform(a, b, c, d, e, f);
-    ctx.lineWidth = 4 / this.zoom;
-    ctx.strokeStyle = `rgba(65, 101, 204, ${0.92 * alpha})`;
-    ctx.shadowColor = `rgba(65, 101, 204, ${0.55 * alpha})`;
-    ctx.shadowBlur = 18 / this.zoom;
+    ctx.lineWidth = 2;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
     for (const r of this.flash.bounds) {
-      ctx.strokeRect(r.left - pad, r.top - pad, r.width + pad * 2, r.height + pad * 2);
+      const x = r.left * zoom + vt[4];
+      const y = r.top * zoom + vt[5];
+      const w = r.width * zoom;
+      const h = r.height * zoom;
+      for (const g of rings) {
+        ctx.strokeStyle = `rgba(${rgb}, ${g.a * alpha})`;
+        ctx.shadowColor = `rgba(${rgb}, ${g.a * alpha})`;
+        ctx.shadowBlur = g.blur;
+        roundRectPath(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, 10);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }

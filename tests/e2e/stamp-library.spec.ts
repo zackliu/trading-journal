@@ -9,8 +9,8 @@ function tempDataDir(): string {
 }
 
 const CANVAS = '.canvas-container';
-// The one surface: page[0..2500] + gap(20) + strip[2520..3280]; height 1600. Must match the controller.
-const SCENE_W = 3280;
+// The one surface: page[0..2900] + gap(12) + strip[2912..3482]; height 1600. Must match the controller.
+const SCENE_W = 3482;
 const SCENE_H = 1600;
 
 interface Box {
@@ -81,7 +81,7 @@ async function seedStamp(
     objects: [
       {
         type: 'Rect',
-        left: 2680,
+        left: 3120,
         top: 120,
         width: 100,
         height: 70,
@@ -108,8 +108,8 @@ async function openReview(page: Page): Promise<string> {
   return id;
 }
 
-// The seeded stamp's centre in scene coords (left 2680 + w/2, top 120 + h/2).
-const STAMP_CENTER: Scene = [2730, 155];
+// The seeded stamp's centre in scene coords (left 3120 + w/2, top 120 + h/2).
+const STAMP_CENTER: Scene = [3170, 155];
 
 test('dragging a stamp onto the page drops a tagged copy while the palette keeps the stamp', async () => {
   const dataDir = tempDataDir();
@@ -174,7 +174,7 @@ test('unlocking the palette lets a page drawing be moved in as a global stamp', 
   // Draw + tag a page drawing, then try to drag it into the LOCKED strip — it must be refused.
   await drawRect(page, box, [300, 260], [640, 460]);
   await tagAt(page, box, [470, 360], 'setup', 'alpha');
-  await dragScene(page, box, [470, 360], [2760, 900]);
+  await dragScene(page, box, [470, 360], [3170, 900]);
 
   // Refused: the strip is still empty and the drawing still belongs to the review.
   expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(0);
@@ -184,7 +184,7 @@ test('unlocking the palette lets a page drawing be moved in as a global stamp', 
   await page.getByTestId('stamp-lock').click();
   await drawRect(page, box, [300, 900], [640, 1100]);
   await tagAt(page, box, [470, 1000], 'setup', 'beta');
-  await dragScene(page, box, [470, 1000], [2760, 1000]);
+  await dragScene(page, box, [470, 1000], [3170, 1000]);
 
   // The drawing left the review and became a global stamp carrying its tag.
   await expect.poll(async () => stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(1);

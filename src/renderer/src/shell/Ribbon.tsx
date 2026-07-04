@@ -156,148 +156,172 @@ export function Ribbon(props: RibbonProps): JSX.Element {
         {active === 'Draw' ? (
           <>
             <Group label="Tools">
-              {TOOLS.map((t) => (
-                <IconButton
-                  key={t.id}
-                  icon={t.icon}
-                  title={t.label}
-                  active={props.tool === t.id}
-                  disabled={!entryOpen}
-                  onClick={() => props.onTool(t.id)}
-                />
-              ))}
-            </Group>
-            <Group label="Stroke">
-              <label className="rfield" title="Stroke color">
-                <input
-                  type="color"
-                  value={style.stroke}
-                  disabled={!entryOpen}
-                  onChange={(e) => props.onStyle({ stroke: e.target.value })}
-                />
-              </label>
-              <div className="rwidths">
-                {WIDTHS.map((w) => (
-                  <button
-                    type="button"
-                    key={w}
-                    className={`rwidth${style.strokeWidth === w && !style.borderless ? ' is-active' : ''}`}
-                    title={`${w}px`}
+              <div className="rgrid rgrid--4">
+                {TOOLS.map((t) => (
+                  <IconButton
+                    key={t.id}
+                    icon={t.icon}
+                    title={t.label}
+                    active={props.tool === t.id}
                     disabled={!entryOpen}
-                    onClick={() => props.onStyle({ strokeWidth: w, borderless: false })}
-                  >
-                    <span className="rwidth__bar" style={{ height: `${w}px` }} />
-                  </button>
+                    onClick={() => props.onTool(t.id)}
+                  />
                 ))}
               </div>
-              <button
-                type="button"
-                className={`rtext${style.borderless ? ' is-active' : ''}`}
-                title="No border (rectangles & text boxes only)"
-                disabled={!entryOpen}
-                data-testid="no-border"
-                onClick={() => props.onStyle({ borderless: true })}
-              >
-                No border
-              </button>
-              <div className="rdashes">
-                {DASHES.map((d) => (
+            </Group>
+            <Group label="Stroke">
+              <div className="r2">
+                <div className="rrow">
+                  <label className="rfield" title="Stroke color">
+                    <input
+                      type="color"
+                      value={style.stroke}
+                      disabled={!entryOpen}
+                      onChange={(e) => props.onStyle({ stroke: e.target.value })}
+                    />
+                  </label>
+                  <div className="rwidths">
+                    {WIDTHS.map((w) => (
+                      <button
+                        type="button"
+                        key={w}
+                        className={`rwidth${style.strokeWidth === w && !style.borderless ? ' is-active' : ''}`}
+                        title={`${w}px`}
+                        disabled={!entryOpen}
+                        onClick={() => props.onStyle({ strokeWidth: w, borderless: false })}
+                      >
+                        <span className="rwidth__bar" style={{ height: `${w}px` }} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="rrow">
+                  <div className="rdashes">
+                    {DASHES.map((d) => (
+                      <button
+                        type="button"
+                        key={d}
+                        className={`rdash${style.dash === d ? ' is-active' : ''}`}
+                        title={d}
+                        disabled={!entryOpen}
+                        data-testid={`dash-${d}`}
+                        onClick={() => props.onStyle({ dash: d })}
+                      >
+                        <span className={`rdash__line rdash__line--${d}`} />
+                      </button>
+                    ))}
+                  </div>
                   <button
                     type="button"
-                    key={d}
-                    className={`rdash${style.dash === d ? ' is-active' : ''}`}
-                    title={d}
+                    className={`rtext rtext--sm${style.borderless ? ' is-active' : ''}`}
+                    title="No border (rectangles & text boxes only)"
                     disabled={!entryOpen}
-                    data-testid={`dash-${d}`}
-                    onClick={() => props.onStyle({ dash: d })}
+                    data-testid="no-border"
+                    onClick={() => props.onStyle({ borderless: true })}
                   >
-                    <span className={`rdash__line rdash__line--${d}`} />
+                    No border
                   </button>
-                ))}
+                </div>
               </div>
             </Group>
             <Group label="Fill & opacity">
-              <label className="rfield" title="Fill color">
-                <input
-                  type="color"
-                  value={style.fill === 'transparent' ? '#3fb950' : style.fill}
-                  disabled={!entryOpen}
-                  onChange={(e) => props.onStyle({ fill: e.target.value })}
-                />
-              </label>
-              <button
-                type="button"
-                className="rtext"
-                disabled={!entryOpen}
-                onClick={() => props.onStyle({ fill: 'transparent' })}
-              >
-                No fill
-              </button>
-              <input
-                className="ropacity"
-                type="range"
-                min={0.1}
-                max={1}
-                step={0.1}
-                value={style.opacity}
-                title="Opacity"
-                disabled={!entryOpen}
-                onChange={(e) => props.onStyle({ opacity: Number(e.target.value) })}
-              />
+              <div className="r2">
+                <div className="rrow">
+                  <label className="rfield" title="Fill color">
+                    <input
+                      type="color"
+                      value={style.fill === 'transparent' ? '#3fb950' : style.fill}
+                      disabled={!entryOpen}
+                      onChange={(e) => props.onStyle({ fill: e.target.value })}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="rtext rtext--sm"
+                    disabled={!entryOpen}
+                    onClick={() => props.onStyle({ fill: 'transparent' })}
+                  >
+                    No fill
+                  </button>
+                </div>
+                <div className="rrow">
+                  <input
+                    className="ropacity"
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.1}
+                    value={style.opacity}
+                    title="Opacity"
+                    disabled={!entryOpen}
+                    onChange={(e) => props.onStyle({ opacity: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
             </Group>
             <Group label="Text">
-              <label className="rfield" title="Text color">
-                <input
-                  type="color"
-                  value={style.textColor}
-                  disabled={!entryOpen}
-                  onChange={(e) => props.onStyle({ textColor: e.target.value })}
-                />
-              </label>
-              <select
-                className="rselect"
-                title="Font size"
-                data-testid="font-size"
-                value={style.fontSize}
-                disabled={!entryOpen}
-                onChange={(e) => props.onStyle({ fontSize: Number(e.target.value) })}
-              >
-                {FONT_SIZES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              <div className="r2">
+                <div className="rrow">
+                  <label className="rfield" title="Text color">
+                    <input
+                      type="color"
+                      value={style.textColor}
+                      disabled={!entryOpen}
+                      onChange={(e) => props.onStyle({ textColor: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <div className="rrow">
+                  <select
+                    className="rselect"
+                    title="Font size"
+                    data-testid="font-size"
+                    value={style.fontSize}
+                    disabled={!entryOpen}
+                    onChange={(e) => props.onStyle({ fontSize: Number(e.target.value) })}
+                  >
+                    {FONT_SIZES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </Group>
             <Group label="Edit">
-              <IconButton icon="undo" title="Undo" disabled={!entryOpen || !props.canUndo} onClick={props.onUndo} />
-              <IconButton icon="redo" title="Redo" disabled={!entryOpen || !props.canRedo} onClick={props.onRedo} />
-              <IconButton
-                icon="trash"
-                title="Delete selected"
-                disabled={!entryOpen || !hasSelection}
-                onClick={props.onDeleteSelected}
-              />
+              <div className="rgrid rgrid--2">
+                <IconButton icon="undo" title="Undo" disabled={!entryOpen || !props.canUndo} onClick={props.onUndo} />
+                <IconButton icon="redo" title="Redo" disabled={!entryOpen || !props.canRedo} onClick={props.onRedo} />
+                <IconButton
+                  icon="trash"
+                  title="Delete selected"
+                  disabled={!entryOpen || !hasSelection}
+                  onClick={props.onDeleteSelected}
+                />
+              </div>
             </Group>
             <Group label="Arrange">
-              <IconButton
-                icon="front"
-                title="Bring to front"
-                disabled={!entryOpen || !hasSelection}
-                onClick={props.onBringToFront}
-              />
-              <IconButton
-                icon="sendtoback"
-                title="Send to back"
-                disabled={!entryOpen || !hasSelection}
-                onClick={props.onSendToBack}
-              />
-              <IconButton
-                icon="fit"
-                title="Fit image to canvas"
-                disabled={!entryOpen || !hasSelection}
-                onClick={props.onFitToCanvas}
-              />
+              <div className="rgrid rgrid--2">
+                <IconButton
+                  icon="front"
+                  title="Bring to front"
+                  disabled={!entryOpen || !hasSelection}
+                  onClick={props.onBringToFront}
+                />
+                <IconButton
+                  icon="sendtoback"
+                  title="Send to back"
+                  disabled={!entryOpen || !hasSelection}
+                  onClick={props.onSendToBack}
+                />
+                <IconButton
+                  icon="fit"
+                  title="Fit image to canvas"
+                  disabled={!entryOpen || !hasSelection}
+                  onClick={props.onFitToCanvas}
+                />
+              </div>
             </Group>
             <Group label="Palette">
               <button
@@ -319,24 +343,20 @@ export function Ribbon(props: RibbonProps): JSX.Element {
         ) : null}
 
         {active === 'Review' ? (
-          <Group label="Review tags">
-            <QuickTag
-              groups={props.groups}
-              selected={props.entryTags}
-              onToggle={props.onToggleEntryTag}
-              onOpenSettings={props.onOpenSettings}
-            />
-          </Group>
+          <QuickTag
+            groups={props.groups}
+            selected={props.entryTags}
+            onToggle={props.onToggleEntryTag}
+            onOpenSettings={props.onOpenSettings}
+          />
         ) : null}
         {active === 'Annotation' && selectedAnnotation ? (
-          <Group label="Annotation tags">
-            <QuickTag
-              groups={props.groups}
-              selected={selectedAnnotation.tags}
-              onToggle={props.onToggleAnnotationTag}
-              onOpenSettings={props.onOpenSettings}
-            />
-          </Group>
+          <QuickTag
+            groups={props.groups}
+            selected={selectedAnnotation.tags}
+            onToggle={props.onToggleAnnotationTag}
+            onOpenSettings={props.onOpenSettings}
+          />
         ) : null}
         {active === 'Browse' ? (
           <div className="rplaceholder">Pick a group in the left rail to browse by it</div>

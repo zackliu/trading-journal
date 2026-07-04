@@ -16,6 +16,22 @@ function sha256(base64: string): string {
   return createHash('sha256').update(Buffer.from(base64, 'base64')).digest('hex');
 }
 
+/** Generate an opaque PNG of the given size in the page and return its base64 (no data: prefix). */
+async function makePngB64(page: Page, w: number, h: number): Promise<string> {
+  return page.evaluate(
+    ({ w, h }) => {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d')!;
+      ctx.fillStyle = '#4477aa';
+      ctx.fillRect(0, 0, w, h);
+      return c.toDataURL('image/png').split(',')[1];
+    },
+    { w, h },
+  );
+}
+
 /** Dispatch a real `paste` ClipboardEvent carrying an image file (the Ctrl+V path). */
 async function pasteImage(page: Page, base64Png: string): Promise<void> {
   await page.evaluate((b64) => {
@@ -132,9 +148,9 @@ test('pasting into an open review adds an image object referenced by hash', asyn
   if (!id) throw new Error('expected one entry');
   const entry = await store.getEntry(page, id);
   expect(entry?.canvasJson).not.toContain('data:image');
-  // The page is a fixed 2500×1600 slide, independent of the pasted image's size.
+  // The page is a fixed 2900×1600 slide, independent of the pasted image's size.
   const parsedPage = JSON.parse(entry?.canvasJson ?? '{}') as { tjPage?: { width?: number; height?: number } };
-  expect(parsedPage.tjPage).toEqual({ width: 2500, height: 1600 });
+  expect(parsedPage.tjPage).toEqual({ width: 2900, height: 1600 });
   // The first image becomes the entry cover for the thumbnail.
   expect(list[0]?.imageHash).toBe(hash);
 
@@ -200,9 +216,11 @@ test('right-clicking an image can lock it, then unlock it, persisting the flag',
   await expect(container).toBeVisible();
   await page.waitForTimeout(300);
 
-  // Paste an image so there is an object to lock (it fills the page centre).
-  await pasteImage(page, PNG_A);
-  const hash = sha256(PNG_A);
+  // Paste a page-sized screenshot so a real image object covers the canvas centre (pastes come in at
+  // native resolution, so the fixture must actually be large — like a real chart capture).
+  const png = await makePngB64(page, 2000, 1200);
+  await pasteImage(page, png);
+  const hash = sha256(png);
   await expect
     .poll(async () => {
       const list = await store.listEntries(page);
