@@ -8,10 +8,12 @@
 
 import {
   InteractiveFabricObject,
+  Point,
   Polyline,
   Textbox,
   classRegistry,
   controlsUtils,
+  util,
   type Control,
   type FabricObject,
 } from 'fabric';
@@ -140,6 +142,44 @@ export function attachSegmentControls(obj: FabricObject): void {
   obj.controls = controlsUtils.createPolyControls(obj, { render: controlsUtils.renderCircleControl });
   obj.hasBorders = false;
   obj.objectCaching = false;
+  // Hit testing along the stroke (not the bounding box) is applied canvas-wide via
+  // `segmentContainsPoint` — see CanvasController's `_pointIsInObjectSelectionArea` override.
+}
+
+/** Half-width, in *screen* pixels, of a line's clickable band — the perpendicular reach on each side
+ * of the stroke that still counts as a hit (PowerPoint uses a similar small, zoom-independent band). */
+const SEGMENT_HIT_SCREEN_PADDING = 6;
+
+function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/**
+ * Office-style hit testing for a line / arrow. A point selects the segment when its PERPENDICULAR
+ * distance to the real stroke is within a small, zoom-independent screen band — never merely because
+ * it landed inside the diagonal bounding box. This fixes both failure modes at once: a thin horizontal
+ * line (a near-zero-height box) becomes easy to grab, and a diagonal line stops selecting the large
+ * empty triangle around it. The band is constant on screen, so it feels the same at any zoom.
+ */
+export function segmentContainsPoint(obj: Polyline, scenePoint: Point): boolean {
+  const pts = obj.points;
+  if (!pts || pts.length < 2) return false;
+  const m = obj.calcTransformMatrix();
+  const off = obj.pathOffset;
+  const zoom = obj.canvas?.getZoom() ?? 1;
+  const tolerance = SEGMENT_HIT_SCREEN_PADDING / zoom + (obj.strokeWidth ?? 0) / 2;
+  let prev = util.transformPoint(new Point(pts[0].x - off.x, pts[0].y - off.y), m);
+  for (let i = 1; i < pts.length; i += 1) {
+    const cur = util.transformPoint(new Point(pts[i].x - off.x, pts[i].y - off.y), m);
+    if (pointToSegmentDistance(scenePoint, prev, cur) <= tolerance) return true;
+    prev = cur;
+  }
+  return false;
 }
 
 /** Text = an editable text box that draws its own bordered / filled rectangle behind the text. */

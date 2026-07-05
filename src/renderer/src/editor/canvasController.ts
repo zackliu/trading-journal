@@ -3,6 +3,7 @@ import {
   FabricImage,
   Line,
   PencilBrush,
+  Point,
   Polyline,
   Rect,
   util,
@@ -24,6 +25,7 @@ import {
   isLocked,
   isTitle,
   reattachControls,
+  segmentContainsPoint,
   tjMeta,
 } from './annotations';
 
@@ -202,6 +204,21 @@ export class CanvasController {
       // Office-style corners: dragging a corner stretches width and height freely; hold Shift to keep aspect.
       uniformScaling: false,
     });
+    // Office-style line hit target: a line / arrow is selected along its stroke within a small,
+    // zoom-independent screen band — not by its (diagonal, or sliver-thin) bounding box. Fabric v6
+    // point-hit runs `_pointIsInObjectSelectionArea(obj, viewportPoint)` against the bounding polygon;
+    // for polylines we replace that with perpendicular distance to the stroke (in scene space).
+    const selArea = this.canvas as unknown as {
+      _pointIsInObjectSelectionArea: (obj: FabricObject, point: Point) => boolean;
+    };
+    const originalSelArea = selArea._pointIsInObjectSelectionArea.bind(this.canvas);
+    selArea._pointIsInObjectSelectionArea = (obj: FabricObject, point: Point): boolean => {
+      // Fabric hands `point` here already in scene coordinates (see its `_checkTarget`).
+      if (obj instanceof Polyline) {
+        return segmentContainsPoint(obj, point);
+      }
+      return originalSelArea(obj, point);
+    };
     this.canvas.on('mouse:down:before', (opt) => this.onDownBefore(opt));
     this.canvas.on('mouse:down', (opt) => this.onDown(opt));
     this.canvas.on('mouse:move', (opt) => this.onMove(opt));
@@ -281,7 +298,30 @@ export class CanvasController {
 
   /** Which paper an object sits on, by its centre (the strip starts after the divider). */
   private regionOf(obj: FabricObject): Region {
-    return obj.getCenterPoint().x >= this.pageW + GAP / 2 ? 'strip' : 'page';
+    return this.regionAt(obj.getCenterPoint().x);
+  }
+
+  /** Which region a scene x-coordinate falls in (page on the left, stamp strip on the right). */
+  private regionAt(x: number): Region {
+    return x >= this.pageW + GAP / 2 ? 'strip' : 'page';
+  }
+
+  /**
+   * Topmost stamp in the strip whose bounds contain the scene point. The locked-palette pull-out is
+   * driven by this geometry rather than Fabric's `evented` hit-target, so an async-load timing glitch
+   * that momentarily leaves a stamp un-hittable can never make the palette feel dead (the reported
+   * "dragging a stamp out sometimes does nothing until you flip a page and come back").
+   */
+  private stripStampUnder(p: Point): FabricObject | null {
+    const objs = this.canvas.getObjects();
+    for (let i = objs.length - 1; i >= 0; i -= 1) {
+      const o = objs[i];
+      if (isChrome(o) || isGhost(o) || !isAnnotation(o) || this.regionOf(o) !== 'strip') continue;
+      o.setCoords();
+      const r = o.getBoundingRect();
+      if (p.x >= r.left && p.x <= r.left + r.width && p.y >= r.top && p.y <= r.top + r.height) return o;
+    }
+    return null;
   }
 
   /** The (non-serialized) page chrome: the title band + its hairline, and the soft groove between page and strip. */
@@ -819,16 +859,21 @@ export class CanvasController {
       return;
     }
     if (this.tool === 'select') {
-      // Remember where a drag starts so a cross-region drop can copy / move / snap back.
       const t = opt.target ?? null;
       this.didMove = false;
-      if (t && !isChrome(t) && isAnnotation(t) && this.paletteLocked && this.regionOf(t) === 'strip') {
-        // Locked palette: dragging a stamp pulls out a translucent COPY; the original stays put.
-        const p = this.canvas.getScenePoint(opt.e);
-        this.startGhostDrag(t, p.x, p.y);
-        this.dragHome = null;
-        return;
+      const p = this.canvas.getScenePoint(opt.e);
+      // Locked palette: pressing a stamp in the strip pulls out a translucent COPY (the original stays
+      // put). Resolve the stamp by GEOMETRY — the pointer is over a strip stamp — rather than Fabric's
+      // `evented` hit-target, so a transient load/hit glitch can never make the strip feel dead.
+      if (this.paletteLocked && this.regionAt(p.x) === 'strip') {
+        const stamp = this.stripStampUnder(p);
+        if (stamp) {
+          this.startGhostDrag(stamp, p.x, p.y);
+          this.dragHome = null;
+          return;
+        }
       }
+      // Otherwise remember where a drag starts so a cross-region drop can move / snap back.
       this.dragHome =
         t && !isChrome(t) && !isLocked(t)
           ? { obj: t, left: t.left ?? 0, top: t.top ?? 0, region: this.regionOf(t) }
@@ -1029,6 +1074,10 @@ export class CanvasController {
     };
     this.ghostDrag = drag;
     this.canvas.discardActiveObject();
+    // Suppress marquee selection for the duration of the pull-out (restored on mouse:up), even when the
+    // press produced no Fabric target (the transient this whole path guards against).
+    this.canvas.selection = false;
+    this.selectionSuppressed = true;
     const serialized = source.toObject([...TJ_PROPS]) as Record<string, unknown>;
     void (async () => {
       const [g] = await util.enlivenObjects<FabricObject>([serialized]);
