@@ -139,3 +139,68 @@ test('deleting an in-use value confirms first, then archives it (recoverable)', 
 
   await app.close();
 });
+
+// ---- Permanently delete an archived tag ("empty from recycle bin") ----
+
+test('permanently deleting an archived value drops the record, never the tag usage (no cascade)', async () => {
+  const { app, page } = await launchApp(tempDataDir());
+  await store.defineGroup(page, { id: 'setup', label: 'Setup', pinned: true });
+  await store.defineValue(page, { groupId: 'setup', value: 'h2' });
+
+  // An entry uses setup:h2, then the value is archived.
+  await store.createEntry(page, { canvasJson: '{}', entryTags: [{ group: 'setup', value: 'h2' }], annotations: [] });
+  await store.deleteValue(page, 'setup', 'h2');
+  expect((await store.listArchivedGroups(page)).values.map((v) => `${v.groupId}:${v.value}`)).toContain('setup:h2');
+
+  // Purge = empty from recycle bin: the archived declaration is gone from the registry entirely.
+  await store.purgeValue(page, 'setup', 'h2');
+  expect((await store.listArchivedGroups(page)).values.map((v) => `${v.groupId}:${v.value}`)).not.toContain('setup:h2');
+  expect((await store.listGroups(page)).find((g) => g.id === 'setup')?.values.map((v) => v.value)).toEqual([]);
+
+  // ...but the entry's tag usage is untouched — it still queries under setup:h2.
+  expect((await store.queryEntriesByTag(page, { group: 'setup', value: 'h2' })).length).toBe(1);
+
+  await app.close();
+});
+
+test('permanently deleting an archived group drops the group, not the usage', async () => {
+  const { app, page } = await launchApp(tempDataDir());
+  await store.defineGroup(page, { id: 'setup', label: 'Setup', pinned: true });
+  await store.defineValue(page, { groupId: 'setup', value: 'h2' });
+  await store.createEntry(page, { canvasJson: '{}', entryTags: [{ group: 'setup', value: 'h2' }], annotations: [] });
+
+  await store.deleteGroup(page, 'setup'); // archive the whole group
+  expect((await store.listArchivedGroups(page)).groups.map((g) => g.id)).toContain('setup');
+
+  await store.purgeGroup(page, 'setup');
+  expect((await store.listArchivedGroups(page)).groups.map((g) => g.id)).not.toContain('setup');
+  expect((await store.listGroups(page)).find((g) => g.id === 'setup')).toBeUndefined();
+
+  // The entry is still tagged setup:h2 (no cascade into usage).
+  expect((await store.queryEntriesByTag(page, { group: 'setup', value: 'h2' })).length).toBe(1);
+
+  await app.close();
+});
+
+test('the Archived section can permanently delete a tag via its trash button', async () => {
+  const { app, page } = await launchApp(tempDataDir());
+
+  await page.getByTestId('ribbon-settings').click();
+  await page.getByTestId('settings-group-name').fill('Setup');
+  await page.getByTestId('settings-add-group').click();
+  await page.getByTestId('settings-add-value-setup').fill('Trend');
+  await page.getByTestId('settings-add-value-setup').press('Enter');
+  await expect(page.getByTestId('settings-value-setup-trend')).toBeVisible();
+
+  // Archive it (unused → straight to Archived), then permanently delete it from there.
+  await page.getByTestId('settings-del-value-setup-trend').click();
+  await page.getByTestId('settings-archived-toggle').click();
+  await expect(page.getByTestId('settings-archived-value-setup-trend')).toBeVisible();
+  await page.getByTestId('settings-purge-value-setup-trend').click();
+
+  // Gone from Archived and from the registry entirely.
+  await expect(page.getByTestId('settings-archived-value-setup-trend')).toHaveCount(0);
+  expect((await store.listArchivedGroups(page)).values.map((v) => `${v.groupId}:${v.value}`)).not.toContain('setup:trend');
+
+  await app.close();
+});

@@ -16,6 +16,7 @@ import type {
   TagValue,
   ViewMatch,
   ViewQuery,
+  WorkspaceState,
 } from './domain';
 
 export interface PingResult {
@@ -28,6 +29,11 @@ export interface PingResult {
 
 export interface IpcApi {
   ping(): Promise<PingResult>;
+  getWorkspaceState(): Promise<WorkspaceState>;
+  pickWorkspaceFolder(): Promise<string | null>;
+  setWorkspaceFolder(dir: string): Promise<WorkspaceState>;
+  revealWorkspace(): Promise<void>;
+  quitApp(): Promise<void>;
   ingestImageEntry(bytes: Uint8Array): Promise<Entry>;
   listEntries(): Promise<EntrySummary[]>;
   newEntry(): Promise<Entry>;
@@ -58,6 +64,8 @@ export interface IpcApi {
   deleteValue(groupId: string, value: string): Promise<void>;
   restoreGroup(id: string): Promise<void>;
   restoreValue(groupId: string, value: string): Promise<void>;
+  purgeGroup(id: string): Promise<void>;
+  purgeValue(groupId: string, value: string): Promise<void>;
   listArchivedGroups(): Promise<ArchivedVocab>;
   setGroupPinned(id: string, pinned: boolean): Promise<void>;
   reorderGroups(ids: string[]): Promise<void>;
@@ -76,6 +84,11 @@ export interface IpcApi {
 
 export const IpcChannel = {
   ping: 'app:ping',
+  getWorkspaceState: 'workspace:get-state',
+  pickWorkspaceFolder: 'workspace:pick-folder',
+  setWorkspaceFolder: 'workspace:set-folder',
+  revealWorkspace: 'workspace:reveal',
+  quitApp: 'workspace:quit',
   ingestImageEntry: 'ingest:image-entry',
   listEntries: 'store:list-entries',
   newEntry: 'store:new-entry',
@@ -106,6 +119,8 @@ export const IpcChannel = {
   deleteValue: 'vocab:delete-value',
   restoreGroup: 'vocab:restore-group',
   restoreValue: 'vocab:restore-value',
+  purgeGroup: 'vocab:purge-group',
+  purgeValue: 'vocab:purge-value',
   listArchivedGroups: 'vocab:list-archived',
   setGroupPinned: 'vocab:set-group-pinned',
   reorderGroups: 'vocab:reorder-groups',

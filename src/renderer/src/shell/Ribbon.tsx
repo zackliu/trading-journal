@@ -33,6 +33,7 @@ interface RibbonProps {
   onToggleAnnotationTag: (tag: Tag, on: boolean) => void;
   onOpenSettings: () => void;
   onOpenResultSettings: () => void;
+  onOpenGeneral: () => void;
   resultDimensions: ResultDimensionView[];
   onSetAnnotationResult: (dimensionId: string, value: string | number | null) => void;
   savedViews: SavedView[];
@@ -166,6 +167,9 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 onClick={props.onOpenResultSettings}
               >
                 <Icon name="gauge" /> Result
+              </button>
+              <button type="button" className="rtext" data-testid="ribbon-general" onClick={props.onOpenGeneral}>
+                <Icon name="folder" /> General
               </button>
             </Group>
           </>

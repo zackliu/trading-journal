@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export type Db = Database.Database;
 
@@ -7,9 +9,30 @@ export interface OpenedDb {
   userVersion: number;
 }
 
-// Ordered migrations. Index i migrates schema version i -> i+1, wrapped in a
-// transaction together with the user_version bump. Slice 1 introduces the schema;
-// Slice 5 adds the global stamp library.
+/** How many timestamped pre-migration snapshots of a journal to keep in `backups/`. */
+const MAX_BACKUPS = 10;
+
+/**
+ * Thrown when the journal on disk was written by a NEWER schema than this app understands. Opening it
+ * anyway could silently corrupt real review data, so we refuse and surface a clear message instead.
+ */
+export class JournalTooNewError extends Error {
+  constructor(
+    readonly journalVersion: number,
+    readonly appSchemaVersion: number,
+  ) {
+    super(
+      `This journal was created by a newer version of Trading Journal (data schema v${journalVersion}, ` +
+        `this app supports up to v${appSchemaVersion}). Please update the app to open it. Your data has ` +
+        `not been changed.`,
+    );
+    this.name = 'JournalTooNewError';
+  }
+}
+
+// Ordered migrations. Index i migrates schema version i -> i+1, wrapped in a transaction together with
+// the user_version bump. APPEND-ONLY (v0.1.0+ data contract): never edit, reorder, or remove an
+// existing migration, and a migration must preserve/transform existing rows — never drop user data.
 const MIGRATIONS: Array<(db: Db) => void> = [
   migration001Initial,
   migration002StampLibrary,
@@ -18,16 +41,61 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   migration005TagSort,
   migration006ResultValues,
   migration007SoftDelete,
+  migration008SchemaMeta,
 ];
 
-/** Open (creating if missing) the SQLite database and run pending migrations. */
+/**
+ * Open (creating if missing) the SQLite database and run pending migrations. Before applying any
+ * migration to an EXISTING journal it snapshots the file into `backups/` (so a bad migration can never
+ * destroy review data), and it refuses to open a journal newer than this app's schema (downgrade guard).
+ */
 export function openDatabase(sqlitePath: string): OpenedDb {
+  const preexisting = existsSync(sqlitePath);
   const db: Db = new Database(sqlitePath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  const current = db.pragma('user_version', { simple: true }) as number;
+  if (current > MIGRATIONS.length) {
+    db.close();
+    throw new JournalTooNewError(current, MIGRATIONS.length);
+  }
+  if (preexisting && current < MIGRATIONS.length) {
+    backupBeforeMigration(db, sqlitePath, current);
+  }
+
   runMigrations(db);
   const userVersion = db.pragma('user_version', { simple: true }) as number;
   return { db, userVersion };
+}
+
+/** Snapshot the journal file before a migration runs, keeping the most recent MAX_BACKUPS copies. */
+function backupBeforeMigration(db: Db, sqlitePath: string, fromVersion: number): void {
+  // Flush any WAL frames into the main file so a plain copy is a complete, consistent snapshot.
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  const dir = join(dirname(sqlitePath), 'backups');
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  copyFileSync(sqlitePath, join(dir, `app-v${fromVersion}-${stamp}.sqlite`));
+
+  const snapshots = readdirSync(dir)
+    .filter((name) => name.startsWith('app-v') && name.endsWith('.sqlite'))
+    .sort();
+  for (const old of snapshots.slice(0, Math.max(0, snapshots.length - MAX_BACKUPS))) {
+    rmSync(join(dir, old), { force: true });
+  }
+}
+
+/** Record which app version last opened this journal (provenance for support / diagnostics). */
+export function stampAppVersion(db: Db, appVersion: string): void {
+  const upsert = db.prepare(
+    'INSERT INTO schema_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  );
+  const write = db.transaction(() => {
+    upsert.run('app_version', appVersion);
+    upsert.run('updated_at', String(Date.now()));
+  });
+  write();
 }
 
 function runMigrations(db: Db): void {
@@ -183,5 +251,16 @@ function migration007SoftDelete(db: Db): void {
     ALTER TABLE tag_values ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE result_dimensions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE result_dimension_values ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
+// Provenance for the v0.1.0+ data-safety posture: a tiny key/value table recording which app version
+// last opened this journal (written on every open via stampAppVersion). Purely additive — no user data.
+function migration008SchemaMeta(db: Db): void {
+  db.exec(`
+    CREATE TABLE schema_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 }

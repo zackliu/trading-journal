@@ -13,6 +13,19 @@ export interface ImageRef {
   hash: string;
 }
 
+/**
+ * Where the app looks for the active journal data folder, and whether it is usable. `ready` means the
+ * folder exists, is writable, and the database is open on it; the other states drive the setup gate.
+ * `source` records how the path was resolved (env override / config pointer / nothing configured).
+ */
+export type WorkspaceStatus = 'ready' | 'unset' | 'missing' | 'unwritable';
+
+export interface WorkspaceState {
+  status: WorkspaceStatus;
+  dataDir: string | null;
+  source: 'env' | 'config' | 'none';
+}
+
 export interface Tag {
   group: string;
   value: string;

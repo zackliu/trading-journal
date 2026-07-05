@@ -25,7 +25,8 @@ export type IconName =
   | 'grip'
   | 'stats'
   | 'gauge'
-  | 'pencil';
+  | 'pencil'
+  | 'folder';
 
 const PATHS: Record<IconName, string> = {
   select: 'M5 3l5 15 2.2-6.3L18.5 9.5z',
@@ -55,6 +56,7 @@ const PATHS: Record<IconName, string> = {
   stats: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   gauge: 'M4 15a8 8 0 0116 0M12 15l3.5-3.5',
   pencil: 'M5 19h3L18 9l-3-3L5 16zM14 6l3 3',
+  folder: 'M3 7a1 1 0 011-1h5l2 2h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z',
 };
 
 export function Icon({ name }: { name: IconName }): JSX.Element {

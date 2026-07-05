@@ -42,12 +42,13 @@ test('the app boots to an empty shell with an open data folder', async () => {
   );
   expect(ping.ok).toBe(true);
   expect(ping.sqliteReady).toBe(true);
-  // Slice 1 schema migrated to v1; Slice 5 added the stamp library (v2); v3 adds the rendered thumbnail column; v4 adds the tag registry; v5 adds vocabulary sort order.
-  expect(ping.userVersion).toBe(7);
+  // Schema migrated forward through appended migrations: v1 initial, v2 stamp library, v3 thumbnail,
+  // v4 tag registry, v5 vocabulary sort, v6 result preset values, v7 soft-delete, v8 schema_meta.
+  expect(ping.userVersion).toBe(8);
 
   // 3. The status shell reflects the healthy boot.
   await expect(page.getByTestId('status-ipc')).toContainText('connected');
-  await expect(page.getByTestId('status-store')).toContainText('SQLite v7');
+  await expect(page.getByTestId('status-store')).toContainText('SQLite v8');
 
   // 4. The portable data folder was created with an empty SQLite file and images/.
   expect(existsSync(join(dataDir, 'app.sqlite'))).toBe(true);

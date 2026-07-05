@@ -128,7 +128,13 @@ export function SettingsDialog(props: Props): JSX.Element {
           )}
         </div>
 
-        <ArchivedSection archived={archived} onRestoreGroup={props.onRestoreGroup} onRestoreValue={props.onRestoreValue} />
+        <ArchivedSection
+          archived={archived}
+          onRestoreGroup={props.onRestoreGroup}
+          onRestoreValue={props.onRestoreValue}
+          onPurgeGroup={props.onPurgeGroup}
+          onPurgeValue={props.onPurgeValue}
+        />
 
         {pending ? (
           <ConfirmDialog
@@ -150,10 +156,14 @@ function ArchivedSection({
   archived,
   onRestoreGroup,
   onRestoreValue,
+  onPurgeGroup,
+  onPurgeValue,
 }: {
   archived: ArchivedVocab;
   onRestoreGroup: (id: string) => void;
   onRestoreValue: (groupId: string, value: string) => void;
+  onPurgeGroup: (id: string) => void;
+  onPurgeValue: (groupId: string, value: string) => void;
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const total = archived.groups.length + archived.values.length;
@@ -179,6 +189,16 @@ function ArchivedSection({
               >
                 Restore
               </button>
+              <button
+                type="button"
+                className="archived__purge"
+                aria-label={`delete ${g.label} permanently`}
+                title="Delete permanently"
+                data-testid={`settings-purge-group-${g.id}`}
+                onClick={() => onPurgeGroup(g.id)}
+              >
+                <Icon name="trash" />
+              </button>
             </div>
           ))}
           {archived.values.map((v) => (
@@ -192,6 +212,16 @@ function ArchivedSection({
                 onClick={() => onRestoreValue(v.groupId, v.value)}
               >
                 Restore
+              </button>
+              <button
+                type="button"
+                className="archived__purge"
+                aria-label={`delete ${v.label ?? v.value} permanently`}
+                title="Delete permanently"
+                data-testid={`settings-purge-value-${v.groupId}-${v.value}`}
+                onClick={() => onPurgeValue(v.groupId, v.value)}
+              >
+                <Icon name="trash" />
               </button>
             </div>
           ))}

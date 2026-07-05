@@ -705,16 +705,17 @@ Expect：
 
 - 软删除（归档）后该维度不在活跃词表 / 统计中列出，但 `annotation_results` 行**保留**（可 Restore 复原），其它维度不受影响。
 
-**实现状态（重命名 + 软删除 + 二次确认已落地；合并 / 改 id 迁移未做。63/63 e2e 全绿）**
+**实现状态（重命名 + 软删除 + 二次确认 + 归档永久删除已落地；合并 / 改 id 迁移未做。70/70 e2e 全绿）**
 
 - migration `007`（`user_version` → 7）给 `tag_groups` / `tag_values` / `result_dimensions` / `result_dimension_values` 各加 `archived INTEGER NOT NULL DEFAULT 0` 列。
 - **重命名 = 只改显示 label，稳定 id 不变**：`EditableName`（铅笔 → 就地输入，Enter/失焦提交、Esc 取消）复用 `defineGroup` / `defineValue` / `defineResultDimension` 的 upsert（同 id + 新 label）。因 `ON CONFLICT DO UPDATE … archived = 0`，「声明」同时**复活**同 id 的归档项（Add 重新输入即恢复）。result **值**逐字存储、其本身即 label，故不提供重命名。
 - **删除 = 软删除（归档）**：`deleteGroup` / `deleteValue` / `deleteResultDimension` / `deleteResultValue` 改为 `UPDATE archived = 1`；`listGroups` / `listResultVocabulary` 过滤 `archived = 0`；`restore*` 置回 0；`listArchivedGroups` / `listArchivedResults` 列出归档项。引用与计数完全不动——归档纯粹是词表层。
 - **对有使用的项二次确认**：Settings 内删除按钮在 `count > 0` 时弹 `ConfirmDialog`（"N reviews use this…"，可 Cancel / Archive），未使用项直接软删；两个 Settings 底部有可折叠 **Archived** 区，每项带 Restore。
+- **归档项永久删除（“清空回收站”，仅 tag group/value）**：Archived 区每个归档 tag 行除 Restore 外还有一个垃圾桶按钮，直接 `DELETE FROM tag_groups/tag_values WHERE … AND archived = 1`（`purgeGroup` / `purgeValue`，IPC `vocab:purge-group` / `vocab:purge-value`）。**只清词表注册行、绝不级联**到 `entry_tags` / `annotation_tags`（tag 用法与注册表本就无 FK，删组仅在注册表内 FK 级联到其值声明）。**result 维度不做永久删除**：`annotation_results.dimension_id` 是 RESTRICT 外键且投影时需维度类型在册，硬删会违约/破坏重存，故 result 归档区维持 Restore-only。
 - **使用计数**：`listGroups` 每值 distinct-entry 计数（Slice 6 已有）；result 现每维度 + 每值 distinct-entry 计数（`countEntriesForDimension` / `countEntriesForResultValue`，读 `annotation_results`），`ResultDimensionView` / `ResultDimensionValue` 带 `count`。
 - 新增 domain 契约：`ArchivedVocab` / `ArchivedResults`（+ 其元素类型）；IPC 增 `vocab:restore-group` / `vocab:restore-value` / `vocab:list-archived` / `result:restore-dimension` / `result:restore-value` / `result:list-archived`。
 - **未做（留本 slice 续做）**：改 id 的批量引用迁移、合并两个 tag 值 / result 维度。
-- 验证命令：`npm run typecheck && npm run lint && npm run build && npx playwright test`。测试：重写 `result-vocab.spec.ts` 的删除断言为软删 / 归档 / 恢复 / 重命名保 id+用量；新增 `vocab-manage.spec.ts` 3 个 UI 测试（重命名只改 label 保 id、未使用值静默归档 + 恢复、有使用值二次确认 + 归档 + 恢复且引用不动）。
+- 验证命令：`npm run typecheck && npm run lint && npm run build && npx playwright test`。测试：重写 `result-vocab.spec.ts` 的删除断言为软删 / 归档 / 恢复 / 重命名保 id+用量；`vocab-manage.spec.ts` 覆盖重命名只改 label 保 id、未使用值静默归档 + 恢复、有使用值二次确认 + 归档 + 恢复且引用不动，以及**归档 tag 永久删除只清注册行、不级联 entry/annotation 用法**（含垃圾桶按钮 UI）。
 
 ## 13. Slice 10：编辑与生命周期（post-MVP）
 

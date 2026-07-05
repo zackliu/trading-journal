@@ -16,6 +16,7 @@ import type {
   TagValue,
   ViewMatch,
   ViewQuery,
+  WorkspaceState,
 } from '../../src/shared/domain';
 import type { IpcApi } from '../../src/shared/ipc';
 
@@ -29,6 +30,21 @@ export async function launchApp(dataDir: string): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: ['.'],
     env: { ...process.env, TJ_DATA_DIR: dataDir },
+  });
+  const page = await app.firstWindow();
+  await page.waitForLoadState('domcontentloaded');
+  return { app, page };
+}
+
+/**
+ * Launch with NO data folder configured (no `TJ_DATA_DIR`), isolating app-config to `userDataDir` via
+ * Electron's `--user-data-dir`. Used to exercise the setup gate: config.json lives under `userDataDir`,
+ * so the workspace resolves from config (or unset) rather than an env override.
+ */
+export async function launchAppNoWorkspace(userDataDir: string): Promise<LaunchedApp> {
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${userDataDir}`],
+    env: { ...process.env, TJ_DATA_DIR: '' },
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
@@ -66,6 +82,15 @@ export const store = {
 
   restoreValue: (page: Page, groupId: string, value: string): Promise<void> =>
     page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.restoreValue(a.groupId, a.value), {
+      groupId,
+      value,
+    }),
+
+  purgeGroup: (page: Page, id: string): Promise<void> =>
+    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.purgeGroup(x), id),
+
+  purgeValue: (page: Page, groupId: string, value: string): Promise<void> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.purgeValue(a.groupId, a.value), {
       groupId,
       value,
     }),
@@ -224,4 +249,10 @@ export const store = {
 
   deleteSavedView: (page: Page, id: string): Promise<void> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteSavedView(x), id),
+
+  getWorkspaceState: (page: Page): Promise<WorkspaceState> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.getWorkspaceState()),
+
+  setWorkspaceFolder: (page: Page, dir: string): Promise<WorkspaceState> =>
+    page.evaluate((d) => (globalThis as unknown as WindowWithApi).api.setWorkspaceFolder(d), dir),
 };

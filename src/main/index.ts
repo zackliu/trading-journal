@@ -1,11 +1,12 @@
-import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, shell, type OpenDialogOptions } from 'electron';
 import { join } from 'node:path';
 import { ensureDataFolder, type DataFolder } from './dataFolder';
-import { openDatabase, type Db } from './db';
+import { readConfig, resolveWorkspace, validateWorkspaceDir, writeConfig } from './appConfig';
+import { openDatabase, stampAppVersion, type Db } from './db';
 import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
 import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, queryEntriesByTag, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
-import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, listArchivedGroups } from './store/vocabulary';
+import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, purgeGroup, purgeValue, listArchivedGroups } from './store/vocabulary';
 import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
 import { getStampLibrary, saveStampLibrary } from './store/stampStore';
 import { countGroupValuesUnderView, queryEntriesByView, runViewQuery } from './store/viewQuery';
@@ -29,8 +30,10 @@ import {
   tagValueSchema,
   thumbnailSchema,
   viewQuerySchema,
+  workspacePathSchema,
 } from './store/validation';
 import { IpcChannel, type PingResult } from '../shared/ipc';
+import type { WorkspaceState } from '../shared/domain';
 
 // Register the image-serving scheme before app 'ready' (privileged + secure).
 protocol.registerSchemesAsPrivileged([
@@ -39,6 +42,9 @@ protocol.registerSchemesAsPrivileged([
 
 let db: Db | null = null;
 let dataFolder: DataFolder | null = null;
+let mainWindow: BrowserWindow | null = null;
+// How the currently-open workspace was resolved (env override vs config pointer); reported to the UI.
+let workspaceSource: WorkspaceState['source'] = 'none';
 
 function requireDb(): Db {
   if (!db) {
@@ -52,6 +58,33 @@ function requireDataFolder(): DataFolder {
     throw new Error('data folder is not initialized');
   }
   return dataFolder;
+}
+
+/** Open the database + image folder at `dir`, becoming the active workspace. */
+function openWorkspaceAt(dir: string, source: WorkspaceState['source']): void {
+  dataFolder = ensureDataFolder(dir);
+  db = openDatabase(dataFolder.sqlitePath).db;
+  stampAppVersion(db, app.getVersion());
+  workspaceSource = source;
+}
+
+/** Close the active workspace (used before switching to a different data folder). */
+function closeWorkspace(): void {
+  db?.close();
+  db = null;
+  dataFolder = null;
+  workspaceSource = 'none';
+}
+
+/** The live workspace state: an open DB reports ready; otherwise re-resolve (folder may have appeared). */
+function currentWorkspaceState(): WorkspaceState {
+  if (db && dataFolder) return { status: 'ready', dataDir: dataFolder.root, source: workspaceSource };
+  const resolved = resolveWorkspace();
+  if (resolved.status === 'ready' && resolved.dataDir) {
+    openWorkspaceAt(resolved.dataDir, resolved.source);
+    return { status: 'ready', dataDir: resolved.dataDir, source: resolved.source };
+  }
+  return resolved;
 }
 
 function toImageBuffer(raw: unknown): Buffer {
@@ -76,8 +109,11 @@ function todayLocal(): string {
 // Serve stored image bytes to the renderer via `tj-image://<hash>` (no base64 in the DOM).
 function registerImageProtocol(): void {
   protocol.handle('tj-image', (request) => {
+    if (!dataFolder) {
+      return new Response('no workspace', { status: 404 });
+    }
     const hash = new URL(request.url).hostname;
-    const bytes = readImage(requireDataFolder().imagesDir, hash);
+    const bytes = readImage(dataFolder.imagesDir, hash);
     if (!bytes) {
       return new Response('not found', { status: 404 });
     }
@@ -96,6 +132,38 @@ function registerIpc(): void {
       userVersion: db ? (db.pragma('user_version', { simple: true }) as number) : -1,
     };
   });
+
+  // ---- Workspace (which data folder is active) -------------------------------------------------
+  // These never touch the store, so they are safe to call while the DB is closed (the setup gate).
+  ipcMain.handle(IpcChannel.getWorkspaceState, (): WorkspaceState => currentWorkspaceState());
+
+  ipcMain.handle(IpcChannel.pickWorkspaceFolder, async (): Promise<string | null> => {
+    const opts: OpenDialogOptions = {
+      title: 'Choose your journal data folder',
+      buttonLabel: 'Use this folder',
+      properties: ['openDirectory', 'createDirectory'],
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts);
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle(IpcChannel.setWorkspaceFolder, (_event, raw: unknown): WorkspaceState => {
+    const dir = workspacePathSchema.parse(raw);
+    const validated = validateWorkspaceDir(dir, 'config');
+    if (validated.status !== 'ready' || !validated.dataDir) return validated; // don't switch to a bad folder
+    closeWorkspace();
+    writeConfig({ ...readConfig(), dataDir: validated.dataDir });
+    openWorkspaceAt(validated.dataDir, 'config');
+    return { status: 'ready', dataDir: validated.dataDir, source: 'config' };
+  });
+
+  ipcMain.handle(IpcChannel.revealWorkspace, () => {
+    if (dataFolder) void shell.openPath(dataFolder.root);
+  });
+
+  ipcMain.handle(IpcChannel.quitApp, () => app.quit());
 
   ipcMain.handle(IpcChannel.ingestImageEntry, (_event, raw: unknown) => {
     const bytes = toImageBuffer(raw);
@@ -193,6 +261,12 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.restoreValue, (_event, groupId: unknown, value: unknown) => {
     restoreValue(requireDb(), kebabSchema.parse(groupId), kebabSchema.parse(value));
   });
+  ipcMain.handle(IpcChannel.purgeGroup, (_event, id: unknown) => {
+    purgeGroup(requireDb(), kebabSchema.parse(id));
+  });
+  ipcMain.handle(IpcChannel.purgeValue, (_event, groupId: unknown, value: unknown) => {
+    purgeValue(requireDb(), kebabSchema.parse(groupId), kebabSchema.parse(value));
+  });
   ipcMain.handle(IpcChannel.listArchivedGroups, () => listArchivedGroups(requireDb()));
   ipcMain.handle(IpcChannel.setGroupPinned, (_event, id: unknown, pinned: unknown) => {
     setGroupPinned(requireDb(), kebabSchema.parse(id), pinnedSchema.parse(pinned));
@@ -244,6 +318,10 @@ function createWindow(): void {
     },
   });
 
+  mainWindow = win;
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
   win.on('ready-to-show', () => win.show());
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -262,8 +340,12 @@ function createWindow(): void {
 app
   .whenReady()
   .then(() => {
-    dataFolder = ensureDataFolder();
-    db = openDatabase(dataFolder.sqlitePath).db;
+    // Resolve which data folder is active. If nothing valid is configured we still boot the window —
+    // the renderer shows the setup gate and opens the workspace once the user picks a folder.
+    const ws = resolveWorkspace();
+    if (ws.status === 'ready' && ws.dataDir) {
+      openWorkspaceAt(ws.dataDir, ws.source);
+    }
     registerImageProtocol();
     registerIpc();
     createWindow();
@@ -273,8 +355,11 @@ app
     });
   })
   .catch((err: unknown) => {
-    // Fail fast and loud: a broken boot must never present as healthy.
+    // Fail fast and loud: a broken boot must never present as healthy. Surface the reason (e.g. a
+    // journal written by a newer app version) instead of a silent quit, so review data is never risked.
     console.error('[main] failed to start:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    dialog.showErrorBox('Trading Journal — cannot open your journal', message);
     app.quit();
   });
 

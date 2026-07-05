@@ -12,6 +12,7 @@ import type {
   TagGroupView,
   TagValue,
   ViewQuery,
+  WorkspaceState,
 } from '../../shared/domain';
 import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
@@ -22,6 +23,8 @@ import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
 import { ResultSettingsDialog } from './shell/ResultSettingsDialog';
+import { GeneralSettingsDialog } from './shell/GeneralSettingsDialog';
+import { SetupGate } from './shell/SetupGate';
 import { ViewBuilder } from './shell/ViewBuilder';
 import { StatusBar } from './shell/StatusBar';
 import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
@@ -108,6 +111,10 @@ export function App(): JSX.Element {
   const [entryUserTags, setEntryUserTags] = useState<Tag[]>([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showGeneral, setShowGeneral] = useState(false);
+  const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ViewQuery>(EMPTY_QUERY);
   const [filterMatch, setFilterMatch] = useState<FilterMatch | null>(null);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -165,7 +172,19 @@ export function App(): JSX.Element {
     setSavedViews(await window.api.listSavedViews());
   }, []);
 
+  const workspaceReady = workspace?.status === 'ready';
+
+  // Resolve which data folder is active before touching the store. Until it is `ready`, the app renders
+  // the setup gate instead of the workspace (the store IPCs would have no open DB behind them).
   useEffect(() => {
+    window.api
+      .getWorkspaceState()
+      .then(setWorkspace)
+      .catch(() => setWorkspace({ status: 'unset', dataDir: null, source: 'none' }));
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceReady) return;
     void refresh();
     void refreshDimensions();
     void refreshGroups();
@@ -182,7 +201,48 @@ export function App(): JSX.Element {
         setStoreHealth('error');
         setStoreLabel('unavailable');
       });
-  }, [refresh, refreshDimensions, refreshGroups, refreshSavedViews]);
+  }, [workspaceReady, refresh, refreshDimensions, refreshGroups, refreshSavedViews]);
+
+  // Pick a data folder (native dialog) and switch to it. On success the whole renderer reloads so it
+  // boots cleanly against the new workspace — used by both the setup gate and General settings.
+  const chooseWorkspaceFolder = useCallback(async () => {
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      const dir = await window.api.pickWorkspaceFolder();
+      if (!dir) {
+        setWorkspaceBusy(false);
+        return; // canceled the dialog
+      }
+      const next = await window.api.setWorkspaceFolder(dir);
+      if (next.status === 'ready') {
+        window.location.reload();
+        return;
+      }
+      setWorkspace(next);
+      setWorkspaceError(next.status === 'unwritable' ? '该文件夹不可写，换一个试试。' : '该文件夹不可用。');
+      setWorkspaceBusy(false);
+    } catch {
+      setWorkspaceError('切换失败，请重试。');
+      setWorkspaceBusy(false);
+    }
+  }, []);
+
+  // Re-check the configured folder (the user may have prepared it). If ready now, reload into it.
+  const retryWorkspace = useCallback(async () => {
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    const next = await window.api.getWorkspaceState();
+    if (next.status === 'ready') {
+      window.location.reload();
+      return;
+    }
+    setWorkspace(next);
+    setWorkspaceBusy(false);
+  }, []);
+
+  const revealWorkspace = useCallback(() => void window.api.revealWorkspace(), []);
+  const quitApp = useCallback(() => void window.api.quitApp(), []);
 
   const entryOpen = selectedEntryId !== null;
 
@@ -753,6 +813,14 @@ export function App(): JSX.Element {
     await window.api.restoreValue(groupId, value);
     await refreshGroups();
   }, [refreshGroups]);
+  const onPurgeGroup = useCallback(async (id: string) => {
+    await window.api.purgeGroup(id);
+    await refreshGroups();
+  }, [refreshGroups]);
+  const onPurgeValue = useCallback(async (groupId: string, value: string) => {
+    await window.api.purgeValue(groupId, value);
+    await refreshGroups();
+  }, [refreshGroups]);
 
   // Open a review from a browse bucket; a value bucket's tag briefly highlights its carriers.
   const openFromBrowse = useCallback(
@@ -811,6 +879,22 @@ export function App(): JSX.Element {
     chips.length === 0 ? 'No filter' : `${chips.length} condition${chips.length > 1 ? 's' : ''} active`;
   const hasFilter = !isEmptyQuery(filter);
 
+  if (!workspace) {
+    return <div className="boot" data-testid="boot-splash" />;
+  }
+  if (workspace.status !== 'ready') {
+    return (
+      <SetupGate
+        state={workspace}
+        busy={workspaceBusy}
+        error={workspaceError}
+        onChoose={() => void chooseWorkspaceFolder()}
+        onRetry={() => void retryWorkspace()}
+        onQuit={quitApp}
+      />
+    );
+  }
+
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <Ribbon
@@ -843,6 +927,7 @@ export function App(): JSX.Element {
         onToggleAnnotationTag={onToggleAnnotationTag}
         onOpenSettings={() => setShowSettings(true)}
         onOpenResultSettings={() => setShowResultSettings(true)}
+        onOpenGeneral={() => setShowGeneral(true)}
         resultDimensions={dimensions}
         onSetAnnotationResult={onSetAnnotationResult}
         savedViews={savedViews}
@@ -944,6 +1029,8 @@ export function App(): JSX.Element {
           onReorderValues={(gid, vals) => void onReorderValues(gid, vals)}
           onRestoreGroup={(id) => void onRestoreGroup(id)}
           onRestoreValue={(gid, val) => void onRestoreValue(gid, val)}
+          onPurgeGroup={(id) => void onPurgeGroup(id)}
+          onPurgeValue={(gid, val) => void onPurgeValue(gid, val)}
           onClose={() => setShowSettings(false)}
         />
       ) : null}
@@ -974,6 +1061,16 @@ export function App(): JSX.Element {
           onRestoreDimension={(id) => void onRestoreResultDimension(id)}
           onRestoreValue={(dimId, value) => void onRestoreResultValue(dimId, value)}
           onClose={() => setShowResultSettings(false)}
+        />
+      ) : null}
+      {showGeneral ? (
+        <GeneralSettingsDialog
+          dataDir={workspace.dataDir}
+          busy={workspaceBusy}
+          error={workspaceError}
+          onChange={() => void chooseWorkspaceFolder()}
+          onReveal={revealWorkspace}
+          onClose={() => setShowGeneral(false)}
         />
       ) : null}
     </div>

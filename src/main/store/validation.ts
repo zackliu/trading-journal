@@ -34,6 +34,10 @@ export const idSchema = z.string().min(1);
 
 export const tagSchema = tag;
 
+// A filesystem path chosen by the user for the data folder (any non-empty string; existence /
+// writability are checked in appConfig, not here).
+export const workspacePathSchema = z.string().min(1).max(4096);
+
 // Vocabulary registry payloads. Group / value ids are the stable kebab keys.
 export const kebabSchema = kebab;
 export const pinnedSchema = z.boolean();

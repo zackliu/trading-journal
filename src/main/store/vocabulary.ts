@@ -38,6 +38,15 @@ export function restoreGroup(db: Db, id: string): void {
   db.prepare('UPDATE tag_groups SET archived = 0 WHERE id = ?').run(id);
 }
 
+/**
+ * Permanently remove an archived group (the "empty from recycle bin" action). Registry-only: the group
+ * declaration and its value declarations go (FK cascade within the registry), but existing tag usage in
+ * `entry_tags` / `annotation_tags` is never touched (no cascade). Only applies to already-archived groups.
+ */
+export function purgeGroup(db: Db, id: string): void {
+  db.prepare('DELETE FROM tag_groups WHERE id = ? AND archived = 1').run(id);
+}
+
 /** Declare (or relabel) a value within a group; new values append to the end of that group. */
 export function defineValue(db: Db, value: TagValue): void {
   db.prepare(
@@ -55,6 +64,14 @@ export function deleteValue(db: Db, groupId: string, value: string): void {
 /** Restore an archived value. */
 export function restoreValue(db: Db, groupId: string, value: string): void {
   db.prepare('UPDATE tag_values SET archived = 0 WHERE group_id = ? AND value = ?').run(groupId, value);
+}
+
+/**
+ * Permanently remove an archived value ("empty from recycle bin"). Registry-only; existing tag usage in
+ * `entry_tags` / `annotation_tags` is never touched. Only applies to already-archived values.
+ */
+export function purgeValue(db: Db, groupId: string, value: string): void {
+  db.prepare('DELETE FROM tag_values WHERE group_id = ? AND value = ? AND archived = 1').run(groupId, value);
 }
 
 /** Pin / unpin a group for the ribbon quick-pick. */

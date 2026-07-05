@@ -5,6 +5,11 @@ import { IpcChannel, type IpcApi } from '../shared/ipc';
 // so the renderer only ever sees this typed `api` surface — nothing else.
 const api: IpcApi = {
   ping: () => ipcRenderer.invoke(IpcChannel.ping),
+  getWorkspaceState: () => ipcRenderer.invoke(IpcChannel.getWorkspaceState),
+  pickWorkspaceFolder: () => ipcRenderer.invoke(IpcChannel.pickWorkspaceFolder),
+  setWorkspaceFolder: (dir) => ipcRenderer.invoke(IpcChannel.setWorkspaceFolder, dir),
+  revealWorkspace: () => ipcRenderer.invoke(IpcChannel.revealWorkspace),
+  quitApp: () => ipcRenderer.invoke(IpcChannel.quitApp),
   ingestImageEntry: (bytes) => ipcRenderer.invoke(IpcChannel.ingestImageEntry, bytes),
   listEntries: () => ipcRenderer.invoke(IpcChannel.listEntries),
   newEntry: () => ipcRenderer.invoke(IpcChannel.newEntry),
@@ -37,6 +42,8 @@ const api: IpcApi = {
   deleteValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.deleteValue, groupId, value),
   restoreGroup: (id) => ipcRenderer.invoke(IpcChannel.restoreGroup, id),
   restoreValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.restoreValue, groupId, value),
+  purgeGroup: (id) => ipcRenderer.invoke(IpcChannel.purgeGroup, id),
+  purgeValue: (groupId, value) => ipcRenderer.invoke(IpcChannel.purgeValue, groupId, value),
   listArchivedGroups: () => ipcRenderer.invoke(IpcChannel.listArchivedGroups),
   setGroupPinned: (id, pinned) => ipcRenderer.invoke(IpcChannel.setGroupPinned, id, pinned),
   reorderGroups: (ids) => ipcRenderer.invoke(IpcChannel.reorderGroups, ids),
