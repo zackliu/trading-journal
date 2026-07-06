@@ -28,6 +28,41 @@ test('a result dimension declares preset values, listed in registry order', asyn
   await app.close();
 });
 
+test('a result dimension type is fixed at creation: re-declaring the id never flips it', async () => {
+  const { app, page } = await launchApp(tempDataDir());
+  await store.defineDimension(page, { id: 'outcome', label: 'Outcome', type: 'string' });
+  await store.defineResultValue(page, 'outcome', 'win', 'Win');
+
+  // A trade records a string result — it now lives in string_value under a `string` dimension.
+  const entry = await store.createEntry(page, {
+    canvasJson: CANVAS,
+    entryTags: [],
+    annotations: [{ id: 'a', bounds: { x: 0, y: 0, width: 10, height: 10 }, tags: [], result: { outcome: 'win' } }],
+  });
+
+  // Re-declaring the SAME id with a DIFFERENT type (the Settings "Add" form re-using an existing name)
+  // must not flip the stored type — otherwise the recorded result is stranded in the wrong column and the
+  // annotation's next save throws. Re-declaring only relabels; the original `string` type is preserved.
+  await store.defineDimension(page, { id: 'outcome', label: 'Result', type: 'number' });
+
+  const outcome = (await store.listResultVocabulary(page)).find((d) => d.id === 'outcome');
+  expect(outcome?.type).toBe('string');
+  expect(outcome?.label).toBe('Result'); // the label DID update
+  expect(outcome?.count).toBe(1); // the recorded result survived, still readable/typed
+
+  // And the annotation still saves cleanly (a flipped type would make this throw).
+  const resaved = await store.getEntry(page, entry.id);
+  expect(resaved?.annotations[0]?.result).toEqual({ outcome: 'win' });
+  const roundtrip = await store.updateEntry(page, entry.id, {
+    canvasJson: CANVAS,
+    entryTags: [],
+    annotations: [{ id: 'a', bounds: { x: 0, y: 0, width: 10, height: 10 }, tags: [], result: { outcome: 'win' } }],
+  });
+  expect(roundtrip.annotations[0]?.result).toEqual({ outcome: 'win' });
+
+  await app.close();
+});
+
 test('deleting an in-use result dimension archives it; it restores with values and usage intact', async () => {
   const { app, page } = await launchApp(tempDataDir());
   await store.defineDimension(page, { id: 'outcome', label: 'Outcome', type: 'string' });

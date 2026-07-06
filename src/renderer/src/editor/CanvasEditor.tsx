@@ -5,6 +5,8 @@ interface Props {
   entryId: string;
   onReady: (controller: CanvasController) => void;
   onLoaded?: () => void;
+  /** The review could not be loaded (e.g. a screenshot file is missing / still syncing). */
+  onLoadError?: (message: string) => void;
   /** Wheel past the top/bottom of the (possibly scrolled) stage steps to the prev/next review. */
   onWheelNavigate?: (dir: 1 | -1) => void;
 }
@@ -16,7 +18,7 @@ function isTextTarget(target: EventTarget | null): boolean {
   );
 }
 
-export function CanvasEditor({ entryId, onReady, onLoaded, onWheelNavigate }: Props): JSX.Element {
+export function CanvasEditor({ entryId, onReady, onLoaded, onLoadError, onWheelNavigate }: Props): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -36,14 +38,24 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onWheelNavigate }: Pr
     measure();
 
     void (async () => {
-      const [entry, lib] = await Promise.all([window.api.getEntry(entryId), window.api.getStampLibrary()]);
-      if (!entry || disposed) return;
-      await controller.loadEntry(
-        entry.canvasJson,
-        entry.image ? `tj-image://${entry.image.hash}` : null,
-        lib.canvasJson,
-      );
-      if (!disposed) onLoaded?.();
+      try {
+        const [entry, lib] = await Promise.all([window.api.getEntry(entryId), window.api.getStampLibrary()]);
+        if (disposed) return;
+        if (!entry) {
+          onLoadError?.('This review could not be found.');
+          return;
+        }
+        await controller.loadEntry(
+          entry.canvasJson,
+          entry.image ? `tj-image://${entry.image.hash}` : null,
+          lib.canvasJson,
+        );
+        if (!disposed) onLoaded?.();
+      } catch (err) {
+        // A missing / unreadable screenshot (e.g. one still syncing from OneDrive) rejects the whole
+        // enliven batch, so the page cannot render. Surface it instead of leaving a silent blank canvas.
+        if (!disposed) onLoadError?.(err instanceof Error ? err.message : String(err));
+      }
     })();
 
     const resizeObs = new ResizeObserver(() => measure());
@@ -62,7 +74,7 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onWheelNavigate }: Pr
       window.removeEventListener('keydown', onKey);
       controller.dispose();
     };
-  }, [entryId, onReady, onLoaded]);
+  }, [entryId, onReady, onLoaded, onLoadError]);
 
   // Wheel over the stage scrolls it; once it can't scroll further that way (or the page fits with no
   // scrollbar), the wheel steps to the previous / next review. React's onWheel is passive and can't

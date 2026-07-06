@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchApp, store } from './electronApp';
@@ -63,6 +63,63 @@ test('the editor save path persists canvas JSON round-trip', async () => {
   await app.close();
   expect(reloaded?.canvasJson).toBe(canvasJson);
   expect(reloaded?.image?.hash).toBe(entry.image?.hash);
+});
+
+test('a failed canvas save surfaces an error instead of silently dropping the edit', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  await expect(page.locator('.canvas-container')).toBeVisible();
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected an open review');
+
+  // Force the next save to fail for real: delete the row out from under the open review. The in-memory
+  // editor still points at it, so its save now hits "entry not found" — the auto-save's error path.
+  await page.evaluate(
+    (eid) => (globalThis as unknown as { api: { deleteEntry(x: string): Promise<void> } }).api.deleteEntry(eid),
+    id,
+  );
+
+  // A habitual Ctrl+S drives the auto-save path; the write rejection must be caught + surfaced to the
+  // user (not swallowed as an unhandled rejection, which would silently lose the edit).
+  await page.keyboard.press('Control+s');
+  await expect(page.getByTestId('save-error')).toBeVisible();
+
+  await app.close();
+});
+
+test('a review whose image bytes are missing shows a load error, not a silent blank canvas', async () => {
+  const dataDir = tempDataDir();
+  const hash = sha256(PNG_A);
+
+  // Phase 1: build a review whose canvas references a screenshot object (paste auto-saves it).
+  const first = await launchApp(dataDir);
+  await first.page.getByTestId('ribbon-new').click();
+  await expect(first.page.getByTestId('editor')).toBeVisible();
+  await expect(first.page.locator('.canvas-container')).toBeVisible();
+  await first.page.waitForTimeout(300); // let the blank page finish loading before pasting
+  await pasteImage(first.page, PNG_A);
+  const id = (await store.listEntries(first.page))[0]?.id;
+  if (!id) throw new Error('expected an open review');
+  await expect
+    .poll(async () => (await store.getEntry(first.page, id))?.canvasJson ?? '')
+    .toContain(`tj-image://${hash}`);
+  await first.app.close();
+
+  // The image file goes missing before the next launch (deleted, or not yet synced from OneDrive). A
+  // fresh process has no net cache, so reopening the review genuinely fails to read the image bytes.
+  rmSync(join(dataDir, 'images', hash));
+  const { app, page } = await launchApp(dataDir);
+  await page.getByTestId('entry-item').first().click();
+
+  // The failure is surfaced clearly instead of a silent empty editor...
+  await expect(page.getByTestId('load-error')).toBeVisible();
+  await expect(page.getByTestId('editor')).toHaveCount(0);
+  // ...and the durable review data was left completely untouched (no blank canvas overwrote it).
+  expect((await store.getEntry(page, id))?.canvasJson).toContain(`tj-image://${hash}`);
+
+  await app.close();
 });
 
 test('New creates a blank review and opens a white page', async () => {

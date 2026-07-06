@@ -149,6 +149,9 @@ export const store = {
   setEntryTags: (page: Page, id: string, tags: Tag[]): Promise<Entry> =>
     page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.setEntryTags(a.id, a.tags), { id, tags }),
 
+  setEntryDate: (page: Page, id: string, date: string): Promise<Entry> =>
+    page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.setEntryDate(a.id, a.date), { id, date }),
+
   listGroups: (page: Page): Promise<TagGroupView[]> =>
     page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listGroups()),
 

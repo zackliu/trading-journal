@@ -54,6 +54,7 @@ export interface IpcApi {
   updateEntryCanvas(id: string, canvasJson: string, annotations: Annotation[], thumbnail: string): Promise<Entry>;
   getEntry(id: string): Promise<Entry | null>;
   setEntryTags(id: string, tags: Tag[]): Promise<Entry>;
+  setEntryDate(id: string, date: string): Promise<Entry>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
   queryEntriesByTag(tag: Tag): Promise<EntrySummary[]>;
   locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;
@@ -109,6 +110,7 @@ export const IpcChannel = {
   updateEntryCanvas: 'store:update-entry-canvas',
   getEntry: 'store:get-entry',
   setEntryTags: 'store:set-entry-tags',
+  setEntryDate: 'store:set-entry-date',
   queryAnnotationsByTag: 'store:query-annotations-by-tag',
   queryEntriesByTag: 'store:query-entries-by-tag',
   locateAnnotation: 'store:locate-annotation',

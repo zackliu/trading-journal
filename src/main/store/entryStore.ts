@@ -160,6 +160,25 @@ export function setEntryTags(db: Db, id: string, tags: Tag[]): Entry {
   return requireEntry(db, id);
 }
 
+/**
+ * Set a review's structural `date` — the one editable "time" of a review (drives the rail order and the
+ * year-month browse). Replaces the single `date` entry tag; independent of the user-tag write path
+ * (which never touches `date`). `date` is stored as a `date:<YYYY-MM-DD>` entry tag, not a column.
+ */
+export function setEntryDate(db: Db, id: string, date: string): Entry {
+  const exists = db.prepare('SELECT id FROM entries WHERE id = ?').get(id);
+  if (!exists) {
+    throw new Error(`entry not found: ${id}`);
+  }
+  const write = db.transaction(() => {
+    db.prepare('DELETE FROM entry_tags WHERE entry_id = ? AND "group" = ?').run(id, 'date');
+    db.prepare('INSERT OR IGNORE INTO entry_tags (entry_id, "group", value) VALUES (?, ?, ?)').run(id, 'date', date);
+    db.prepare('UPDATE entries SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+  });
+  write();
+  return requireEntry(db, id);
+}
+
 /** Delete an entry and (via FK cascade) its annotation / tag / result projections. */
 export function deleteEntry(db: Db, id: string): void {
   db.prepare('DELETE FROM entries WHERE id = ?').run(id);
@@ -217,7 +236,7 @@ function toSummaries(db: Db, rows: EntrySummaryRow[]): EntrySummary[] {
   const dateStmt = db.prepare(
     'SELECT value FROM entry_tags WHERE entry_id = ? AND "group" = \'date\' ORDER BY value DESC LIMIT 1',
   );
-  return rows.map((row) => {
+  const summaries = rows.map((row) => {
     const dateRow = dateStmt.get(row.id) as { value: string } | undefined;
     return {
       id: row.id,
@@ -227,4 +246,8 @@ function toSummaries(db: Db, rows: EntrySummaryRow[]): EntrySummary[] {
       date: dateRow?.value,
     };
   });
+  // A review's "time" is its structural `date` (newest day first); created_at only breaks ties within
+  // the same day. So the date the user set — not the insert order — drives the rail order.
+  const dayOf = (s: EntrySummary): string => s.date ?? new Date(s.createdAt).toISOString().slice(0, 10);
+  return summaries.sort((a, b) => (dayOf(a) === dayOf(b) ? b.createdAt - a.createdAt : dayOf(a) < dayOf(b) ? 1 : -1));
 }

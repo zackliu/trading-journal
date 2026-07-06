@@ -32,6 +32,7 @@ const api: IpcApi = {
     ipcRenderer.invoke(IpcChannel.updateEntryCanvas, id, canvasJson, annotations, thumbnail),
   getEntry: (id) => ipcRenderer.invoke(IpcChannel.getEntry, id),
   setEntryTags: (id, tags) => ipcRenderer.invoke(IpcChannel.setEntryTags, id, tags),
+  setEntryDate: (id, date) => ipcRenderer.invoke(IpcChannel.setEntryDate, id, date),
   queryAnnotationsByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryAnnotationsByTag, tag),
   queryEntriesByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryEntriesByTag, tag),
   locateAnnotation: (annotationId) => ipcRenderer.invoke(IpcChannel.locateAnnotation, annotationId),

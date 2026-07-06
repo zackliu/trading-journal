@@ -4,7 +4,7 @@ import { ensureDataFolder, type DataFolder } from './dataFolder';
 import { readConfig, resolveWorkspace, validateWorkspaceDir, writeConfig } from './appConfig';
 import { openDatabase, stampAppVersion, type Db } from './db';
 import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
-import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, queryEntriesByTag, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
+import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, queryEntriesByTag, setEntryDate, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
 import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, purgeGroup, purgeValue, listArchivedGroups } from './store/vocabulary';
 import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
@@ -15,6 +15,7 @@ import {
   annotationsSchema,
   canvasJsonSchema,
   createEntryInputSchema,
+  dateValueSchema,
   entryTagsSchema,
   idListSchema,
   idSchema,
@@ -238,6 +239,9 @@ function registerIpc(): void {
   );
   ipcMain.handle(IpcChannel.setEntryTags, (_event, id: unknown, tags: unknown) =>
     setEntryTags(requireDb(), idSchema.parse(id), entryTagsSchema.parse(tags)),
+  );
+  ipcMain.handle(IpcChannel.setEntryDate, (_event, id: unknown, date: unknown) =>
+    setEntryDate(requireDb(), idSchema.parse(id), dateValueSchema.parse(date)),
   );
   ipcMain.handle(IpcChannel.queryEntriesByTag, (_event, raw: unknown) =>
     queryEntriesByTag(requireDb(), tagSchema.parse(raw)),

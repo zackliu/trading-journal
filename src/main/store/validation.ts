@@ -32,6 +32,9 @@ const annotation = z.object({
 
 export const idSchema = z.string().min(1);
 
+/** A review's structural date, as an explicit `YYYY-MM-DD` calendar day. */
+export const dateValueSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
+
 export const tagSchema = tag;
 
 // A filesystem path chosen by the user for the data folder (any non-empty string; existence /

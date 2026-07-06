@@ -12,11 +12,17 @@ interface ValueRow {
   label: string | null;
 }
 
-/** Create or update a user-defined result dimension (id is the stable key). */
+/**
+ * Create or (re)declare a user-defined result dimension (`id` is the stable key). A dimension's storage
+ * `type` is FIXED at creation and is never changed by a re-declare of the same id. Recorded results live
+ * in the column matching that type (`string_value` / `number_value`), so flipping the type would strand
+ * every existing result in the wrong column and make the next save of those annotations throw. Re-declaring
+ * an existing id therefore only updates its display label and un-archives it; the original type is kept.
+ */
 export function upsertResultDimension(db: Db, dimension: ResultDimension): void {
   db.prepare(
     'INSERT INTO result_dimensions (id, label, type) VALUES (?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET label = excluded.label, type = excluded.type, archived = 0',
+      'ON CONFLICT(id) DO UPDATE SET label = excluded.label, archived = 0',
   ).run(dimension.id, dimension.label, dimension.type);
 }
 

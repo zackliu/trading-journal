@@ -109,6 +109,7 @@ export function App(): JSX.Element {
   const [archivedGroups, setArchivedGroups] = useState<ArchivedVocab>({ groups: [], values: [] });
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [entryUserTags, setEntryUserTags] = useState<Tag[]>([]);
+  const [entryDate, setEntryDate] = useState<string>('');
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showGeneral, setShowGeneral] = useState(false);
@@ -123,6 +124,14 @@ export function App(): JSX.Element {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Distinct from `error` (transient ingest/action failures): a persistent "your last edit could not be
+  // written" warning. It is cleared by the next successful auto-save, so it stays up only while the
+  // durable canvas is actually behind the on-screen page.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // A review that could not be loaded (e.g. a screenshot file is missing or still syncing from OneDrive).
+  // We show a clear notice instead of a silent blank page, and keep the editor unmounted so its cleared
+  // canvas can never be auto-saved over the review's good data.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [ipcHealth, setIpcHealth] = useState<Health>('pending');
   const [storeHealth, setStoreHealth] = useState<Health>('pending');
   const [storeLabel, setStoreLabel] = useState('opening…');
@@ -263,14 +272,23 @@ export function App(): JSX.Element {
           if (!controller || !id) break;
           const thumbnail = controller.renderThumbnail();
           setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, thumbnail } : e)));
-          await window.api.updateEntryCanvas(
-            id,
-            controller.serializePage(),
-            controller.extractAnnotations(),
-            thumbnail,
-          );
-          await window.api.saveStampLibrary(controller.serializeStrip());
-          controller.markSaved();
+          try {
+            await window.api.updateEntryCanvas(
+              id,
+              controller.serializePage(),
+              controller.extractAnnotations(),
+              thumbnail,
+            );
+            await window.api.saveStampLibrary(controller.serializeStrip());
+            controller.markSaved();
+            setSaveError(null);
+          } catch (err) {
+            // A failed write must never masquerade as saved. Keep the review dirty (don't markSaved),
+            // surface the reason, and stop this pass — the next edit or a manual Ctrl+S retries. We never
+            // rethrow here: a swallowed rejection would silently drop the edit the user just made.
+            setSaveError(err instanceof Error ? err.message : String(err));
+            break;
+          }
         } while (saveAgainRef.current);
       } finally {
         saveRunningRef.current = null;
@@ -289,6 +307,7 @@ export function App(): JSX.Element {
   }, [stampLocked]);
   useEffect(() => {
     selectedEntryIdRef.current = selectedEntryId;
+    setLoadError(null); // a fresh selection starts clean; a prior review's load error must not linger
   }, [selectedEntryId]);
   useEffect(() => {
     entriesRef.current = entries;
@@ -324,15 +343,18 @@ export function App(): JSX.Element {
     };
   }, [filter, entries]);
 
-  // Load the open review's user (non-`date`) entry tags for the Review tab quick-pick.
+  // Load the open review's date + user (non-`date`) entry tags for the Review tab.
   useEffect(() => {
     if (!selectedEntryId) {
       setEntryUserTags([]);
+      setEntryDate('');
       return;
     }
     let cancelled = false;
     void window.api.getEntry(selectedEntryId).then((entry) => {
-      if (!cancelled && entry) setEntryUserTags(entry.entryTags.filter((t) => t.group !== 'date'));
+      if (cancelled || !entry) return;
+      setEntryUserTags(entry.entryTags.filter((t) => t.group !== 'date'));
+      setEntryDate(entry.entryTags.find((t) => t.group === 'date')?.value ?? '');
     });
     return () => {
       cancelled = true;
@@ -760,6 +782,18 @@ export function App(): JSX.Element {
     [refresh, refreshGroups],
   );
 
+  // Change the review's structural date (Review tab). Saves immediately, then re-lists so the rail
+  // re-sorts and the year-month buckets update — the date the user set is the review's "time".
+  const onChangeEntryDate = useCallback(
+    (date: string) => {
+      const id = selectedEntryIdRef.current;
+      if (!id || !date) return;
+      setEntryDate(date);
+      void window.api.setEntryDate(id, date).then(() => void refresh());
+    },
+    [refresh],
+  );
+
   // Toggle a tag on the selected annotation (Annotation contextual tab). Preserves its result / links.
   const onToggleAnnotationTag = useCallback(
     (tag: Tag, on: boolean) => {
@@ -839,6 +873,7 @@ export function App(): JSX.Element {
   );
 
   const onEditorLoaded = useCallback(() => {
+    setLoadError(null); // a successful (re)load clears any earlier load-failure notice
     const pending = pendingSelectRef.current;
     if (pending) {
       controllerRef.current?.selectAnnotationById(pending);
@@ -850,6 +885,14 @@ export function App(): JSX.Element {
       else controllerRef.current?.flashTagHighlight(req.tag);
       pendingFlashRef.current = null;
     }
+  }, []);
+
+  // The open review failed to load. Drop the controller so its cleared canvas can never be auto-saved
+  // over the review's real data, and surface a notice (the editor is replaced by a load-error panel).
+  const onEditorLoadError = useCallback((message: string) => {
+    controllerRef.current = null;
+    setEditorState(EMPTY_EDITOR);
+    setLoadError(message);
   }, []);
 
   const onSaveView = useCallback(
@@ -922,6 +965,8 @@ export function App(): JSX.Element {
         onToggleStampLock={onToggleStampLock}
         groups={groups}
         entryTags={entryUserTags}
+        entryDate={entryDate}
+        onChangeEntryDate={onChangeEntryDate}
         selectedAnnotation={selectedAnnotation}
         onToggleEntryTag={onToggleEntryTag}
         onToggleAnnotationTag={onToggleAnnotationTag}
@@ -960,15 +1005,43 @@ export function App(): JSX.Element {
               {error}
             </div>
           ) : null}
+          {saveError ? (
+            <div className="notice notice--error" data-testid="save-error" role="alert">
+              Couldn’t save your last change ({saveError}). Your edit is still on the page — it will retry on
+              your next change, or press Ctrl+S.
+            </div>
+          ) : null}
           {busy ? <div className="notice">Working…</div> : null}
           {selectedEntryId ? (
-            <CanvasEditor
-              key={selectedEntryId}
-              entryId={selectedEntryId}
-              onReady={onReady}
-              onLoaded={onEditorLoaded}
-              onWheelNavigate={onWheelNavigate}
-            />
+            loadError ? (
+              <div className="empty-state" data-testid="load-error">
+                <div className="empty-state__card">
+                  <h2>Couldn’t open this review</h2>
+                  <p>
+                    Your data is safe and was not changed. A screenshot this review uses couldn’t be read —
+                    it may still be downloading (for example from OneDrive), or its image file is missing.
+                  </p>
+                  <button
+                    type="button"
+                    className="empty-state__new"
+                    data-testid="load-error-retry"
+                    onClick={() => setLoadError(null)}
+                  >
+                    Try again
+                  </button>
+                  <span className="empty-state__hint">{loadError}</span>
+                </div>
+              </div>
+            ) : (
+              <CanvasEditor
+                key={selectedEntryId}
+                entryId={selectedEntryId}
+                onReady={onReady}
+                onLoaded={onEditorLoaded}
+                onLoadError={onEditorLoadError}
+                onWheelNavigate={onWheelNavigate}
+              />
+            )
           ) : (
             <div className="empty-state" data-testid="empty-state">
               <div className="empty-state__card">

@@ -28,6 +28,8 @@ interface RibbonProps {
   onToggleStampLock: () => void;
   groups: TagGroupView[];
   entryTags: Tag[];
+  entryDate: string;
+  onChangeEntryDate: (date: string) => void;
   selectedAnnotation: AnnotationSelection | null;
   onToggleEntryTag: (tag: Tag, on: boolean) => void;
   onToggleAnnotationTag: (tag: Tag, on: boolean) => void;
@@ -365,12 +367,24 @@ export function Ribbon(props: RibbonProps): JSX.Element {
         ) : null}
 
         {active === 'Review' ? (
-          <QuickTag
-            groups={props.groups}
-            selected={props.entryTags}
-            onToggle={props.onToggleEntryTag}
-            onOpenSettings={props.onOpenSettings}
-          />
+          <>
+            <Group label="Date">
+              <input
+                type="date"
+                className="ribbon__date"
+                data-testid="review-date"
+                value={props.entryDate}
+                onChange={(e) => props.onChangeEntryDate(e.target.value)}
+              />
+            </Group>
+            <div className="ribbon__vdiv" aria-hidden="true" />
+            <QuickTag
+              groups={props.groups}
+              selected={props.entryTags}
+              onToggle={props.onToggleEntryTag}
+              onOpenSettings={props.onOpenSettings}
+            />
+          </>
         ) : null}
         {active === 'Annotation' && selectedAnnotation ? (
           <>
