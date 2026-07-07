@@ -170,9 +170,89 @@ test('right-clicking a review offers a delete action', async () => {
   await expect(page.getByTestId('context-menu')).toBeVisible();
   await page.getByTestId('context-delete').click();
 
+  // Deleting a review is destructive and unrecoverable, so it confirms first.
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-ok').click();
+
   await expect(page.getByTestId('entry-item')).toHaveCount(0);
   await expect(page.getByTestId('empty-state')).toBeVisible();
   expect(await store.listEntries(page)).toHaveLength(0);
+
+  await app.close();
+});
+
+test('cancelling the delete confirmation keeps the review', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  await store.ingestImage(page, PNG_A);
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+
+  await page.getByTestId('entry-item').first().click({ button: 'right' });
+  await page.getByTestId('context-delete').click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-cancel').click();
+
+  // The review is untouched.
+  await expect(page.getByTestId('entry-item')).toHaveCount(1);
+  expect(await store.listEntries(page)).toHaveLength(1);
+
+  await app.close();
+});
+
+test('typing then switching reviews commits the text (no silent loss)', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click(); // review A opens
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const aId = (await store.listEntries(page))[0]?.id as string;
+
+  // Type into a text box but do NOT click away / exit editing.
+  await page.getByTestId('tool-text').click();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(150);
+  await page.keyboard.type('dont-lose-me');
+
+  // Switch straight to another review (the classic loss path) without exiting editing first. Ctrl+N
+  // creates + opens review B through the same switchTo path used by a rail click / wheel navigation.
+  await page.keyboard.press('Control+n');
+  await expect.poll(async () => (await store.listEntries(page)).length).toBe(2);
+
+  // Review A must have kept the freshly typed text.
+  await expect.poll(async () => (await store.getEntry(page, aId))?.canvasJson ?? '').toContain('dont-lose-me');
+
+  await app.close();
+});
+
+test('typing then reloading persists the text (close / reload safety net)', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const id = (await store.listEntries(page))[0]?.id as string;
+
+  await page.getByTestId('tool-text').click();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(150);
+  await page.keyboard.type('survive-reload');
+
+  // Reload while still editing: beforeunload must commit + flush before the renderer goes away.
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+
+  await expect.poll(async () => (await store.getEntry(page, id))?.canvasJson ?? '').toContain('survive-reload');
 
   await app.close();
 });

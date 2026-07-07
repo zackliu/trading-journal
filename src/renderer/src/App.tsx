@@ -18,6 +18,7 @@ import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
 import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
+import { ConfirmDialog } from './shell/ConfirmDialog';
 import { GroupBrowser, type Bucket } from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
@@ -123,6 +124,8 @@ export function App(): JSX.Element {
   const [showViewBuilder, setShowViewBuilder] = useState(false);
   const [showResultSettings, setShowResultSettings] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
+  // The id of a review awaiting delete confirmation (a destructive, unrecoverable action).
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Distinct from `error` (transient ingest/action failures): a persistent "your last edit could not be
@@ -403,7 +406,13 @@ export function App(): JSX.Element {
   const switchTo = useCallback(
     async (nextId: string | null) => {
       if (nextId === selectedEntryIdRef.current) return; // already open — re-selecting is a no-op
-      if (editorState.dirty) await saveNow();
+      // Fabric does not exit text editing when focus leaves the canvas, so freshly typed text is not yet
+      // committed. Commit it first, then flush pending edits — otherwise switching reviews (rail click,
+      // wheel, New, link) would silently discard what the user just typed. Gate the save on the
+      // controller's LIVE dirty state, not the stale closure value.
+      const controller = controllerRef.current;
+      controller?.commitTextEditing();
+      if (controller?.isDirty()) await saveNow();
       controllerRef.current = null;
       setSelectedEntryId(nextId);
       setTool('select');
@@ -412,11 +421,25 @@ export function App(): JSX.Element {
       setSelectedAnnotation(null);
       await refresh();
     },
-    [editorState.dirty, saveNow, refresh],
+    [saveNow, refresh],
   );
   useEffect(() => {
     switchToRef.current = switchTo;
   }, [switchTo]);
+
+  // Close / reload safety net: Fabric never commits an in-progress text edit on focus loss, so flush it
+  // before the page unloads. saveNow dispatches its IPC synchronously, so the main process receives and
+  // persists the payload even as the renderer goes away.
+  useEffect(() => {
+    const onBeforeUnload = (): void => {
+      const controller = controllerRef.current;
+      if (!controller) return;
+      controller.commitTextEditing();
+      if (controller.isDirty()) void saveNow();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [saveNow]);
 
   // Wheel past a stage edge steps through the rail: down = next (further down the list), up = previous.
   const onWheelNavigate = useCallback((dir: 1 | -1): void => {
@@ -692,12 +715,15 @@ export function App(): JSX.Element {
             icon: 'trash',
             danger: true,
             testId: 'context-delete',
-            onClick: () => void removeEntry(id),
+            onClick: () => {
+              setMenu(null);
+              setConfirmDelete(id);
+            },
           },
         ],
       });
     },
-    [removeEntry],
+    [],
   );
 
   const onDefineDimension = useCallback(
@@ -971,7 +997,7 @@ export function App(): JSX.Element {
         canRedo={editorState.canRedo}
         onNew={() => void createNew()}
         onDeleteReview={() => {
-          if (selectedEntryId) void removeEntry(selectedEntryId);
+          if (selectedEntryId) setConfirmDelete(selectedEntryId);
         }}
         onTool={pickTool}
         onStyle={changeStyle}
@@ -1166,6 +1192,19 @@ export function App(): JSX.Element {
           onChange={() => void chooseWorkspaceFolder()}
           onReveal={revealWorkspace}
           onClose={() => setShowGeneral(false)}
+        />
+      ) : null}
+      {confirmDelete ? (
+        <ConfirmDialog
+          title="Delete review?"
+          message="This permanently deletes the review — its page, screenshots, annotations and tags. This cannot be undone."
+          confirmLabel="Delete"
+          onConfirm={() => {
+            const id = confirmDelete;
+            setConfirmDelete(null);
+            void removeEntry(id);
+          }}
+          onCancel={() => setConfirmDelete(null)}
         />
       ) : null}
     </div>

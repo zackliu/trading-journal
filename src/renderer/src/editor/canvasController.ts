@@ -964,6 +964,22 @@ export class CanvasController {
     this.emit();
   }
 
+  /** True when there are edits not yet written (history is ahead of the last save). */
+  isDirty(): boolean {
+    return this.histIndex !== this.savedIndex;
+  }
+
+  /**
+   * Force-commit an in-progress text edit. Fabric does NOT exit text editing when focus leaves the
+   * canvas (its blur() only stops the cursor blink), so switching reviews or closing the app would
+   * otherwise silently discard freshly typed text. Exiting runs the normal commit / empty-box-drop +
+   * autosave path. A no-op when nothing is being edited, so it is safe to call at any teardown boundary.
+   */
+  commitTextEditing(): void {
+    const obj = this.canvas.getActiveObject();
+    if (obj instanceof TextBoxAnnotation && obj.isEditing) obj.exitEditing();
+  }
+
   dispose(): void {
     cancelAnimationFrame(this.flashRAF);
     void this.canvas.dispose();
