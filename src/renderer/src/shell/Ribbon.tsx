@@ -17,6 +17,7 @@ interface RibbonProps {
   onDeleteReview: () => void;
   onTool: (tool: Tool) => void;
   onStyle: (patch: Partial<DrawStyle>) => void;
+  onBeforeTextStyle: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onDeleteSelected: () => void;
@@ -199,6 +200,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                   <label className="rfield" title="Stroke color">
                     <input
                       type="color"
+                      data-testid="stroke-color"
                       value={style.stroke}
                       disabled={!entryOpen}
                       onChange={(e) => props.onStyle({ stroke: e.target.value })}
@@ -254,6 +256,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                   <label className="rfield" title="Fill color">
                     <input
                       type="color"
+                      data-testid="fill-color"
                       value={style.fill === 'transparent' ? '#3fb950' : style.fill}
                       disabled={!entryOpen}
                       onChange={(e) => props.onStyle({ fill: e.target.value })}
@@ -286,14 +289,31 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             <Group label="Text">
               <div className="r2">
                 <div className="rrow">
-                  <label className="rfield" title="Text color">
+                  <label className="rfield" title="Text color (selected text, or the whole box)">
                     <input
                       type="color"
+                      data-testid="text-color"
                       value={style.textColor}
                       disabled={!entryOpen}
+                      onMouseDown={() => props.onBeforeTextStyle()}
                       onChange={(e) => props.onStyle({ textColor: e.target.value })}
                     />
                   </label>
+                  <button
+                    type="button"
+                    className={`rtext rtext--sm${style.bold ? ' is-active' : ''}`}
+                    title="Bold (selected text, or the whole box)"
+                    data-testid="bold"
+                    disabled={!entryOpen}
+                    style={{ fontWeight: 700 }}
+                    onMouseDown={(e) => {
+                      e.preventDefault(); // keep the text box in edit mode so the character selection survives
+                      props.onBeforeTextStyle();
+                    }}
+                    onClick={() => props.onStyle({ bold: !style.bold })}
+                  >
+                    B
+                  </button>
                 </div>
                 <div className="rrow">
                   <select
@@ -302,6 +322,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                     data-testid="font-size"
                     value={style.fontSize}
                     disabled={!entryOpen}
+                    onMouseDown={() => props.onBeforeTextStyle()}
                     onChange={(e) => props.onStyle({ fontSize: Number(e.target.value) })}
                   >
                     {FONT_SIZES.map((s) => (

@@ -13,6 +13,10 @@ const CANVAS = '.canvas-container';
 const SCENE_W = 3482;
 const SCENE_H = 1600;
 
+// A 1x1 PNG standing in for a system-clipboard screenshot (Win+Shift+S auto-copies to the OS clipboard).
+const PNG_1x1 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
 interface Box {
   x: number;
   y: number;
@@ -242,6 +246,127 @@ test('copy-paste duplicates a drawing as an independent annotation', async () =>
   await expect.poll(async () => (await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(2);
   const ids = (await store.getEntry(page, entryId))?.annotations.map((a) => a.id) ?? [];
   expect(new Set(ids).size).toBe(2);
+
+  await app.close();
+});
+
+test('a system-clipboard screenshot out-ranks an earlier copied drawing (recency)', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Copy a drawing: Ctrl+C now also takes over the system clipboard.
+  await drawRect(page, box, [300, 260], [640, 460]);
+  await page.keyboard.press('Control+c');
+
+  // Then a screenshot arrives on the system clipboard. Ctrl+V must paste the screenshot (the newest
+  // copy), not a second drawing — the old bug let the shadowed drawing win forever.
+  await page.evaluate((b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    const file = new File([bytes], 'screenshot.png', { type: 'image/png' });
+    const data = new DataTransfer();
+    data.items.add(file);
+    window.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, PNG_1x1);
+
+  // The page gains an image object referenced by hash; the drawing is NOT duplicated.
+  await expect
+    .poll(async () => ((await store.getEntry(page, entryId))?.canvasJson ?? '').includes('tj-image://'))
+    .toBe(true);
+  expect((await store.getEntry(page, entryId))?.annotations.length ?? 0).toBe(1);
+
+  await app.close();
+});
+
+/** Seed the strip with arbitrary annotation objects (e.g. line stamps), then reload. */
+async function seedLibraryObjects(page: Page, objects: Record<string, unknown>[]): Promise<void> {
+  await store.saveStampLibrary(page, JSON.stringify({ version: '6', objects }));
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForTimeout(400);
+}
+
+test('a diagonal line stamp is pulled out by the stroke you press, not the topmost overlapping box', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  // Two parallel diagonal line stamps whose bounding boxes heavily overlap. The UPPER line is drawn
+  // LAST (topmost z) — the old box-containment hit pulled it out no matter which stroke you pressed.
+  await seedLibraryObjects(page, [
+    {
+      type: 'Polyline',
+      points: [
+        { x: 3000, y: 250 },
+        { x: 3300, y: 450 },
+      ],
+      fill: '',
+      stroke: '#3fb950',
+      strokeWidth: 4,
+      tjId: 'lower',
+      tjTags: [{ group: 'setup', value: 'lower' }],
+    },
+    {
+      type: 'Polyline',
+      points: [
+        { x: 3000, y: 200 },
+        { x: 3300, y: 400 },
+      ],
+      fill: '',
+      stroke: '#f85149',
+      strokeWidth: 4,
+      tjId: 'upper',
+      tjTags: [{ group: 'setup', value: 'upper' }],
+    },
+  ]);
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Press ON the lower stroke's midpoint — a spot the upper line's bounding box also covers — and drag
+  // to the page. The pulled-out copy must be the LOWER line (under the pointer), not the topmost upper.
+  await dragScene(page, box, [3150, 350], [900, 700]);
+
+  await expect
+    .poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'lower' })).length)
+    .toBe(1);
+  const lower = await store.queryByTag(page, { group: 'setup', value: 'lower' });
+  expect(lower[0]?.entryId).toBe(entryId);
+  expect((await store.queryByTag(page, { group: 'setup', value: 'upper' })).length).toBe(0);
+
+  await app.close();
+});
+
+test('a thin horizontal line stamp is grabbable within its stroke band, not only its sliver box', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  // A horizontal line: its point bounding box is a near-zero-height sliver, so the old box hit was
+  // almost impossible to land; the stroke band (used by the hover cursor) is what makes it grabbable.
+  await seedLibraryObjects(page, [
+    {
+      type: 'Polyline',
+      points: [
+        { x: 3000, y: 300 },
+        { x: 3300, y: 300 },
+      ],
+      fill: '',
+      stroke: '#a371f7',
+      strokeWidth: 4,
+      tjId: 'hline',
+      tjTags: [{ group: 'setup', value: 'hline' }],
+    },
+  ]);
+  const entryId = await openReview(page);
+  const box = await canvasBox(page);
+
+  // Press 6 scene-px BELOW the stroke — outside the sliver box but well within the hover band — and drag
+  // onto the page. The old box hit returned nothing here (grabbable-but-empty); now it pulls out.
+  await dragScene(page, box, [3150, 306], [900, 700]);
+
+  await expect
+    .poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'hline' })).length)
+    .toBe(1);
+  expect((await store.queryByTag(page, { group: 'setup', value: 'hline' }))[0]?.entryId).toBe(entryId);
 
   await app.close();
 });

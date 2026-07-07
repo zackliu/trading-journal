@@ -41,6 +41,7 @@ export interface DrawStyle {
   borderless: boolean;
   textColor: string;
   fontSize: number;
+  bold: boolean;
 }
 
 export interface EditorState {
@@ -156,6 +157,7 @@ export class CanvasController {
     borderless: false,
     textColor: '#111827',
     fontSize: 22,
+    bold: false,
   };
   private drawing = false;
   private startX = 0;
@@ -188,6 +190,11 @@ export class CanvasController {
   // Set while a press on a non-selectable object suppressed group-selection; restored on mouse:up.
   private selectionSuppressed = false;
   private selectionCb: ((sel: AnnotationSelection | null) => void) | null = null;
+  private selectionStyleCb: ((s: DrawStyle | null) => void) | null = null;
+  // A frozen character range for the current text-style gesture: captured on a ribbon control's
+  // pointer-down (before the blur collapses the live selection), consumed by applyTextRun, invalidated
+  // whenever the selection changes. Lets "colour just these characters" survive the ribbon click.
+  private styleRange: { obj: TextBoxAnnotation; start: number; end: number } | null = null;
   // Transient browse highlight: haloed annotation bounds (scene coords) + start time. Derived from the
   // active tag at render time; never an object, never in canvas JSON / history, never in the thumbnail.
   private flash: { bounds: Array<{ left: number; top: number; width: number; height: number }>; start: number } | null =
@@ -234,10 +241,25 @@ export class CanvasController {
       }
     });
     this.canvas.on('object:modified', () => this.pushHistory());
-    this.canvas.on('selection:created', () => this.emit());
-    this.canvas.on('selection:updated', () => this.emit());
-    this.canvas.on('selection:cleared', () => this.emit());
+    this.canvas.on('selection:created', () => {
+      this.styleRange = null;
+      this.emit();
+    });
+    this.canvas.on('selection:updated', () => {
+      this.styleRange = null;
+      this.emit();
+    });
+    this.canvas.on('selection:cleared', () => {
+      this.styleRange = null;
+      this.emit();
+    });
     this.canvas.on('text:editing:exited', (e) => this.onTextEditExit((e.target as FabricObject | undefined) ?? null));
+    // Moving the caret / changing the in-text selection updates the ribbon readout and invalidates any
+    // stale frozen range (a fresh one is captured on the next ribbon pointer-down).
+    this.canvas.on('text:selection:changed', () => {
+      this.styleRange = null;
+      this.emitSelectionStyle();
+    });
     this.canvas.on('after:render', () => this.drawFlash());
     // Resample images at high quality. The 2D context defaults to 'low' (bilinear), which visibly
     // softens any scaled screenshot; 'high' keeps pasted charts crisp. The context resets this flag
@@ -279,6 +301,13 @@ export class CanvasController {
     this.emitSelection();
   }
 
+  /** Fired when the selection's effective style changes, so the ribbon's controls read the selection
+   *  (Office-style "format follows selection"); null for nothing / a multi-selection. */
+  onSelectionStyle(cb: (s: DrawStyle | null) => void): void {
+    this.selectionStyleCb = cb;
+    this.emitSelectionStyle();
+  }
+
   /** The visible stage area (px). Re-fits the surface while in fit mode. */
   setViewport(w: number, h: number): void {
     this.availW = Math.max(1, w);
@@ -317,11 +346,24 @@ export class CanvasController {
     for (let i = objs.length - 1; i >= 0; i -= 1) {
       const o = objs[i];
       if (isChrome(o) || isGhost(o) || !isAnnotation(o) || this.regionOf(o) !== 'strip') continue;
-      o.setCoords();
-      const r = o.getBoundingRect();
-      if (p.x >= r.left && p.x <= r.left + r.width && p.y >= r.top && p.y <= r.top + r.height) return o;
+      if (this.hitsStamp(o, p)) return o;
     }
     return null;
+  }
+
+  /**
+   * Does the scene point actually land on this stamp? Uses the SAME hit model as the hover cursor /
+   * selection (the `_pointIsInObjectSelectionArea` override): a line / arrow is hit along its stroke
+   * within a screen band (never its diagonal / sliver-thin bounding box), everything else by its
+   * bounds. Keeping drag-out and hover on ONE model is what makes "if the cursor says grab, the drag
+   * grabs exactly that stamp": a diagonal line no longer resolves to whichever box is topmost, and a
+   * thin horizontal line no longer has a grabbable-but-empty band outside its few-pixel box.
+   */
+  private hitsStamp(o: FabricObject, p: Point): boolean {
+    if (o instanceof Polyline) return segmentContainsPoint(o, p);
+    o.setCoords();
+    const r = o.getBoundingRect();
+    return p.x >= r.left && p.x <= r.left + r.width && p.y >= r.top && p.y <= r.top + r.height;
   }
 
   /** The (non-serialized) page chrome: the title band + its hairline, and the soft groove between page and strip. */
@@ -694,6 +736,16 @@ export class CanvasController {
     this.applyTool(this.tool);
   }
 
+  /** Freeze the current in-text character range so a ribbon click (which blurs the hidden textarea and
+   *  collapses the selection) can still target it. Called on pointer-down of a text-style control. */
+  snapshotTextSelection(): void {
+    const obj = this.canvas.getActiveObject();
+    this.styleRange =
+      obj instanceof TextBoxAnnotation && obj.isEditing && (obj.selectionEnd ?? 0) > (obj.selectionStart ?? 0)
+        ? { obj, start: obj.selectionStart, end: obj.selectionEnd }
+        : null;
+  }
+
   setStyle(patch: Partial<DrawStyle>): void {
     this.style = { ...this.style, ...patch };
     const active = this.canvas.getActiveObjects();
@@ -701,6 +753,7 @@ export class CanvasController {
     if (active.length > 0) {
       this.canvas.requestRenderAll();
       this.pushHistory();
+      this.emitSelectionStyle(); // the controls now read the object's new values
     }
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush) {
       const brush = this.canvas.freeDrawingBrush;
@@ -716,15 +769,23 @@ export class CanvasController {
   private applyStylePatch(obj: FabricObject, patch: Partial<DrawStyle>): void {
     const borderW = this.style.borderless ? 0 : this.style.strokeWidth;
     if (obj instanceof TextBoxAnnotation) {
+      // Box border / fill / opacity are always whole-box (no per-character meaning).
       if (patch.stroke !== undefined) obj.boxStroke = patch.stroke;
       if (patch.strokeWidth !== undefined || patch.borderless !== undefined) obj.boxStrokeWidth = borderW;
       if (patch.strokeWidth !== undefined || patch.dash !== undefined) {
         obj.boxDash = dashArray(this.style.dash, this.style.strokeWidth);
       }
       if (patch.fill !== undefined) obj.boxFill = patch.fill;
-      if (patch.textColor !== undefined) obj.set('fill', patch.textColor);
-      if (patch.fontSize !== undefined) obj.set('fontSize', patch.fontSize);
       if (patch.opacity !== undefined) obj.set('opacity', patch.opacity);
+      // Colour / size / bold are text-run props: apply to the frozen character range if there is one,
+      // else to the whole box (Office-style — select some characters to format just them).
+      const run: { fill?: string; fontSize?: number; fontWeight?: string } = {};
+      if (patch.textColor !== undefined) run.fill = patch.textColor;
+      if (patch.fontSize !== undefined) run.fontSize = patch.fontSize;
+      if (patch.bold !== undefined) run.fontWeight = patch.bold ? 'bold' : 'normal';
+      if (run.fill !== undefined || run.fontSize !== undefined || run.fontWeight !== undefined) {
+        this.applyTextRun(obj, run);
+      }
       return;
     }
     if (patch.opacity !== undefined) obj.set('opacity', patch.opacity);
@@ -739,6 +800,78 @@ export class CanvasController {
       obj.set('strokeDashArray', dashArray(this.style.dash, this.style.strokeWidth));
     }
     if (patch.fill !== undefined && obj instanceof Rect) obj.set('fill', patch.fill);
+  }
+
+  /** Apply colour / size / weight to the frozen character range if it belongs to this box, else the
+   *  whole box (object-level value + drop that one property's per-character runs so it wins). */
+  private applyTextRun(obj: TextBoxAnnotation, run: { fill?: string; fontSize?: number; fontWeight?: string }): void {
+    const r = this.styleRange;
+    if (r && r.obj === obj && r.end > r.start) {
+      obj.setSelectionStyles(run, r.start, r.end);
+    } else {
+      if (run.fill !== undefined) {
+        obj.set('fill', run.fill);
+        obj.removeStyle('fill');
+      }
+      if (run.fontSize !== undefined) {
+        obj.set('fontSize', run.fontSize);
+        obj.removeStyle('fontSize');
+      }
+      if (run.fontWeight !== undefined) {
+        obj.set('fontWeight', run.fontWeight);
+        obj.removeStyle('fontWeight');
+      }
+    }
+    obj.set('dirty', true);
+    obj.initDimensions();
+    obj.setCoords();
+  }
+
+  private emitSelectionStyle(): void {
+    this.selectionStyleCb?.(this.readSelectionStyle());
+  }
+
+  /** The effective style of the single selected object (a text run, a text box, or a shape), or null
+   *  for none / a multi-selection — the ribbon shows this so its controls read the current selection. */
+  private readSelectionStyle(): DrawStyle | null {
+    const active = this.canvas.getActiveObjects();
+    if (active.length !== 1) return null;
+    const obj = active[0];
+    const s: DrawStyle = { ...this.style };
+    if (typeof obj.opacity === 'number') s.opacity = obj.opacity;
+    if (obj instanceof TextBoxAnnotation) {
+      if (typeof obj.boxStroke === 'string') s.stroke = obj.boxStroke;
+      s.borderless = (obj.boxStrokeWidth ?? 0) === 0;
+      if (!s.borderless) s.strokeWidth = obj.boxStrokeWidth ?? s.strokeWidth;
+      if (typeof obj.boxFill === 'string') s.fill = obj.boxFill;
+      const t = this.effectiveTextStyle(obj);
+      s.textColor = t.textColor;
+      s.fontSize = t.fontSize;
+      s.bold = t.bold;
+      return s;
+    }
+    if (typeof obj.stroke === 'string') s.stroke = obj.stroke;
+    if (obj instanceof Rect) {
+      s.borderless = (obj.strokeWidth ?? 0) === 0;
+      if (!s.borderless) s.strokeWidth = obj.strokeWidth ?? s.strokeWidth;
+      if (typeof obj.fill === 'string') s.fill = obj.fill;
+    } else if (typeof obj.strokeWidth === 'number') {
+      s.strokeWidth = obj.strokeWidth;
+    }
+    return s;
+  }
+
+  /** Colour / size / bold shown for a text box: the selected range's first char while editing, else
+   *  the whole-box values. */
+  private effectiveTextStyle(obj: TextBoxAnnotation): { textColor: string; fontSize: number; bold: boolean } {
+    const hasRange = obj.isEditing && (obj.selectionEnd ?? 0) > (obj.selectionStart ?? 0);
+    const st = hasRange ? obj.getSelectionStyles(obj.selectionStart, obj.selectionStart + 1, true)[0] : undefined;
+    const weight = (st?.fontWeight ?? obj.fontWeight) as string | number | undefined;
+    return {
+      textColor: (st?.fill as string) ?? (obj.fill as string) ?? this.style.textColor,
+      fontSize: (st?.fontSize as number) ?? (obj.fontSize as number) ?? this.style.fontSize,
+      bold: weight === 'bold' || weight === 700,
+    };
   }
 
   getStyle(): DrawStyle {
@@ -1170,6 +1303,7 @@ export class CanvasController {
       width: 200,
       fontSize: this.style.fontSize,
       fill: this.style.textColor,
+      fontWeight: this.style.bold ? 'bold' : 'normal',
       opacity: this.style.opacity,
       padding: 6,
       objectCaching: false,
@@ -1400,6 +1534,31 @@ export class CanvasController {
     this.placeNew(obj);
   }
 
+  /** True while a text box is open for editing (its caret is active) — a paste then belongs to the text. */
+  isEditingText(): boolean {
+    const obj = this.canvas.getActiveObject();
+    return obj instanceof TextBoxAnnotation && obj.isEditing === true;
+  }
+
+  /**
+   * Append clipboard text to the selected (not-editing) text box as plain characters that adopt the
+   * box's OWN colour / size — never the source's, and never per-character styles (so the box-level
+   * text-colour control stays authoritative). Returns false when no text box is the active target.
+   */
+  insertTextIntoActiveTextBox(text: string): boolean {
+    const obj = this.canvas.getActiveObject();
+    if (!(obj instanceof TextBoxAnnotation)) return false;
+    // Append plain characters: they carry no per-character style, so they adopt the box's own colour /
+    // size, while any manual per-character formatting already in the box is preserved.
+    obj.set('text', (obj.text ?? '') + text.replace(/\r\n?/g, '\n'));
+    obj.set('dirty', true);
+    obj.initDimensions();
+    obj.setCoords();
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+    return true;
+  }
+
   private emit(): void {
     this.stateCb?.({
       canUndo: this.histIndex > 0,
@@ -1408,6 +1567,7 @@ export class CanvasController {
       hasSelection: this.canvas.getActiveObjects().length > 0,
     });
     this.emitSelection();
+    this.emitSelectionStyle();
   }
 
   private emitSelection(): void {

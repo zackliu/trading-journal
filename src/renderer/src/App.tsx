@@ -41,6 +41,7 @@ const DEFAULT_STYLE: DrawStyle = {
   borderless: false,
   textColor: '#111827',
   fontSize: 22,
+  bold: false,
 };
 const EMPTY_EDITOR: EditorState = { canUndo: false, canRedo: false, dirty: false, hasSelection: false };
 const EMPTY_QUERY: ViewQuery = { entry: [], annotation: [], results: [] };
@@ -138,6 +139,9 @@ export function App(): JSX.Element {
 
   const [tool, setTool] = useState<Tool>('select');
   const [style, setStyle] = useState<DrawStyle>(DEFAULT_STYLE);
+  // The effective style of the current selection (Office-style "format follows selection"); null when
+  // nothing / a multi-selection is active, so the ribbon falls back to the persistent draw defaults.
+  const [selectionStyle, setSelectionStyle] = useState<DrawStyle | null>(null);
   const [editorState, setEditorState] = useState<EditorState>(EMPTY_EDITOR);
   const [zoom, setZoom] = useState<{ percent: number; fitMode: boolean }>({ percent: 100, fitMode: true });
   const [popover, setPopover] = useState<{ annotation: AnnotationSelection; x: number; y: number } | null>(null);
@@ -493,46 +497,62 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent): void => {
-      // Unified "paste to page": an internally copied drawing pastes an independent copy;
-      // otherwise a system-clipboard screenshot pastes as an image object (the ingest path).
+      const controller = controllerRef.current;
+      // A text box is the paste target → the paste is TEXT that adopts the box's own colour / size,
+      // never an image. While the box is being edited, Fabric's hidden textarea inserts the clipboard
+      // text natively (plain, since per-character style copy is disabled) — we only must not hijack it
+      // as an image. A selected (not-editing) box: append the clipboard text into it ourselves.
+      if (controller?.isEditingText()) return;
+      const pastedText = event.clipboardData?.getData('text/plain') ?? '';
+      if (pastedText && controller?.insertTextIntoActiveTextBox(pastedText)) {
+        event.preventDefault();
+        return;
+      }
+      // "Paste the most recently copied thing onto the page" — recency, not a fixed priority. A
+      // system-clipboard screenshot is checked first: whenever one is present it is the newest copy,
+      // because copying a drawing (the `copy` handler below) overwrites the system clipboard. Only with
+      // no system image do we fall back to an internally copied drawing.
+      const items = event.clipboardData?.items;
+      if (items) {
+        for (let i = 0; i < items.length; i += 1) {
+          const item = items[i];
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) {
+              event.preventDefault();
+              drawingClipboardRef.current = null; // the screenshot is newer — drop the stale drawing copy
+              void fileToBytes(file).then(addImage);
+              return;
+            }
+          }
+        }
+      }
       const clip = drawingClipboardRef.current;
       if (clip && selectedEntryIdRef.current && controllerRef.current) {
         event.preventDefault();
         void controllerRef.current.pasteSerializedAnnotation(clip);
-        return;
-      }
-      const items = event.clipboardData?.items;
-      if (!items) return;
-      for (let i = 0; i < items.length; i += 1) {
-        const item = items[i];
-        if (item.kind === 'file' && item.type.startsWith('image/')) {
-          const file = item.getAsFile();
-          if (file) {
-            event.preventDefault();
-            void fileToBytes(file).then(addImage);
-            return;
-          }
-        }
       }
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
   }, [addImage]);
 
-  // Ctrl+C copies the selected drawing into an internal clipboard (for the unified Ctrl+V paste).
+  // Ctrl+C copies the selected drawing into an internal clipboard for the unified Ctrl+V paste. It
+  // listens on the `copy` event (symmetric with `paste`) so it can also overwrite the system clipboard:
+  // clearing any stale screenshot there makes "is there a system image?" a truthful recency signal at
+  // paste time, so a freshly copied drawing can never be out-ranked by an older screenshot.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'c') return;
-      const t = e.target as HTMLElement | null;
+    const onCopy = (event: ClipboardEvent): void => {
+      const t = event.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const copied = controllerRef.current?.copyActiveAnnotation() ?? null;
-      if (copied) {
-        drawingClipboardRef.current = copied;
-        e.preventDefault();
-      }
+      if (!copied) return; // nothing copyable selected — leave the last copy (and the clipboard) untouched
+      event.preventDefault();
+      event.clipboardData?.setData('text/plain', ' '); // replace the OS clipboard → drop any stale image
+      drawingClipboardRef.current = copied;
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('copy', onCopy);
+    return () => window.removeEventListener('copy', onCopy);
   }, []);
 
   // Ctrl/Cmd+S: a habitual "save now". Auto-save already persists every edit, so this just flushes.
@@ -579,6 +599,7 @@ export function App(): JSX.Element {
     controllerRef.current = controller;
     controller.onState(setEditorState);
     controller.onToolChange(setTool);
+    controller.onSelectionStyle(setSelectionStyle);
     controller.onContext((r) => {
       const items: MenuItem[] = [];
       if (r.annotation) {
@@ -945,7 +966,7 @@ export function App(): JSX.Element {
         entryId={selectedEntryId}
         hasSelection={editorState.hasSelection}
         tool={tool}
-        style={style}
+        style={selectionStyle ?? style}
         canUndo={editorState.canUndo}
         canRedo={editorState.canRedo}
         onNew={() => void createNew()}
@@ -954,6 +975,7 @@ export function App(): JSX.Element {
         }}
         onTool={pickTool}
         onStyle={changeStyle}
+        onBeforeTextStyle={() => controllerRef.current?.snapshotTextSelection()}
         onUndo={() => void controllerRef.current?.undo().then(() => saveNow())}
         onRedo={() => void controllerRef.current?.redo().then(() => saveNow())}
         onDeleteSelected={() => controllerRef.current?.deleteSelected()}

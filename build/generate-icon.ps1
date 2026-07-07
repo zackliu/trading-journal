@@ -30,20 +30,6 @@ function New-IconFrame([int]$Size) {
   $graphics.Clear([System.Drawing.Color]::Transparent)
   $graphics.ScaleTransform($Size / 256.0, $Size / 256.0)
 
-  $background = New-RoundedRect 0 0 256 256 52
-  $backgroundBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
-    [System.Drawing.PointF]::new(26, 22),
-    [System.Drawing.PointF]::new(230, 234),
-    (New-IconColor '#17202b'),
-    (New-IconColor '#0f1720')
-  )
-  $graphics.FillPath($backgroundBrush, $background)
-
-  $glowPen = [System.Drawing.Pen]::new((New-IconColor '#f5c84b' 56), 8)
-  $glowPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $glowPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $graphics.DrawLine($glowPen, 44, 197, 193, 48)
-
   $pagePath = [System.Drawing.Drawing2D.GraphicsPath]::new()
   $pagePath.AddPolygon([System.Drawing.PointF[]]@(
     [System.Drawing.PointF]::new(55, 38),

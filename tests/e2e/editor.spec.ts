@@ -438,6 +438,156 @@ test('the text tool makes an Office-style text box (types text; empty is discard
   await app.close();
 });
 
+test('pasting text into a selected text box inserts characters, never an image, and stays box-styled', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+
+  // Make a text box with "Hi", then Escape to leave editing while keeping the box selected.
+  await page.getByTestId('tool-text').click();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(150);
+  await page.keyboard.type('Hi');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('tab-annotation')).toBeVisible(); // selected, not editing
+
+  // A clipboard holding BOTH text and an image (as some apps provide when copying rich text). Because
+  // a text box is the target, the TEXT must win — appended into the box — and no image is pasted.
+  await page.evaluate((b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    const data = new DataTransfer();
+    data.setData('text/plain', 'World');
+    data.items.add(new File([bytes], 'shot.png', { type: 'image/png' }));
+    window.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, PNG_A);
+
+  const id = (await store.listEntries(page))[0]?.id as string;
+  await expect
+    .poll(async () => {
+      const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
+        objects?: { type?: string; tjRole?: string; text?: string }[];
+      };
+      return (parsed.objects ?? []).find((o) => o.type === 'TextBoxAnnotation' && o.tjRole !== 'title')?.text ?? '';
+    })
+    .toBe('HiWorld');
+
+  const canvasJson = (await store.getEntry(page, id))?.canvasJson ?? '';
+  expect(canvasJson).not.toContain('tj-image://'); // the image was NOT pasted onto the page
+  const parsed = JSON.parse(canvasJson) as {
+    objects?: { type?: string; tjRole?: string; styles?: unknown }[];
+  };
+  const tb = (parsed.objects ?? []).find((o) => o.type === 'TextBoxAnnotation' && o.tjRole !== 'title');
+  // No per-character styles: the box-level text-colour control stays authoritative (Fabric would
+  // otherwise carry the source's per-char colour on paste, which is exactly the reported bug).
+  const styles = tb?.styles;
+  const emptyStyles =
+    styles == null || (Array.isArray(styles) ? styles.length === 0 : Object.keys(styles).length === 0);
+  expect(emptyStyles).toBe(true);
+
+  await app.close();
+});
+
+test('Bold formats the selected characters, persists, and a whole-box Bold overrides the runs', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+
+  const id = (await store.listEntries(page))[0]?.id as string;
+  const readBox = async (): Promise<{ text?: string; fontWeight?: string; styles?: unknown } | undefined> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
+      objects?: { type?: string; tjRole?: string; text?: string; fontWeight?: string; styles?: unknown }[];
+    };
+    return (parsed.objects ?? []).find((o) => o.type === 'TextBoxAnnotation' && o.tjRole !== 'title');
+  };
+
+  // Type "Hello", then select the last two characters ("lo") and Bold just them.
+  await page.getByTestId('tool-text').click();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(150);
+  await page.keyboard.type('Hello');
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.getByTestId('bold').click();
+  await page.keyboard.press('Escape'); // commit; the box stays selected
+
+  // Per-character: a run is bold, but the box object itself is not — proof it hit the range only.
+  await expect
+    .poll(async () => JSON.stringify((await readBox())?.styles ?? '').includes('"fontWeight":"bold"'))
+    .toBe(true);
+  expect((await readBox())?.fontWeight ?? 'normal').not.toBe('bold');
+  expect((await readBox())?.text).toBe('Hello');
+
+  // Bold the whole box (now selected, not editing): object-level bold, and the per-char runs are dropped.
+  await page.getByTestId('bold').click();
+  await expect.poll(async () => (await readBox())?.fontWeight ?? 'normal').toBe('bold');
+  expect(JSON.stringify((await readBox())?.styles ?? '')).not.toContain('"fontWeight":"bold"');
+
+  await app.close();
+});
+
+test('the ribbon reads back the selected object style (format follows selection)', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+
+  const drawRectAt = async (x1: number, y1: number, x2: number, y2: number): Promise<void> => {
+    await page.getByTestId('tab-draw').click();
+    await page.getByTestId('tool-rect').click();
+    await page.mouse.move(box.x + x1, box.y + y1);
+    await page.mouse.down();
+    await page.mouse.move(box.x + x2, box.y + y2);
+    await page.mouse.up(); // finishing a shape returns to the select tool
+  };
+  const setColor = async (hex: string): Promise<void> => {
+    // Drive the controlled color input the way a real edit does: use the native value setter so
+    // React's onChange fires (a plain el.value assignment is swallowed by React's value tracker).
+    await page.getByTestId('stroke-color').evaluate((el, v) => {
+      const input = el as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, v);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, hex);
+  };
+
+  // Rect A: default red stroke. Drawing selects it, so the swatch reads its own colour.
+  await drawRectAt(60, 60, 160, 140);
+  await expect(page.getByTestId('stroke-color')).toHaveValue('#f85149');
+  await setColor('#0000ff'); // recolour A (applies to the selection)
+
+  // Rect B elsewhere, then move the persistent default to green while B is selected.
+  await drawRectAt(300, 60, 400, 140);
+  await setColor('#00ff00');
+
+  // Re-select A: the swatch must read A's own blue, not the current green default.
+  await page.mouse.click(box.x + 110, box.y + 100);
+  await expect(page.getByTestId('stroke-color')).toHaveValue('#0000ff');
+
+  await app.close();
+});
+
 test('No border removes a rectangle outline but lines keep their stroke', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);

@@ -12,6 +12,7 @@ import {
   Polyline,
   Textbox,
   classRegistry,
+  config,
   controlsUtils,
   util,
   type Control,
@@ -35,6 +36,12 @@ InteractiveFabricObject.ownDefaults = {
   borderOpacityWhenMoving: 0.35,
   padding: 0,
 };
+
+// Our text boxes are uniformly styled — one colour / size per box, set from the ribbon. Fabric's text
+// copy-paste otherwise carries the SOURCE's per-character styles into the destination box, so pasted
+// text keeps its old colour and the box's own text-colour control can no longer change it. Turning
+// this off makes every paste (between boxes or from outside) adopt the destination box's own style.
+config.disableStyleCopyPaste = true;
 
 /** Extra object properties persisted in canvas JSON (Fabric drops unknown keys otherwise). */
 export const TJ_PROPS = [
