@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Trading Journal app icon">
+  <defs>
+    <linearGradient id="bg" x1="26" y1="22" x2="230" y2="234" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17202b" />
+      <stop offset="0.56" stop-color="#263238" />
+      <stop offset="1" stop-color="#0f1720" />
+    </linearGradient>
+    <linearGradient id="page" x1="70" y1="44" x2="191" y2="207" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff8e8" />
+      <stop offset="1" stop-color="#eadfbd" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="8" flood-color="#020617" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="52" fill="url(#bg)" />
+  <path d="M44 197 193 48" stroke="#f5c84b" stroke-width="8" stroke-linecap="round" opacity="0.22" />
+
+  <g filter="url(#shadow)">
+    <path d="M55 38h124l31 31v149H55z" fill="url(#page)" />
+    <path d="M179 38v31h31z" fill="#d8c895" />
+    <path d="M55 38h124l31 31v149H55z" fill="none" stroke="#cdbb82" stroke-width="5" stroke-linejoin="round" />
+  </g>
+
+  <g stroke="#8fa29d" stroke-width="2" opacity="0.36">
+    <path d="M76 91h112" />
+    <path d="M76 126h112" />
+    <path d="M76 161h112" />
+    <path d="M96 73v112" />
+    <path d="M131 73v112" />
+    <path d="M166 73v112" />
+  </g>
+
+  <g stroke-linecap="round">
+    <path d="M84 138v32" stroke="#24443f" stroke-width="7" />
+    <rect x="75" y="117" width="18" height="36" rx="4" fill="#1fa47d" />
+
+    <path d="M114 100v44" stroke="#563433" stroke-width="7" />
+    <rect x="105" y="118" width="18" height="25" rx="4" fill="#d85f4f" />
+
+    <path d="M144 108v56" stroke="#24443f" stroke-width="7" />
+    <rect x="135" y="99" width="18" height="43" rx="4" fill="#22b586" />
+
+    <path d="M174 79v69" stroke="#24443f" stroke-width="7" />
+    <rect x="165" y="84" width="18" height="40" rx="4" fill="#22b586" />
+  </g>
+
+  <path d="M72 173 106 139l28 19 48-66" fill="none" stroke="#f5c84b" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="m178 90 14-5-1 15" fill="none" stroke="#f5c84b" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="72" cy="173" r="7" fill="#f5c84b" />
+</svg>

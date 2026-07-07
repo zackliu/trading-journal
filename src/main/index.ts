@@ -312,6 +312,7 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 620,
     show: false,
+    icon: getWindowIconPath(),
     backgroundColor: '#f1eee7',
     autoHideMenuBar: true,
     webPreferences: {
@@ -339,6 +340,10 @@ function createWindow(): void {
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'));
   }
+}
+
+function getWindowIconPath(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'icon.ico') : join(app.getAppPath(), 'build/icon.ico');
 }
 
 app
