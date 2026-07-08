@@ -158,6 +158,41 @@ export function snapTo45(x1: number, y1: number, x2: number, y2: number): [numbe
   return [x1 + len * Math.cos(angle), y1 + len * Math.sin(angle)];
 }
 
+// Endpoint handles are grabbed within a box of this size (screen px), deliberately larger than the
+// visible dot (the object's `cornerSize`) so line / arrow / measured-move endpoints are easy to click.
+const HANDLE_HIT_SIZE = 20;
+const HANDLE_TOUCH_HIT_SIZE = 30;
+
+/** Draw an endpoint handle as a small dot sized by the object's `cornerSize`, ignoring the (larger)
+ *  hit-box `sizeX/sizeY` — a forgiving grab area without a bloated handle. */
+function renderHandleDot(
+  ctx: CanvasRenderingContext2D,
+  left: number,
+  top: number,
+  _styleOverride: unknown,
+  fabricObject: InteractiveFabricObject,
+): void {
+  const r = (fabricObject.cornerSize || 8) / 2;
+  ctx.save();
+  ctx.fillStyle = fabricObject.cornerColor || '#ffffff';
+  ctx.strokeStyle = fabricObject.cornerStrokeColor || '#4165cc';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(left, top, r, 0, Math.PI * 2, false);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Give a control a generous clickable box (mouse + touch) while its rendered dot stays small. */
+function enlargeHandleHit(control: Control): void {
+  control.sizeX = HANDLE_HIT_SIZE;
+  control.sizeY = HANDLE_HIT_SIZE;
+  control.touchSizeX = HANDLE_TOUCH_HIT_SIZE;
+  control.touchSizeY = HANDLE_TOUCH_HIT_SIZE;
+  control.render = renderHandleDot;
+}
+
 /** Give a line / arrow polyline draggable endpoint handles instead of image-style controls. Holding
  * Ctrl while dragging a handle constrains the segment to H / V / 45° about the opposite (fixed)
  * endpoint — the same constraint used while the line was first drawn, so an edit is not special. */
@@ -166,6 +201,7 @@ export function attachSegmentControls(obj: FabricObject): void {
   const controls = controlsUtils.createPolyControls(obj, { render: controlsUtils.renderCircleControl });
   for (const key of Object.keys(controls)) {
     const control = controls[key];
+    enlargeHandleHit(control);
     const base = control.actionHandler;
     control.actionHandler = (eventData, transform, x, y) => {
       // Two-point segments only: snap the dragged end about the fixed opposite end when Ctrl is held.
@@ -341,11 +377,10 @@ export function attachMmControls(obj: FabricObject): void {
   if (!(obj instanceof MeasuredMove)) return;
   obj.objectCaching = false;
   obj.hasBorders = false;
-  const handle = (which: 'a' | 'b'): Control =>
-    new Control({
+  const handle = (which: 'a' | 'b'): Control => {
+    const control = new Control({
       actionName: 'modifyMM',
       cursorStyleHandler: () => 'crosshair',
-      render: controlsUtils.renderCircleControl,
       positionHandler: (_dim, _finalMatrix, o) => {
         const mm = o as MeasuredMove;
         return mmAnchorLocal(mm, which).transform(mm.calcTransformMatrix()).transform(mm.getViewportTransform());
@@ -358,6 +393,9 @@ export function attachMmControls(obj: FabricObject): void {
         return true;
       },
     });
+    enlargeHandleHit(control);
+    return control;
+  };
   obj.controls = { a: handle('a'), b: handle('b') };
 }
 

@@ -501,6 +501,51 @@ test('Ctrl constrains a line endpoint while EDITING it, exactly as while drawing
   await app.close();
 });
 
+test('line endpoints have a forgiving grab area — a press NEAR the endpoint (off the stroke) still grabs it', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const at = (x: number, y: number): { x: number; y: number } => ({ x: box.x + x, y: box.y + y });
+
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-line').click();
+  // A horizontal line; finishing auto-selects it so its endpoint handles are live.
+  await page.mouse.move(at(120, 200).x, at(120, 200).y);
+  await page.mouse.down();
+  await page.mouse.move(at(320, 200).x, at(320, 200).y, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByTestId('tab-annotation')).toBeVisible();
+
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  const endpointDy = async (): Promise<number> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
+      objects?: { points?: { x: number; y: number }[] }[];
+    };
+    const seg = (parsed.objects ?? []).find((o) => Array.isArray(o.points) && o.points.length === 2);
+    return seg?.points ? Math.abs(seg.points[0].y - seg.points[1].y) : Number.NaN;
+  };
+
+  // Press 8px BELOW the right endpoint: off the stroke (outside the line's hit band) and outside the old
+  // tiny ±4px handle box, but inside the enlarged grab area. Drag down — grabbing the endpoint bends the
+  // line diagonal; a body drag or a miss would keep it flat. (Arrows share this exact control path.)
+  await page.mouse.move(at(320, 208).x, at(320, 208).y);
+  await page.mouse.down();
+  await page.mouse.move(at(360, 300).x, at(360, 300).y, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.press('Control+s');
+  await expect.poll(endpointDy).toBeGreaterThan(40);
+
+  await app.close();
+});
+
 type MM = { type?: string; left?: number; top?: number; width?: number; height?: number; mmFlipX?: boolean; mmFlipY?: boolean; tjId?: string };
 
 /** The base anchor A of a measured move, in scene coordinates, from its stored box + flip flags. */
@@ -608,6 +653,52 @@ test('a measured move is never discarded — a bare click keeps a grabbable min-
   const mm = (parsed.objects ?? []).find((o) => o.type === 'MeasuredMove');
   expect(mm?.width ?? 0).toBeGreaterThan(10); // kept a grabbable minimum width
   expect(mm?.height ?? -1).toBeLessThan(1); // flat (no leg yet), but still editable — pull a handle to open it
+
+  await app.close();
+});
+
+test('measured-move handles have a forgiving grab area — a press near a handle still grabs it', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const at = (x: number, y: number): { x: number; y: number } => ({ x: box.x + x, y: box.y + y });
+
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-mm').click();
+  // Upper-right MM: base A at (120,300), measured B at (320,200).
+  await page.mouse.move(at(120, 300).x, at(120, 300).y);
+  await page.mouse.down();
+  await page.mouse.move(at(320, 200).x, at(320, 200).y, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByTestId('tab-annotation')).toBeVisible();
+
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  const readMM = async (): Promise<MM> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as { objects?: MM[] };
+    return (parsed.objects ?? []).find((o) => o.type === 'MeasuredMove')!;
+  };
+  const before = await readMM();
+  const aBefore = mmAnchorA(before);
+  const hBefore = before.height ?? 0;
+
+  // Press 8px ABOVE the measured handle B (off its dot and off the line) and drag up. The enlarged grab
+  // area catches it, so the leg widens (height grows) while the base anchor A stays pinned.
+  await page.mouse.move(at(320, 192).x, at(320, 192).y);
+  await page.mouse.down();
+  await page.mouse.move(at(320, 120).x, at(320, 120).y, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => (await readMM()).height ?? 0).toBeGreaterThan(hBefore * 1.3);
+  const aAfter = mmAnchorA(await readMM());
+  expect(Math.hypot(aAfter.x - aBefore.x, aAfter.y - aBefore.y)).toBeLessThan(3);
 
   await app.close();
 });
