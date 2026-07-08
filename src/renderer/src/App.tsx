@@ -87,9 +87,10 @@ async function fileToBytes(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
 }
 
-/** Group all reviews into year-month buckets (newest first) for the “All reviews” pivot. Derived from
- *  the structural `date` (or the created day), never a declared group / never a tagging option. */
-function yearMonthBuckets(entries: EntrySummary[]): Bucket[] {
+/** Group all reviews into year-month buckets for the “All reviews” pivot, ordered by `dir` (newest
+ *  first by default). Derived from the structural `date` (or the created day), never a declared group
+ *  / never a tagging option. */
+function yearMonthBuckets(entries: EntrySummary[], dir: 'asc' | 'desc'): Bucket[] {
   const byMonth = new Map<string, EntrySummary[]>();
   for (const entry of entries) {
     const day = entry.date ?? new Date(entry.createdAt).toISOString().slice(0, 10);
@@ -99,7 +100,7 @@ function yearMonthBuckets(entries: EntrySummary[]): Bucket[] {
     else byMonth.set(ym, [entry]);
   }
   return [...byMonth.entries()]
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .sort((a, b) => (dir === 'desc' ? (a[0] < b[0] ? 1 : -1) : a[0] < b[0] ? -1 : 1))
     .map(([ym, list]) => ({ key: ym, label: ym, entries: list }));
 }
 
@@ -107,6 +108,8 @@ export function App(): JSX.Element {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [pivot, setPivot] = useState('all');
+  // Left-rail review order by date: 'desc' = newest first (default), 'asc' = oldest first.
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
   const [groups, setGroups] = useState<TagGroupView[]>([]);
   const [archivedGroups, setArchivedGroups] = useState<ArchivedVocab>({ groups: [], values: [] });
   const [buckets, setBuckets] = useState<Bucket[]>([]);
@@ -373,8 +376,11 @@ export function App(): JSX.Element {
   // membership is read from the store (entry ∪ annotation) — never scanning canvas JSON.
   useEffect(() => {
     const survivors = filterMatch ? entries.filter((e) => filterMatch.ids.has(e.id)) : entries;
+    // `entries` arrives newest-first from the store; reverse for oldest-first. Both the month buckets
+    // and the reviews inside every bucket follow this one order.
+    const ordered = sortDir === 'asc' ? [...survivors].reverse() : survivors;
     if (pivot === 'all') {
-      setBuckets(yearMonthBuckets(survivors));
+      setBuckets(yearMonthBuckets(ordered, sortDir));
       return;
     }
     const group = groups.find((g) => g.id === pivot);
@@ -392,7 +398,7 @@ export function App(): JSX.Element {
         next.push({
           key: value.value,
           label: value.label ?? value.value,
-          entries: survivors.filter((e) => ids.has(e.id)),
+          entries: ordered.filter((e) => ids.has(e.id)),
           tag: { group: group.id, value: value.value },
         });
       }
@@ -401,7 +407,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [pivot, groups, entries, filterMatch]);
+  }, [pivot, groups, entries, filterMatch, sortDir]);
 
   const switchTo = useCallback(
     async (nextId: string | null) => {
@@ -1039,6 +1045,8 @@ export function App(): JSX.Element {
             onPivot={setPivot}
             buckets={buckets}
             totalCount={entries.length}
+            sortDir={sortDir}
+            onToggleSort={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
             selectedEntryId={selectedEntryId}
             filterChips={chips}
             onClearFilter={() => setFilter(EMPTY_QUERY)}

@@ -1363,13 +1363,16 @@ button {
 
 .pivot {
   position: relative;
+  display: flex;
+  gap: 6px;
 }
 
 .pivot__btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 9px 11px;
   border: 1px solid var(--line2);
   border-radius: 8px;
@@ -1383,6 +1386,24 @@ button {
 
 .pivot__btn:hover {
   border-color: var(--accent-line);
+}
+
+.pivot__sort {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.pivot__sort:hover {
+  border-color: var(--accent-line);
+  color: var(--fg);
 }
 
 .pivot__label {

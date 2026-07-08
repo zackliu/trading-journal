@@ -433,7 +433,8 @@ Expect：
 
 - 顶部一个**维度选择器**（默认「All reviews」，外观即「可点」）：点开列出注册表里所有 group；选中即把整个库按该维度分桶。
 - **选某个 group G**：按 G 的各**值**分成可折叠的**手风琴桶**；某值桶 = 在 entry 级**或** annotation 级带 `G:值` 的复盘（**并集、按 Entry 去重**），桶计数 = 去重 Entry 数；桶内竖排该批缩略图。该维度下无任何值的复盘不出现（「All reviews」保证它仍有处可现）；空桶就空着、不特殊处理。
-- **选「All reviews」**：所有复盘按**年-月**分桶（从 `date` 派生），新→旧，桶内按时间排。年-月是隐性时间结构，**不在 Settings、不可打标签**。
+- **选「All reviews」**：所有复盘按**年-月**分桶（从 `date` 派生），桶内按时间排。年-月是隐性时间结构，**不在 Settings、不可打标签**。
+- **左栏日期排序开关**：pivot 选择器右侧一个低视觉权重的小图标按钮（`sort-toggle`，`data-dir=desc|asc`），切换复盘的日期顺序——`desc`＝由近及远（**默认**，最新在上），`asc`＝由远及近；同时作用于**年-月桶的顺序**与**每个桶内复盘的顺序**（对任意 pivot 维度的桶内排序同样生效）。`entries` 由 store 给的是最新在前，`asc` 时在 renderer 侧 `reverse()`；`yearMonthBuckets(entries, dir)` 再按 dir 排月键。会话态、不落库（默认恒为 `desc`）。
 - 每个桶头部左侧有**明显直觉的折叠三角**；对桶头（或左栏）**右键**有「全部折叠 / 全部展开」。折叠态只影响显示、不影响命中。
 - 点某张缩略图 → 中间画布渲染该 Entry 大图（复用现有画布；右侧仍是 Stamp 印章条）。
 - 读侧 API：`listGroups()`（注册表 ＋ 每值命中计数）、`queryEntriesByTag(tag)`（并集、去重 Entry 摘要）；「All reviews」复用 `listEntries()` 在 renderer 按年-月分组。**只读索引 / entry tags，绝不扫描 canvas JSON**。

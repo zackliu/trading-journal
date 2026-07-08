@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { EntrySummary, Tag, TagGroupView } from '../../../shared/domain';
 import { ContextMenu, type MenuItem } from './ContextMenu';
+import { Icon } from './icons';
 import { Thumbnails } from './Thumbnails';
 
 /** One accordion bucket in the pivot browse: a group value (with `tag`) or a year-month (no `tag`). */
@@ -18,6 +19,9 @@ interface Props {
   onPivot: (id: string) => void;
   buckets: Bucket[];
   totalCount: number;
+  /** Date order of the reviews in every bucket: 'desc' = newest first, 'asc' = oldest first. */
+  sortDir: 'desc' | 'asc';
+  onToggleSort: () => void;
   selectedEntryId: string | null;
   /** Open a review; `tag` (present for value buckets) briefly highlights its carriers. */
   onOpen: (entryId: string, tag?: Tag) => void;
@@ -98,6 +102,21 @@ export function GroupBrowser(props: Props): JSX.Element {
           <span className="pivot__label">{activeLabel}</span>
           {pivot === 'all' ? <span className="pivot__count">{props.totalCount}</span> : null}
           <span className="pivot__caret" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="pivot__sort"
+          data-testid="sort-toggle"
+          data-dir={props.sortDir}
+          title={props.sortDir === 'desc' ? 'Newest first' : 'Oldest first'}
+          aria-label={
+            props.sortDir === 'desc'
+              ? 'Reviews sorted newest first — click for oldest first'
+              : 'Reviews sorted oldest first — click for newest first'
+          }
+          onClick={props.onToggleSort}
+        >
+          <Icon name={props.sortDir === 'desc' ? 'sortdesc' : 'sortasc'} />
         </button>
         {open ? (
           <div className="pivot__menu" data-testid="pivot-menu">

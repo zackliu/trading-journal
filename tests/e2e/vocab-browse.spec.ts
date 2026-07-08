@@ -322,6 +322,42 @@ test('All reviews buckets by year-month, and date is neither a settings group no
   await app.close();
 });
 
+test('the left rail sorts reviews by date, newest first by default and toggleable to oldest first', async () => {
+  const { app, page } = await launchApp(tempDataDir());
+  const newReview = async (): Promise<string> => {
+    await page.getByTestId('tab-home').click();
+    await page.getByTestId('ribbon-new').click();
+    await expect(page.getByTestId('editor')).toBeVisible();
+    return (await store.listEntries(page))[0]?.id as string;
+  };
+  const jul = await newReview();
+  const apr = await newReview();
+  const jan = await newReview();
+  await store.setEntryDate(page, jul, '2026-07-07');
+  await store.setEntryDate(page, apr, '2026-04-10');
+  await store.setEntryDate(page, jan, '2026-01-08');
+  await reload(page);
+
+  const bucketOrder = (): Promise<(string | null)[]> =>
+    page.locator('[data-testid^="bucket-20"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+
+  // Default is newest-first: July, then April, then January.
+  await expect(page.getByTestId('sort-toggle')).toHaveAttribute('data-dir', 'desc');
+  expect(await bucketOrder()).toEqual(['bucket-2026-07', 'bucket-2026-04', 'bucket-2026-01']);
+
+  // Toggle → oldest-first reverses the whole date order.
+  await page.getByTestId('sort-toggle').click();
+  await expect(page.getByTestId('sort-toggle')).toHaveAttribute('data-dir', 'asc');
+  await expect.poll(bucketOrder).toEqual(['bucket-2026-01', 'bucket-2026-04', 'bucket-2026-07']);
+
+  // Toggle back → newest-first again.
+  await page.getByTestId('sort-toggle').click();
+  await expect(page.getByTestId('sort-toggle')).toHaveAttribute('data-dir', 'desc');
+  await expect.poll(bucketOrder).toEqual(['bucket-2026-07', 'bucket-2026-04', 'bucket-2026-01']);
+
+  await app.close();
+});
+
 // ---- Collapse / expand (UI) ----
 
 test('browse buckets collapse, and a right-click collapses or expands all', async () => {

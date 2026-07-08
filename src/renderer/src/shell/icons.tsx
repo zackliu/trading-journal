@@ -26,6 +26,8 @@ export type IconName =
   | 'grip'
   | 'stats'
   | 'gauge'
+  | 'sortdesc'
+  | 'sortasc'
   | 'pencil'
   | 'folder';
 
@@ -57,6 +59,8 @@ const PATHS: Record<IconName, string> = {
   grip: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
   stats: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   gauge: 'M4 15a8 8 0 0116 0M12 15l3.5-3.5',
+  sortdesc: 'M4 7h9M4 12h6M4 17h3M17 6v11M14 14l3 3 3-3',
+  sortasc: 'M4 7h3M4 12h6M4 17h9M17 18V7M14 10l3-3 3 3',
   pencil: 'M5 19h3L18 9l-3-3L5 16zM14 6l3 3',
   folder: 'M3 7a1 1 0 011-1h5l2 2h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z',
 };
