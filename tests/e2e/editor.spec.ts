@@ -447,6 +447,171 @@ test('lines and arrows are saved as two-point segments, and arrows revive on rel
   await app.close();
 });
 
+test('Ctrl constrains a line endpoint while EDITING it, exactly as while drawing it (no create-only special case)', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const at = (x: number, y: number): { x: number; y: number } => ({ x: box.x + x, y: box.y + y });
+  const dragTo = async (fx: number, fy: number, tx: number, ty: number): Promise<void> => {
+    await page.mouse.move(at(fx, fy).x, at(fx, fy).y);
+    await page.mouse.down();
+    await page.mouse.move(at(tx, ty).x, at(tx, ty).y, { steps: 8 });
+    await page.mouse.up();
+  };
+
+  // Draw a clearly diagonal line; finishing auto-selects it, so its endpoint handles are live.
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-line').click();
+  const ANCHOR = { x: 120, y: 200 }; // the endpoint we never touch
+  await dragTo(ANCHOR.x, ANCHOR.y, 320, 340); // free end starts at (320,340)
+  await expect(page.getByTestId('tab-annotation')).toBeVisible();
+
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  // Vertical gap between the two endpoints, in the segment's own (unscaled, unrotated) point space —
+  // 0 means the line is horizontal. Returns NaN until the segment is persisted so expect.poll retries.
+  const endpointDy = async (): Promise<number> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as {
+      objects?: { points?: { x: number; y: number }[] }[];
+    };
+    const seg = (parsed.objects ?? []).find((o) => Array.isArray(o.points) && o.points.length === 2);
+    return seg?.points ? Math.abs(seg.points[0].y - seg.points[1].y) : Number.NaN;
+  };
+
+  // Phase 1 — dragging the endpoint WITHOUT Ctrl is free (it lands where the cursor is): still diagonal.
+  await dragTo(320, 340, 300, 120);
+  await page.keyboard.press('Control+s');
+  await expect.poll(endpointDy).toBeGreaterThan(40);
+
+  // Phase 2 — the SAME handle dragged WITH Ctrl snaps the segment about the fixed opposite endpoint.
+  // The target is within ±22.5° of horizontal from the anchor, so it snaps flat → both endpoints share Y.
+  await page.keyboard.down('Control');
+  await dragTo(300, 120, 340, 216);
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Control+s');
+  await expect.poll(endpointDy).toBeLessThan(3);
+
+  await app.close();
+});
+
+type MM = { type?: string; left?: number; top?: number; width?: number; height?: number; mmFlipX?: boolean; mmFlipY?: boolean; tjId?: string };
+
+/** The base anchor A of a measured move, in scene coordinates, from its stored box + flip flags. */
+function mmAnchorA(mm: MM): { x: number; y: number } {
+  const left = mm.left ?? 0;
+  const top = mm.top ?? 0;
+  const w = mm.width ?? 0;
+  const h = mm.height ?? 0;
+  return { x: mm.mmFlipX ? left + w : left, y: mm.mmFlipY ? top + h : top };
+}
+
+test('the MM tool draws a measured move as three equidistant levels, persisted and editable', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const dragTo = async (fx: number, fy: number, tx: number, ty: number): Promise<void> => {
+    await page.mouse.move(box.x + fx, box.y + fy);
+    await page.mouse.down();
+    await page.mouse.move(box.x + tx, box.y + ty, { steps: 8 });
+    await page.mouse.up();
+  };
+
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-mm').click();
+  // Upper-right: A (base) at (120,300), B (measured) at (320,200) → lines extend right, stack doubles up.
+  await dragTo(120, 300, 320, 200);
+  await expect(page.getByTestId('tab-annotation')).toBeVisible(); // an annotation is selected
+
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  await expect
+    .poll(async () => (await store.getEntry(page, id))?.canvasJson ?? '')
+    .toContain('"type":"MeasuredMove"');
+
+  const objects = async (): Promise<MM[]> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as { objects?: MM[] };
+    return parsed.objects ?? [];
+  };
+  const readMM = async (): Promise<MM> => {
+    const mm = (await objects()).find((o) => o.type === 'MeasuredMove');
+    if (!mm) throw new Error('no MeasuredMove persisted');
+    return mm;
+  };
+
+  const before = await readMM();
+  // height = 2 × the leg spacing (2×|dy|=200) and width = |dx| = 200 → equal, a ratio that is the same
+  // at any zoom because both scale by 1/zoom. This encodes three equidistant lines.
+  expect(before.width ?? 0).toBeGreaterThan(0);
+  expect(Math.abs((before.height ?? 0) - (before.width ?? 0))).toBeLessThan((before.width ?? 1) * 0.15);
+  // Direction from the drag quadrant: extends right (mmFlipX false), doubles upward (mmFlipY true).
+  expect(before.mmFlipX).toBe(false);
+  expect(before.mmFlipY).toBe(true);
+  // It is a taggable annotation like any other (carries a tjId), not a special type.
+  expect(typeof before.tjId).toBe('string');
+  const aBefore = mmAnchorA(before);
+
+  // Editing is the same as creating: drag the measured handle (at B = 320,200) further up to widen the
+  // leg; the stored spacing grows and the object is neither dropped nor duplicated.
+  await dragTo(320, 200, 320, 120);
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => (await readMM()).height ?? 0).toBeGreaterThan((before.height ?? 0) * 1.4);
+  expect((await objects()).filter((o) => o.type === 'MeasuredMove')).toHaveLength(1);
+  // Dragging one endpoint keeps the OTHER endpoint pinned — the whole move must not drift.
+  const aAfter = mmAnchorA(await readMM());
+  expect(Math.hypot(aAfter.x - aBefore.x, aAfter.y - aBefore.y)).toBeLessThan(3);
+
+  await app.close();
+});
+
+test('a measured move is never discarded — a bare click keeps a grabbable min-width line', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-mm').click();
+  // A bare click with no drag: a plain shape is discarded as "too small", but a measured move must
+  // survive with a small width so it can be pulled open later — discarding would lose the mark.
+  await page.mouse.move(box.x + 200, box.y + 220);
+  await page.mouse.down();
+  await page.mouse.up();
+
+  await page.keyboard.press('Control+s');
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  await expect
+    .poll(async () => (await store.getEntry(page, id))?.canvasJson ?? '')
+    .toContain('"type":"MeasuredMove"');
+
+  const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as { objects?: MM[] };
+  const mm = (parsed.objects ?? []).find((o) => o.type === 'MeasuredMove');
+  expect(mm?.width ?? 0).toBeGreaterThan(10); // kept a grabbable minimum width
+  expect(mm?.height ?? -1).toBeLessThan(1); // flat (no leg yet), but still editable — pull a handle to open it
+
+  await app.close();
+});
+
 test('the text tool makes an Office-style text box (types text; empty is discarded; box props separate)', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);

@@ -7,6 +7,8 @@
 // and both canvases hydrate each other's JSON identically.
 
 import {
+  Control,
+  FabricObject,
   InteractiveFabricObject,
   Point,
   Polyline,
@@ -15,8 +17,6 @@ import {
   config,
   controlsUtils,
   util,
-  type Control,
-  type FabricObject,
 } from 'fabric';
 import type { Result, Tag } from '../../../shared/domain';
 
@@ -55,6 +55,8 @@ export const TJ_PROPS = [
   'tjResult',
   'tjLinks',
   'tjRole',
+  'mmFlipX',
+  'mmFlipY',
 ] as const;
 
 /** Placeholder shown in an empty title text box — a hint, never stored as the title's content. */
@@ -143,10 +145,41 @@ export class ArrowPoly extends Polyline {
 }
 classRegistry.setClass(ArrowPoly, 'ArrowPoly');
 
-/** Give a line / arrow polyline draggable endpoint handles instead of image-style controls. */
+/** Snap the vector (x1,y1)→(x2,y2) to the nearest of eight directions (horizontal / vertical / 45°),
+ * keeping its length. One shared constraint for BOTH first drawing a line (Ctrl during the draw drag)
+ * and later dragging an existing endpoint (Ctrl on the handle) — so editing a line is never a special
+ * case of creating one. */
+export function snapTo45(x1: number, y1: number, x2: number, y2: number): [number, number] {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  const step = Math.PI / 4;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return [x1 + len * Math.cos(angle), y1 + len * Math.sin(angle)];
+}
+
+/** Give a line / arrow polyline draggable endpoint handles instead of image-style controls. Holding
+ * Ctrl while dragging a handle constrains the segment to H / V / 45° about the opposite (fixed)
+ * endpoint — the same constraint used while the line was first drawn, so an edit is not special. */
 export function attachSegmentControls(obj: FabricObject): void {
   if (!(obj instanceof Polyline)) return;
-  obj.controls = controlsUtils.createPolyControls(obj, { render: controlsUtils.renderCircleControl });
+  const controls = controlsUtils.createPolyControls(obj, { render: controlsUtils.renderCircleControl });
+  for (const key of Object.keys(controls)) {
+    const control = controls[key];
+    const base = control.actionHandler;
+    control.actionHandler = (eventData, transform, x, y) => {
+      // Two-point segments only: snap the dragged end about the fixed opposite end when Ctrl is held.
+      if ((eventData as MouseEvent).ctrlKey && obj.points.length === 2) {
+        const anchor = obj.points[Number(key.slice(1)) === 0 ? 1 : 0];
+        const off = obj.pathOffset;
+        const a = new Point(anchor.x - off.x, anchor.y - off.y).transform(obj.calcTransformMatrix());
+        const [sx, sy] = snapTo45(a.x, a.y, x, y);
+        return base(eventData, transform, sx, sy);
+      }
+      return base(eventData, transform, x, y);
+    };
+  }
+  obj.controls = controls;
   obj.hasBorders = false;
   obj.objectCaching = false;
   // Hit testing along the stroke (not the bounding box) is applied canvas-wide via
@@ -187,6 +220,145 @@ export function segmentContainsPoint(obj: Polyline, scenePoint: Point): boolean 
     prev = cur;
   }
   return false;
+}
+
+/** Minimum horizontal extent (scene px) a measured move always keeps, so a click with no horizontal
+ * drag still leaves a grabbable object you can widen later — a measured move is NEVER discarded for
+ * being too small (that would silently lose the mark the user just placed). */
+export const MM_MIN_WIDTH = 40;
+
+/**
+ * Measured-move projection: three equally-spaced horizontal lines — a base level, the measured level
+ * (one leg away) and the 1:1 projection (two legs away, the “double” target). All three share ONE
+ * stroke style (colour / width / opacity from the ribbon); there is no dashing, no per-line hierarchy
+ * and no fill. Geometry is a plain axis-aligned box: width = horizontal reach, height = 2× the leg
+ * spacing, with the three lines at the box's top edge, middle and bottom edge. Two anchors drive it —
+ * A on the base line, B on the measured line — and `mmFlipX` / `mmFlipY` record which corner A sits in,
+ * so the two drag handles land on the correct ends and the projection is on the far side (it is derived
+ * and carries no handle). Pixel geometry only: it measures distance on the screenshot, never price.
+ * Creating and later re-dragging use the exact same geometry (`setMmFromAnchors`), so an edit is never
+ * a special case of a create.
+ */
+export class MeasuredMove extends FabricObject {
+  static override type = 'MeasuredMove';
+  declare mmFlipX?: boolean;
+  declare mmFlipY?: boolean;
+
+  constructor(options: Record<string, unknown> = {}) {
+    super();
+    this.setOptions({
+      fill: '',
+      objectCaching: false,
+      hasBorders: false,
+      mmFlipX: false,
+      mmFlipY: false,
+      ...options,
+    });
+  }
+
+  override _render(ctx: CanvasRenderingContext2D): void {
+    const w = this.width ?? 0;
+    const h = this.height ?? 0;
+    ctx.save();
+    ctx.strokeStyle = typeof this.stroke === 'string' && this.stroke ? this.stroke : '#000000';
+    ctx.lineWidth = this.strokeWidth ?? 1;
+    ctx.lineCap = 'round';
+    for (const y of [-h / 2, 0, h / 2]) {
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, y);
+      ctx.lineTo(w / 2, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Fabric inflates an object's dimensions — and therefore its centre — by strokeWidth. But we draw the
+  // three lines ourselves at exactly ±width/2 / ±height/2, and the anchor math treats width/height as the
+  // exact span with left/top as the exact box edge. Excluding strokeWidth here keeps the centre at
+  // left+width/2, so reading an anchor's scene position and writing it back are idempotent. Otherwise
+  // dragging one handle re-reads the *opposite* (fixed) anchor offset by strokeWidth/2 every frame and
+  // bakes that offset into left/top, making the whole measured move drift as you drag.
+  override _getTransformedDimensions(options: Record<string, unknown> = {}): Point {
+    return super._getTransformedDimensions({ ...options, strokeWidth: 0 });
+  }
+}
+classRegistry.setClass(MeasuredMove, 'MeasuredMove');
+
+/** The local (centre-origin) position of a measured-move anchor: A on the base edge at the pivot
+ * corner, B on the middle line at the far horizontal end. */
+function mmAnchorLocal(obj: MeasuredMove, which: 'a' | 'b'): Point {
+  const w = obj.width ?? 0;
+  const h = obj.height ?? 0;
+  if (which === 'a') return new Point(obj.mmFlipX ? w / 2 : -w / 2, obj.mmFlipY ? h / 2 : -h / 2);
+  return new Point(obj.mmFlipX ? -w / 2 : w / 2, 0);
+}
+
+/** An anchor's current scene position — used to hold one end fixed while the other end is dragged. */
+function mmAnchorScene(obj: MeasuredMove, which: 'a' | 'b'): Point {
+  return mmAnchorLocal(obj, which).transform(obj.calcTransformMatrix());
+}
+
+/**
+ * Rebuild a measured move's box from its two anchors (A = base, B = measured) in scene coordinates.
+ * Width is clamped to MM_MIN_WIDTH so it is never lost; height (2× the leg spacing) may be zero (a flat
+ * single line you can still pull open). Direction falls out of the signs of dx / dy, so all four
+ * quadrants are one formula with no special case. The create drag and the handle-edit drag both call
+ * this, so editing behaves exactly like creating.
+ */
+export function setMmFromAnchors(obj: MeasuredMove, ax: number, ay: number, bx: number, by: number): void {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const flipX = dx < 0;
+  const flipY = dy < 0;
+  const width = Math.max(Math.abs(dx), MM_MIN_WIDTH);
+  const height = Math.abs(dy) * 2;
+  const left = flipX ? ax - width : ax; // A is the pivot; the box reaches from A toward B
+  const top = flipY ? ay - height : ay; // A is on the base edge; the stack grows toward B and one leg beyond
+  obj.set({ mmFlipX: flipX, mmFlipY: flipY, width, height, left, top });
+  obj.setCoords();
+}
+
+/** Office-style hit band for a measured move: a point selects it when within a small, zoom-independent
+ * screen band of ANY of its three horizontal lines — never merely inside the empty box between them. */
+export function measuredMoveContainsPoint(obj: MeasuredMove, scenePoint: Point): boolean {
+  const w = obj.width ?? 0;
+  const h = obj.height ?? 0;
+  const zoom = obj.canvas?.getZoom() ?? 1;
+  const tolerance = SEGMENT_HIT_SCREEN_PADDING / zoom + (obj.strokeWidth ?? 0) / 2;
+  const m = obj.calcTransformMatrix();
+  for (const y of [-h / 2, 0, h / 2]) {
+    const a = new Point(-w / 2, y).transform(m);
+    const b = new Point(w / 2, y).transform(m);
+    if (pointToSegmentDistance(scenePoint, a, b) <= tolerance) return true;
+  }
+  return false;
+}
+
+/** Give a measured move its two endpoint handles (A on the base line, B on the measured line). The
+ * lines are always horizontal, so there is no Ctrl constraint; dragging a handle rebuilds the box from
+ * that anchor and the fixed opposite anchor — the same geometry function as the create drag. */
+export function attachMmControls(obj: FabricObject): void {
+  if (!(obj instanceof MeasuredMove)) return;
+  obj.objectCaching = false;
+  obj.hasBorders = false;
+  const handle = (which: 'a' | 'b'): Control =>
+    new Control({
+      actionName: 'modifyMM',
+      cursorStyleHandler: () => 'crosshair',
+      render: controlsUtils.renderCircleControl,
+      positionHandler: (_dim, _finalMatrix, o) => {
+        const mm = o as MeasuredMove;
+        return mmAnchorLocal(mm, which).transform(mm.calcTransformMatrix()).transform(mm.getViewportTransform());
+      },
+      actionHandler: (_eventData, transform, x, y) => {
+        const mm = transform.target as MeasuredMove;
+        const fixed = mmAnchorScene(mm, which === 'a' ? 'b' : 'a');
+        if (which === 'a') setMmFromAnchors(mm, x, y, fixed.x, fixed.y);
+        else setMmFromAnchors(mm, fixed.x, fixed.y, x, y);
+        return true;
+      },
+    });
+  obj.controls = { a: handle('a'), b: handle('b') };
 }
 
 /** Text = an editable text box that draws its own bordered / filled rectangle behind the text. */
@@ -259,4 +431,5 @@ export function attachTextControls(obj: FabricObject): void {
 export function reattachControls(obj: FabricObject): void {
   attachSegmentControls(obj);
   attachTextControls(obj);
+  attachMmControls(obj);
 }

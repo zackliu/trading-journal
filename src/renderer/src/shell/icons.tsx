@@ -6,6 +6,7 @@ export type IconName =
   | 'hline'
   | 'text'
   | 'draw'
+  | 'mm'
   | 'stamp'
   | 'plus'
   | 'front'
@@ -36,6 +37,7 @@ const PATHS: Record<IconName, string> = {
   hline: 'M4 12h16',
   text: 'M6 6h12M12 6v13',
   draw: 'M4 20l4-1L18 9l-3-3L5 16z',
+  mm: 'M5 6h14M5 12h9M5 18h14',
   stamp: 'M8 10a4 4 0 118 0c0 2-2 2.5-2 4h-4c0-1.5-2-2-2-4zM6 18h12v2H6z',
   plus: 'M12 5v14M5 12h14',
   front: 'M12 4l4 4h-3v6h-2V8H8zM4 18h16',

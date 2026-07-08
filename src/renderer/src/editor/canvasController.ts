@@ -14,6 +14,7 @@ import {
 import type { Annotation, Result, Tag } from '../../../shared/domain';
 import {
   ArrowPoly,
+  MeasuredMove,
   TextBoxAnnotation,
   TJ_PROPS,
   attachSegmentControls,
@@ -24,12 +25,16 @@ import {
   isGhost,
   isLocked,
   isTitle,
+  attachMmControls,
+  measuredMoveContainsPoint,
   reattachControls,
   segmentContainsPoint,
+  setMmFromAnchors,
+  snapTo45,
   tjMeta,
 } from './annotations';
 
-export type Tool = 'select' | 'rect' | 'line' | 'arrow' | 'hline' | 'text' | 'draw';
+export type Tool = 'select' | 'rect' | 'line' | 'arrow' | 'hline' | 'mm' | 'text' | 'draw';
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 
 export interface DrawStyle {
@@ -113,15 +118,6 @@ function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
-}
-
-function snapTo45(x1: number, y1: number, x2: number, y2: number): [number, number] {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  const step = Math.PI / 4;
-  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-  return [x1 + len * Math.cos(angle), y1 + len * Math.sin(angle)];
 }
 
 /** Live state of a locked-palette drag-out: a translucent copy tracks the cursor; the source never moves. */
@@ -221,6 +217,9 @@ export class CanvasController {
     const originalSelArea = selArea._pointIsInObjectSelectionArea.bind(this.canvas);
     selArea._pointIsInObjectSelectionArea = (obj: FabricObject, point: Point): boolean => {
       // Fabric hands `point` here already in scene coordinates (see its `_checkTarget`).
+      if (obj instanceof MeasuredMove) {
+        return measuredMoveContainsPoint(obj, point);
+      }
       if (obj instanceof Polyline) {
         return segmentContainsPoint(obj, point);
       }
@@ -360,6 +359,7 @@ export class CanvasController {
    * thin horizontal line no longer has a grabbable-but-empty band outside its few-pixel box.
    */
   private hitsStamp(o: FabricObject, p: Point): boolean {
+    if (o instanceof MeasuredMove) return measuredMoveContainsPoint(o, p);
     if (o instanceof Polyline) return segmentContainsPoint(o, p);
     o.setCoords();
     const r = o.getBoundingRect();
@@ -1060,6 +1060,15 @@ export class CanvasController {
         opacity: this.style.opacity,
         strokeDashArray: dash,
       });
+    } else if (this.tool === 'mm') {
+      const mm = new MeasuredMove({
+        stroke: this.style.stroke,
+        strokeWidth: this.style.strokeWidth,
+        opacity: this.style.opacity,
+      });
+      setMmFromAnchors(mm, p.x, p.y, p.x, p.y);
+      attachMmControls(mm);
+      this.draft = mm;
     } else {
       this.draft = new Line([p.x, p.y, p.x, p.y], {
         stroke: this.style.stroke,
@@ -1118,6 +1127,8 @@ export class CanvasController {
         width: Math.abs(x - this.startX),
         height: Math.abs(y - this.startY),
       });
+    } else if (this.tool === 'mm') {
+      setMmFromAnchors(this.draft as MeasuredMove, this.startX, this.startY, x, y);
     } else {
       if (this.tool === 'hline') y = this.startY;
       if ((this.tool === 'line' || this.tool === 'arrow') && (opt.e as MouseEvent).ctrlKey) {
@@ -1159,6 +1170,10 @@ export class CanvasController {
       } else {
         this.canvas.remove(rect);
       }
+    } else if (this.tool === 'mm') {
+      // A measured move is never discarded — a bare click keeps a min-width flat line you can pull open.
+      ensureAnnotation(draft);
+      created = draft;
     } else {
       // line / hline / arrow: swap the preview for an endpoint-editable segment.
       this.canvas.remove(draft);

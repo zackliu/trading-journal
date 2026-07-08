@@ -55,6 +55,7 @@ const TOOLS: Array<{ id: Tool; icon: IconName; label: string }> = [
   { id: 'line', icon: 'line', label: 'Line' },
   { id: 'arrow', icon: 'arrow', label: 'Arrow' },
   { id: 'hline', icon: 'hline', label: 'Horizontal line' },
+  { id: 'mm', icon: 'mm', label: 'MM' },
   { id: 'text', icon: 'text', label: 'Text' },
   { id: 'draw', icon: 'draw', label: 'Freehand' },
 ];
