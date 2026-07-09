@@ -1,0 +1,7 @@
+{
+  "name": "jsdom",
+  "version": "20.0.3",
+  "description": "Local empty stub that replaces fabric's optional jsdom dependency. Only used for Node-side rendering, never in the Electron renderer. Stubbing it avoids pulling a large unused dependency tree.",
+  "main": "index.js",
+  "license": "MIT"
+}

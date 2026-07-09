@@ -1,0 +1,7 @@
+{
+  "name": "canvas",
+  "version": "2.11.2",
+  "description": "Local empty stub that replaces fabric's optional node-canvas dependency. The Electron renderer uses Chromium's native canvas, so node-canvas is never used at runtime; stubbing it keeps electron-builder from source-compiling a native module that needs a Cairo/GTK toolchain (fails on CI).",
+  "main": "index.js",
+  "license": "MIT"
+}
