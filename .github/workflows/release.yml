@@ -1,0 +1,61 @@
+name: Release
+
+# Push a version tag (e.g. v0.1.0) to build the Windows installer and publish it
+# to a GitHub Release. Run manually (workflow_dispatch) to build the installer as
+# a downloadable artifact without creating a release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          if ($version -ne $tag) {
+            throw "Tag v$tag does not match package.json version $version. Bump the version and re-tag."
+          }
+          Write-Host "Version OK: $version"
+
+      - name: Build
+        run: npm run build
+
+      - name: Package Windows installer
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradingJournal-Setup
+          path: dist/*-Setup.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*-Setup.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
