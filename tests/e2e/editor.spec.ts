@@ -557,6 +557,15 @@ function mmAnchorA(mm: MM): { x: number; y: number } {
   return { x: mm.mmFlipX ? left + w : left, y: mm.mmFlipY ? top + h : top };
 }
 
+/** The measured anchor B of a measured move (the opposite horizontal end, on the middle line). */
+function mmAnchorB(mm: MM): { x: number; y: number } {
+  const left = mm.left ?? 0;
+  const top = mm.top ?? 0;
+  const w = mm.width ?? 0;
+  const h = mm.height ?? 0;
+  return { x: mm.mmFlipX ? left : left + w, y: top + h / 2 };
+}
+
 test('the MM tool draws a measured move as three equidistant levels, persisted and editable', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);
@@ -699,6 +708,56 @@ test('measured-move handles have a forgiving grab area — a press near a handle
   await expect.poll(async () => (await readMM()).height ?? 0).toBeGreaterThan(hBefore * 1.3);
   const aAfter = mmAnchorA(await readMM());
   expect(Math.hypot(aAfter.x - aBefore.x, aAfter.y - aBefore.y)).toBeLessThan(3);
+
+  await app.close();
+});
+
+test('measured-move endpoints are symmetric — dragging one never pushes or clamps the other', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+  const dragTo = async (fx: number, fy: number, tx: number, ty: number): Promise<void> => {
+    await page.mouse.move(box.x + fx, box.y + fy);
+    await page.mouse.down();
+    await page.mouse.move(box.x + tx, box.y + ty, { steps: 8 });
+    await page.mouse.up();
+  };
+
+  await page.getByTestId('tab-draw').click();
+  await page.getByTestId('tool-mm').click();
+  // A wide MM: base A at (120,300), measured B at (320,200).
+  await dragTo(120, 300, 320, 200);
+  await expect(page.getByTestId('tab-annotation')).toBeVisible();
+
+  const id = (await store.listEntries(page))[0]?.id;
+  if (!id) throw new Error('expected one entry');
+  const readMM = async (): Promise<MM> => {
+    const parsed = JSON.parse((await store.getEntry(page, id))?.canvasJson ?? '{}') as { objects?: MM[] };
+    return (parsed.objects ?? []).find((o) => o.type === 'MeasuredMove')!;
+  };
+  const bBefore = mmAnchorB(await readMM());
+
+  // Drag handle A (at 120,300) horizontally until it sits directly under B (same column, x=320). A
+  // left/right minimum-separation rule would shove the untouched handle B aside; symmetric anchors keep
+  // B exactly put and let A reach B's column.
+  await dragTo(120, 300, 320, 300);
+  await page.keyboard.press('Control+s');
+  await page.waitForTimeout(200);
+  const after = await readMM();
+  const aAfter = mmAnchorA(after);
+  const bAfter = mmAnchorB(after);
+
+  // B (never touched) stayed exactly where it was — dragging A did not push it.
+  expect(Math.hypot(bAfter.x - bBefore.x, bAfter.y - bBefore.y)).toBeLessThan(15);
+  // A reached B's column: the two points may be (nearly) vertically aligned, with no forced gap.
+  expect(Math.abs(aAfter.x - bAfter.x)).toBeLessThan(15);
 
   await app.close();
 });

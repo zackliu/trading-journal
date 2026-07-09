@@ -14,6 +14,7 @@ import {
 import type { Annotation, Result, Tag } from '../../../shared/domain';
 import {
   ArrowPoly,
+  MM_MIN_WIDTH,
   MeasuredMove,
   TextBoxAnnotation,
   TJ_PROPS,
@@ -1001,6 +1002,17 @@ export class CanvasController {
     }
   }
 
+  /**
+   * Creation-only minimum width: keep the second point at least MM_MIN_WIDTH from the first so a bare
+   * click or a near-vertical drag still leaves a grabbable mark. Editing a handle imposes NO minimum —
+   * the two anchors stay symmetric and may share an x, so dragging one never pushes the other.
+   */
+  private mmCreatePoint(x: number, y: number): { x: number; y: number } {
+    const dx = x - this.startX;
+    if (Math.abs(dx) >= MM_MIN_WIDTH) return { x, y };
+    return { x: this.startX + (dx < 0 ? -MM_MIN_WIDTH : MM_MIN_WIDTH), y };
+  }
+
   private onDown(opt: TPointerEventInfo<TPointerEvent>): void {
     const e = opt.e as MouseEvent;
     if (e.button === 2) {
@@ -1066,7 +1078,8 @@ export class CanvasController {
         strokeWidth: this.style.strokeWidth,
         opacity: this.style.opacity,
       });
-      setMmFromAnchors(mm, p.x, p.y, p.x, p.y);
+      const b = this.mmCreatePoint(p.x, p.y);
+      setMmFromAnchors(mm, p.x, p.y, b.x, b.y);
       attachMmControls(mm);
       this.draft = mm;
     } else {
@@ -1128,7 +1141,8 @@ export class CanvasController {
         height: Math.abs(y - this.startY),
       });
     } else if (this.tool === 'mm') {
-      setMmFromAnchors(this.draft as MeasuredMove, this.startX, this.startY, x, y);
+      const b = this.mmCreatePoint(x, y);
+      setMmFromAnchors(this.draft as MeasuredMove, this.startX, this.startY, b.x, b.y);
     } else {
       if (this.tool === 'hline') y = this.startY;
       if ((this.tool === 'line' || this.tool === 'arrow') && (opt.e as MouseEvent).ctrlKey) {

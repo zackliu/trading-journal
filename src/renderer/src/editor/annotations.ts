@@ -320,8 +320,8 @@ export class MeasuredMove extends FabricObject {
 }
 classRegistry.setClass(MeasuredMove, 'MeasuredMove');
 
-/** The local (centre-origin) position of a measured-move anchor: A on the base edge at the pivot
- * corner, B on the middle line at the far horizontal end. */
+/** The local (centre-origin) position of a measured-move anchor: A on the base (outer) edge, B on the
+ * middle line, each at its own horizontal end (neither anchor is privileged). */
 function mmAnchorLocal(obj: MeasuredMove, which: 'a' | 'b'): Point {
   const w = obj.width ?? 0;
   const h = obj.height ?? 0;
@@ -336,20 +336,22 @@ function mmAnchorScene(obj: MeasuredMove, which: 'a' | 'b'): Point {
 
 /**
  * Rebuild a measured move's box from its two anchors (A = base, B = measured) in scene coordinates.
- * Width is clamped to MM_MIN_WIDTH so it is never lost; height (2× the leg spacing) may be zero (a flat
- * single line you can still pull open). Direction falls out of the signs of dx / dy, so all four
- * quadrants are one formula with no special case. The create drag and the handle-edit drag both call
- * this, so editing behaves exactly like creating.
+ * Each anchor lands EXACTLY at its own point and neither is privileged, so the two handles are
+ * symmetric: dragging one never pushes or clamps the other and they cross left↔right freely. There is
+ * NO minimum width here — a grabbable minimum is a creation-only affordance applied by the draw gesture,
+ * not by this shared geometry. Width = |dx| (may be zero), height = 2× the leg spacing (may be zero, a
+ * flat line you can pull open). Direction falls out of the signs of dx / dy — one formula, four
+ * quadrants, no special case. Create and handle-edit both call this, so editing behaves like creating.
  */
 export function setMmFromAnchors(obj: MeasuredMove, ax: number, ay: number, bx: number, by: number): void {
   const dx = bx - ax;
   const dy = by - ay;
   const flipX = dx < 0;
   const flipY = dy < 0;
-  const width = Math.max(Math.abs(dx), MM_MIN_WIDTH);
+  const width = Math.abs(dx);
   const height = Math.abs(dy) * 2;
-  const left = flipX ? ax - width : ax; // A is the pivot; the box reaches from A toward B
-  const top = flipY ? ay - height : ay; // A is on the base edge; the stack grows toward B and one leg beyond
+  const left = flipX ? ax - width : ax; // = min(ax, bx): each anchor sits exactly at its own x
+  const top = flipY ? ay - height : ay; // A on the base edge; the stack grows toward B and one leg beyond
   obj.set({ mmFlipX: flipX, mmFlipY: flipY, width, height, left, top });
   obj.setCoords();
 }
