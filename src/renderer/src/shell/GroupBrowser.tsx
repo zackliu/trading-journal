@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { EntrySummary, Tag, TagGroupView } from '../../../shared/domain';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { Icon } from './icons';
@@ -31,20 +31,56 @@ interface Props {
   onClearFilter: () => void;
 }
 
+/** Imperative handle so the wheel-nav (which lives over the editor) can reveal a review the rail is
+ *  currently hiding inside a collapsed bucket. */
+export interface GroupBrowserHandle {
+  /** Expand the (first) bucket carrying `entryId` so its thumbnail is shown. No-op if already open. */
+  revealEntry: (entryId: string) => void;
+}
+
 /**
  * The left-rail browse: pick ONE group dimension from the selector (or "All reviews"), then the
  * library is bucketed into a collapsible accordion — value buckets for a group, year-month buckets
  * for "All reviews". A review appears in every bucket it belongs to with zero copies. The same
  * gallery renders each bucket; opening from a value bucket flashes the carrying annotations.
  */
-export function GroupBrowser(props: Props): JSX.Element {
+export const GroupBrowser = forwardRef<GroupBrowserHandle, Props>(function GroupBrowser(
+  props,
+  ref,
+): JSX.Element {
   const { groups, pivot, buckets } = props;
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const railRef = useRef<HTMLDivElement>(null);
 
   // A fresh pivot starts fully expanded.
   useEffect(() => setCollapsed(new Set()), [pivot]);
+
+  // Reveal a wheel-navigated review that sits in a collapsed bucket: expand that bucket so it shows.
+  useImperativeHandle(
+    ref,
+    () => ({
+      revealEntry: (entryId: string): void => {
+        const bucket = buckets.find((b) => b.entries.some((e) => e.id === entryId));
+        if (!bucket) return;
+        setCollapsed((prev) => {
+          if (!prev.has(bucket.key)) return prev;
+          const next = new Set(prev);
+          next.delete(bucket.key);
+          return next;
+        });
+      },
+    }),
+    [buckets],
+  );
+
+  // Keep the active review's thumbnail in view after a wheel step or rail click (minimal scroll). A
+  // review in a just-expanded bucket is covered because selecting it re-runs this once it renders.
+  useEffect(() => {
+    if (!props.selectedEntryId) return;
+    railRef.current?.querySelector('.thumb.is-active')?.scrollIntoView({ block: 'nearest' });
+  }, [props.selectedEntryId]);
 
   const activeLabel = pivot === 'all' ? 'All reviews' : (groups.find((g) => g.id === pivot)?.label ?? 'All reviews');
 
@@ -149,7 +185,7 @@ export function GroupBrowser(props: Props): JSX.Element {
         ) : null}
       </div>
 
-      <div className="buckets" data-testid="buckets">
+      <div className="buckets" data-testid="buckets" ref={railRef}>
         {buckets.length === 0 ? (
           <p className="thumbs__empty">No reviews yet.</p>
         ) : (
@@ -190,4 +226,4 @@ export function GroupBrowser(props: Props): JSX.Element {
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
     </div>
   );
-}
+});

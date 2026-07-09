@@ -327,7 +327,11 @@ function createWindow(): void {
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
-  win.on('ready-to-show', () => win.show());
+  // Under the e2e harness (TJ_TEST=1) reveal the window WITHOUT activating it: a suite launches dozens
+  // of app instances back-to-back, and a plain show() grabs foreground focus whenever the OS focus-lock
+  // lapses, popping windows over whatever you are working in. showInactive() still renders normally (no
+  // background-throttling of the canvas/timers) — it just never steals focus. Real launches show()/focus.
+  win.on('ready-to-show', () => (process.env['TJ_TEST'] ? win.showInactive() : win.show()));
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);

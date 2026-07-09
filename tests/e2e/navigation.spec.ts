@@ -134,3 +134,47 @@ test('the wheel scrolls a zoomed page and only steps to the next review at the b
 
   await app.close();
 });
+
+test('the wheel walks the rail order and expands a collapsed bucket it lands in', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  // Three blank reviews, dated into two month buckets (two in May, one in March).
+  await page.keyboard.press('Control+n');
+  await expect(page.getByTestId('editor')).toBeVisible();
+  await page.keyboard.press('Control+n');
+  await page.keyboard.press('Control+n');
+  await expect(page.getByTestId('entry-item')).toHaveCount(3);
+
+  const [x, y, z] = (await store.listEntries(page)).map((e) => e.id);
+  await store.setEntryDate(page, x, '2026-05-20'); // May
+  await store.setEntryDate(page, y, '2026-05-10'); // May
+  await store.setEntryDate(page, z, '2026-03-10'); // March
+  await page.reload(); // a direct store write does not refresh App state — reload to rebuild the rail
+  await expect(page.getByTestId('entry-item')).toHaveCount(3);
+
+  // Default "All reviews" pivot, newest first → rail order [x (05-20), y (05-10), z (03-10)], grouped
+  // into a May bucket (x, y) then a March bucket (z).
+  await expect(page.getByTestId('bucket-2026-05')).toBeVisible();
+  await expect(page.getByTestId('bucket-2026-03')).toBeVisible();
+
+  // Collapse the May bucket: its two reviews leave the DOM but stay part of the rail order.
+  await page.getByTestId('bucket-head-2026-05').click();
+  await expect(page.getByTestId('bucket-head-2026-05')).toHaveClass(/is-collapsed/);
+  await expect(page.getByTestId('entry-item')).toHaveCount(1); // only z (March) is shown
+
+  // Open z (the sole visible review), then wheel UP to its rail neighbour y — which is hidden in the
+  // collapsed May bucket. The wheel must reach it via the rail order (not the full library) and the
+  // collapsed bucket must auto-expand so the landed review becomes visible.
+  await page.getByTestId('entry-item').first().click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  await hoverStage(page);
+  await page.mouse.wheel(0, -240);
+
+  await expect(page.getByTestId('bucket-head-2026-05')).not.toHaveClass(/is-collapsed/);
+  await expect(page.getByTestId('entry-item')).toHaveCount(3);
+  // y is the middle rail row (index 1) of [x, y, z] and is now the active review.
+  await expect.poll(() => activeIndex(page)).toBe(1);
+
+  await app.close();
+});

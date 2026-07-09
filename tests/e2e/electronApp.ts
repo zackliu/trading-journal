@@ -29,7 +29,7 @@ export interface LaunchedApp {
 export async function launchApp(dataDir: string): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: ['.'],
-    env: { ...process.env, TJ_DATA_DIR: dataDir },
+    env: { ...process.env, TJ_DATA_DIR: dataDir, TJ_TEST: '1' },
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
@@ -44,7 +44,7 @@ export async function launchApp(dataDir: string): Promise<LaunchedApp> {
 export async function launchAppNoWorkspace(userDataDir: string): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`],
-    env: { ...process.env, TJ_DATA_DIR: '' },
+    env: { ...process.env, TJ_DATA_DIR: '', TJ_TEST: '1' },
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');

@@ -19,7 +19,7 @@ import { CanvasEditor } from './editor/CanvasEditor';
 import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
 import { ConfirmDialog } from './shell/ConfirmDialog';
-import { GroupBrowser, type Bucket } from './shell/GroupBrowser';
+import { GroupBrowser, type Bucket, type GroupBrowserHandle } from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
@@ -162,9 +162,12 @@ export function App(): JSX.Element {
   const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
   const selectedEntryIdRef = useRef(selectedEntryId);
-  const entriesRef = useRef(entries);
   const switchToRef = useRef<(id: string | null) => Promise<void>>(async () => {});
   const wheelNavAtRef = useRef(0);
+  // Flat, de-duplicated top-to-bottom order of the reviews the left rail currently shows; the wheel
+  // steps through THIS (never the whole library). Kept in sync from `buckets` below.
+  const railOrderRef = useRef<string[]>([]);
+  const browserRef = useRef<GroupBrowserHandle | null>(null);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
   const pendingFlashRef = useRef<FlashReq | null>(null);
   const filterMatchRef = useRef<FilterMatch | null>(null);
@@ -320,9 +323,6 @@ export function App(): JSX.Element {
     setLoadError(null); // a fresh selection starts clean; a prior review's load error must not linger
   }, [selectedEntryId]);
   useEffect(() => {
-    entriesRef.current = entries;
-  }, [entries]);
-  useEffect(() => {
     entryUserTagsRef.current = entryUserTags;
   }, [entryUserTags]);
   useEffect(() => {
@@ -409,6 +409,23 @@ export function App(): JSX.Element {
     };
   }, [pivot, groups, entries, filterMatch, sortDir]);
 
+  // Mirror the rail into a flat, de-duplicated id list in top-to-bottom order (spanning collapsed
+  // buckets). The wheel steps through THIS list, so a review filtered out of the rail is unreachable
+  // while one hidden in a collapsed bucket still is (its bucket is expanded on landing).
+  useEffect(() => {
+    const seen = new Set<string>();
+    const order: string[] = [];
+    for (const bucket of buckets) {
+      for (const entry of bucket.entries) {
+        if (!seen.has(entry.id)) {
+          seen.add(entry.id);
+          order.push(entry.id);
+        }
+      }
+    }
+    railOrderRef.current = order;
+  }, [buckets]);
+
   const switchTo = useCallback(
     async (nextId: string | null) => {
       if (nextId === selectedEntryIdRef.current) return; // already open — re-selecting is a no-op
@@ -447,17 +464,22 @@ export function App(): JSX.Element {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [saveNow]);
 
-  // Wheel past a stage edge steps through the rail: down = next (further down the list), up = previous.
+  // Wheel past a stage edge steps through the LEFT RAIL exactly as shown: down = the review below,
+  // up = the one above. It walks the rail's filtered/sorted order (never the whole library), spans
+  // collapsed buckets, and expands the bucket it lands in. A review absent from the rail (filtered
+  // out, or the open one isn't a rail member) has no position, so the wheel leaves it alone.
   const onWheelNavigate = useCallback((dir: 1 | -1): void => {
     const now = Date.now();
     if (now - wheelNavAtRef.current < 450) return; // one step per scroll gesture
-    const list = entriesRef.current;
-    const idx = list.findIndex((e) => e.id === selectedEntryIdRef.current);
+    const order = railOrderRef.current;
+    const idx = selectedEntryIdRef.current ? order.indexOf(selectedEntryIdRef.current) : -1;
     if (idx < 0) return;
     const target = idx + dir;
-    if (target < 0 || target >= list.length) return; // at the ends, stay put
+    if (target < 0 || target >= order.length) return; // at the ends, stay put
     wheelNavAtRef.current = now;
-    void switchToRef.current(list[target].id);
+    const targetId = order[target];
+    browserRef.current?.revealEntry(targetId); // if it hides in a collapsed bucket, open that bucket
+    void switchToRef.current(targetId);
   }, []);
 
   const createNew = useCallback(async () => {
@@ -1040,6 +1062,7 @@ export function App(): JSX.Element {
       <div className="body">
         <aside className="rail">
           <GroupBrowser
+            ref={browserRef}
             groups={groups}
             pivot={pivot}
             onPivot={setPivot}
