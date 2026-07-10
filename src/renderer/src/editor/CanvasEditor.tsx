@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CanvasController } from './canvasController';
 
 interface Props {
   entryId: string;
   onReady: (controller: CanvasController) => void;
-  onLoaded?: () => void;
+  onLoaded?: (entryId: string) => void;
   /** The review could not be loaded (e.g. a screenshot file is missing / still syncing). */
   onLoadError?: (message: string) => void;
   /** Wheel past the top/bottom of the (possibly scrolled) stage steps to the prev/next review. */
@@ -22,6 +22,7 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onLoadError, onWheelN
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -50,7 +51,10 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onLoadError, onWheelN
           entry.image ? `tj-image://${entry.image.hash}` : null,
           lib.canvasJson,
         );
-        if (!disposed) onLoaded?.();
+        if (!disposed) {
+          setLoaded(true);
+          onLoaded?.(entryId);
+        }
       } catch (err) {
         // A missing / unreadable screenshot (e.g. one still syncing from OneDrive) rejects the whole
         // enliven batch, so the page cannot render. Surface it instead of leaving a silent blank canvas.
@@ -96,10 +100,11 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onLoadError, onWheelN
   }, [onWheelNavigate]);
 
   return (
-    <div className="editor" ref={stageRef} data-testid="editor">
+    <div className="editor" ref={stageRef} data-testid="editor" aria-busy={!loaded}>
       <div className="editor__stage" ref={scrollRef}>
         <canvas ref={canvasRef} />
       </div>
+      {!loaded ? <div className="editor__loading" data-testid="editor-loading" /> : null}
     </div>
   );
 }

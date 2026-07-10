@@ -6,6 +6,7 @@ interface Props {
   groups: TagGroupView[];
   /** The target's current tags (entry-level for the Review tab, annotation-level for the Annotation tab). */
   selected: Tag[];
+  disabled?: boolean;
   onToggle: (tag: Tag, on: boolean) => void;
   onOpenSettings: () => void;
 }
@@ -17,7 +18,7 @@ interface Props {
  * Selecting only — new values are created in Settings. Same mechanism for a whole review or one
  * annotation (no special annotation type).
  */
-export function QuickTag({ groups, selected, onToggle, onOpenSettings }: Props): JSX.Element {
+export function QuickTag({ groups, selected, disabled = false, onToggle, onOpenSettings }: Props): JSX.Element {
   const [showAll, setShowAll] = useState(false);
   const pinned = groups.filter((g) => g.pinned);
   const shown = showAll || pinned.length === 0 ? groups : pinned;
@@ -27,7 +28,7 @@ export function QuickTag({ groups, selected, onToggle, onOpenSettings }: Props):
     return (
       <div className="qtag qtag--empty" data-testid="quick-tag">
         <span>No tag groups yet.</span>
-        <button type="button" className="qtag__link" data-testid="quick-tag-settings" onClick={onOpenSettings}>
+        <button type="button" className="qtag__link" data-testid="quick-tag-settings" disabled={disabled} onClick={onOpenSettings}>
           Define groups in Settings
         </button>
       </div>
@@ -37,10 +38,10 @@ export function QuickTag({ groups, selected, onToggle, onOpenSettings }: Props):
   return (
     <div className="qtag" data-testid="quick-tag">
       {shown.map((group) => (
-        <GroupQuickPick key={group.id} group={group} selected={selected} onToggle={onToggle} />
+        <GroupQuickPick key={group.id} group={group} selected={selected} disabled={disabled} onToggle={onToggle} />
       ))}
       {hasHidden ? (
-        <button type="button" className="qtag__more" data-testid="quick-tag-more" onClick={() => setShowAll((v) => !v)}>
+        <button type="button" className="qtag__more" data-testid="quick-tag-more" disabled={disabled} onClick={() => setShowAll((v) => !v)}>
           {showAll ? 'Fewer' : 'More…'}
         </button>
       ) : null}
@@ -55,10 +56,12 @@ function isOn(selected: Tag[], groupId: string, value: string): boolean {
 function GroupQuickPick({
   group,
   selected,
+  disabled,
   onToggle,
 }: {
   group: TagGroupView;
   selected: Tag[];
+  disabled: boolean;
   onToggle: (tag: Tag, on: boolean) => void;
 }): JSX.Element {
   const chipsRef = useRef<HTMLDivElement>(null);
@@ -140,6 +143,7 @@ function GroupQuickPick({
                 data-testid={`qtag-${group.id}-${v.value}`}
                 aria-pressed={on}
                 title={v.label ?? v.value}
+                disabled={disabled}
                 onClick={() => onToggle({ group: group.id, value: v.value }, !on)}
               >
                 {v.label ?? v.value}
@@ -154,6 +158,7 @@ function GroupQuickPick({
           title="Show all"
           aria-hidden={hidden === 0}
           tabIndex={hidden === 0 ? -1 : 0}
+          disabled={disabled}
           onClick={toggleDrawer}
         >
           +{hidden}
@@ -174,6 +179,7 @@ function GroupQuickPick({
             placeholder={`Search ${group.label}…`}
             data-testid={`qtag-search-${group.id}`}
             value={query}
+            disabled={disabled}
             onChange={(e) => setQuery(e.target.value)}
           />
           <div className="qdrawer__list">
@@ -188,6 +194,7 @@ function GroupQuickPick({
                     type="button"
                     className={`qdrawer__item${on ? ' is-on' : ''}`}
                     data-testid={`qdrawer-${group.id}-${v.value}`}
+                    disabled={disabled}
                     onClick={() => onToggle({ group: group.id, value: v.value }, !on)}
                   >
                     <span className="qdrawer__check" aria-hidden="true" />

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type {
   ArchivedResults,
   ArchivedVocab,
@@ -19,7 +19,12 @@ import { CanvasEditor } from './editor/CanvasEditor';
 import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
 import { ConfirmDialog } from './shell/ConfirmDialog';
-import { GroupBrowser, type Bucket, type GroupBrowserHandle } from './shell/GroupBrowser';
+import {
+  GroupBrowser,
+  type BrowseOccurrence,
+  type Bucket,
+  type GroupBrowserHandle,
+} from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
 import { Ribbon } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
@@ -46,12 +51,48 @@ const DEFAULT_STYLE: DrawStyle = {
 };
 const EMPTY_EDITOR: EditorState = { canUndo: false, canRedo: false, dirty: false, hasSelection: false };
 const EMPTY_QUERY: ViewQuery = { entry: [], annotation: [], results: [] };
+const EMPTY_BUCKETS: Bucket[] = [];
+const WHEEL_GESTURE_IDLE_MS = 250;
 
 interface FilterMatch {
   ids: Set<string>;
   annById: Map<string, string[]>;
 }
+interface FilterResult {
+  key: string;
+  match: FilterMatch;
+}
+interface RailSnapshot {
+  contextKey: string;
+  buckets: Bucket[];
+}
 type FlashReq = { tag: Tag } | { annIds: string[] };
+type SaveOutcome = 'saved' | 'skipped' | 'failed';
+interface PendingFlash {
+  entryId: string;
+  contextKey: string;
+  requestId: number;
+  req: FlashReq;
+}
+
+function sameOccurrence(a: BrowseOccurrence | null, b: BrowseOccurrence | null): boolean {
+  return !!a && !!b && a.pivot === b.pivot && a.bucketKey === b.bucketKey && a.entryId === b.entryId;
+}
+
+function annotationQueryProjection(annotations: ReturnType<CanvasController['extractAnnotations']>): string {
+  return JSON.stringify(
+    [...annotations]
+      .filter((annotation) => annotation.tags.length > 0 || Object.keys(annotation.result ?? {}).length > 0)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((annotation) => ({
+        id: annotation.id,
+        tags: [...annotation.tags].sort((a, b) =>
+          `${a.group}:${a.value}`.localeCompare(`${b.group}:${b.value}`),
+        ),
+        result: Object.fromEntries(Object.entries(annotation.result ?? {}).sort(([a], [b]) => a.localeCompare(b))),
+      })),
+  );
+}
 
 function isEmptyQuery(q: ViewQuery): boolean {
   return q.entry.length === 0 && q.annotation.length === 0 && q.results.length === 0;
@@ -107,14 +148,18 @@ function yearMonthBuckets(entries: EntrySummary[], dir: 'asc' | 'desc'): Bucket[
 export function App(): JSX.Element {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
+  const [selectedOccurrence, setSelectedOccurrence] = useState<BrowseOccurrence | null>(null);
   const [pivot, setPivot] = useState('all');
   // Left-rail review order by date: 'desc' = newest first (default), 'asc' = oldest first.
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
   const [groups, setGroups] = useState<TagGroupView[]>([]);
   const [archivedGroups, setArchivedGroups] = useState<ArchivedVocab>({ groups: [], values: [] });
-  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [railSnapshot, setRailSnapshot] = useState<RailSnapshot>({ contextKey: '', buckets: [] });
+  const [railError, setRailError] = useState<string | null>(null);
+  const [railRetry, setRailRetry] = useState(0);
   const [entryUserTags, setEntryUserTags] = useState<Tag[]>([]);
   const [entryDate, setEntryDate] = useState<string>('');
+  const [entryMetadataLoadedId, setEntryMetadataLoadedId] = useState<string | null>(null);
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showGeneral, setShowGeneral] = useState(false);
@@ -122,7 +167,9 @@ export function App(): JSX.Element {
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ViewQuery>(EMPTY_QUERY);
-  const [filterMatch, setFilterMatch] = useState<FilterMatch | null>(null);
+  const [filterResult, setFilterResult] = useState<FilterResult | null>(null);
+  const [queryRevision, setQueryRevision] = useState(0);
+  const [queryMutationCount, setQueryMutationCount] = useState(0);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [showViewBuilder, setShowViewBuilder] = useState(false);
   const [showResultSettings, setShowResultSettings] = useState(false);
@@ -158,21 +205,86 @@ export function App(): JSX.Element {
   const controllerRef = useRef<CanvasController | null>(null);
   const pendingSelectRef = useRef<string | null>(null);
   const styleRef = useRef(style);
-  const saveRunningRef = useRef<Promise<void> | null>(null);
+  const saveRunningRef = useRef<Promise<SaveOutcome> | null>(null);
   const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
   const selectedEntryIdRef = useRef(selectedEntryId);
-  const switchToRef = useRef<(id: string | null) => Promise<void>>(async () => {});
-  const wheelNavAtRef = useRef(0);
-  // Flat, de-duplicated top-to-bottom order of the reviews the left rail currently shows; the wheel
-  // steps through THIS (never the whole library). Kept in sync from `buckets` below.
-  const railOrderRef = useRef<string[]>([]);
+  const wheelGestureRef = useRef({ lastAt: 0, navigated: false });
   const browserRef = useRef<GroupBrowserHandle | null>(null);
+  const activationRequestRef = useRef(0);
+  const railContextKeyRef = useRef('');
+  const loadedEntryIdRef = useRef<string | null>(null);
+  const queryProjectionRef = useRef<string | null>(null);
   const drawingClipboardRef = useRef<Record<string, unknown> | null>(null);
-  const pendingFlashRef = useRef<FlashReq | null>(null);
-  const filterMatchRef = useRef<FilterMatch | null>(null);
+  const pendingFlashRef = useRef<PendingFlash | null>(null);
   const entryUserTagsRef = useRef(entryUserTags);
+  const entryDateRef = useRef(entryDate);
+  const entryMetadataMutationRef = useRef(0);
+  const entryMetadataLoadedIdRef = useRef<string | null>(null);
   const selectedAnnotationRef = useRef(selectedAnnotation);
+
+  const entriesKey = useMemo(
+    () => entries.map((entry) => `${entry.id}:${entry.date ?? ''}:${entry.createdAt}`).join('|'),
+    [entries],
+  );
+  const filterKey = JSON.stringify(filter);
+  const queryUpdating = queryMutationCount > 0;
+  const filterRequestKey = JSON.stringify([filterKey, entriesKey, queryRevision, railRetry]);
+  const activeFilterMatch = queryUpdating
+    ? undefined
+    : isEmptyQuery(filter)
+    ? null
+    : filterResult?.key === filterRequestKey
+      ? filterResult.match
+      : undefined;
+  const pivotGroupKey = useMemo(
+    () => JSON.stringify(pivot === 'all' ? null : groups.find((group) => group.id === pivot) ?? null),
+    [groups, pivot],
+  );
+  const filterMatchKey = useMemo(() => {
+    if (activeFilterMatch === undefined) return 'pending';
+    if (activeFilterMatch === null) return 'all';
+    return [...activeFilterMatch.ids]
+      .sort()
+      .map((id) => `${id}:${[...(activeFilterMatch.annById.get(id) ?? [])].sort().join(',')}`)
+      .join('|');
+  }, [activeFilterMatch]);
+  const railContextKey = JSON.stringify([
+    pivot,
+    sortDir,
+    filterKey,
+    filterMatchKey,
+    entriesKey,
+    pivotGroupKey,
+    queryRevision,
+    queryUpdating,
+    railRetry,
+  ]);
+  railContextKeyRef.current = railContextKey;
+  const railReady = railSnapshot.contextKey === railContextKey;
+  const buckets = railReady ? railSnapshot.buckets : EMPTY_BUCKETS;
+  const railOccurrences = useMemo(
+    () =>
+      buckets.flatMap((bucket) =>
+        bucket.entries.map((entry) => ({
+          pivot,
+          bucketKey: bucket.key,
+          entryId: entry.id,
+          tag: bucket.tag,
+        })),
+      ),
+    [buckets, pivot],
+  );
+  const activeOccurrence = useMemo(() => {
+    if (!selectedEntryId) return null;
+    return (
+      (selectedOccurrence?.entryId === selectedEntryId
+        ? railOccurrences.find((occurrence) => sameOccurrence(occurrence, selectedOccurrence))
+        : null) ??
+      railOccurrences.find((occurrence) => occurrence.entryId === selectedEntryId) ??
+      null
+    );
+  }, [railOccurrences, selectedEntryId, selectedOccurrence]);
 
   const refresh = useCallback(async () => {
     setEntries(await window.api.listEntries());
@@ -271,44 +383,61 @@ export function App(): JSX.Element {
   // Auto-save engine — editing IS saving, there is no manual-save ritual. Every committed edit calls
   // this. It coalesces concurrent calls (one write in flight; a request during a write re-runs once
   // after), always serializes the latest state, and mirrors the page into the rail thumbnail live.
-  const saveNow = useCallback((): Promise<void> => {
+  const saveNow = useCallback((): Promise<SaveOutcome> => {
     if (saveRunningRef.current) {
       saveAgainRef.current = true;
       return saveRunningRef.current;
     }
-    const run = async (): Promise<void> => {
-      try {
-        do {
-          saveAgainRef.current = false;
-          const controller = controllerRef.current;
-          const id = selectedEntryIdRef.current;
-          if (!controller || !id) break;
+    const initialController = controllerRef.current;
+    const initialId = selectedEntryIdRef.current;
+    if (!initialController || !initialId || loadedEntryIdRef.current !== initialId) {
+      return Promise.resolve('skipped');
+    }
+    const run = async (): Promise<SaveOutcome> => {
+      do {
+        saveAgainRef.current = false;
+        const controller = controllerRef.current;
+        const id = selectedEntryIdRef.current;
+        if (!controller || !id || loadedEntryIdRef.current !== id) return 'skipped';
+        const saveVersion = controller.captureSaveVersion();
+        if (saveVersion === null) return 'skipped';
+        let queryIndexChanged = false;
+        try {
           const thumbnail = controller.renderThumbnail();
+          const annotations = controller.extractAnnotations();
+          const pageJson = controller.serializePage();
+          const stripJson = controller.serializeStrip();
+          const nextQueryProjection = annotationQueryProjection(annotations);
+          queryIndexChanged =
+            queryProjectionRef.current !== null && queryProjectionRef.current !== nextQueryProjection;
+          if (queryIndexChanged) setQueryMutationCount((count) => count + 1);
           setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, thumbnail } : e)));
-          try {
-            await window.api.updateEntryCanvas(
-              id,
-              controller.serializePage(),
-              controller.extractAnnotations(),
-              thumbnail,
-            );
-            await window.api.saveStampLibrary(controller.serializeStrip());
-            controller.markSaved();
-            setSaveError(null);
-          } catch (err) {
-            // A failed write must never masquerade as saved. Keep the review dirty (don't markSaved),
-            // surface the reason, and stop this pass — the next edit or a manual Ctrl+S retries. We never
-            // rethrow here: a swallowed rejection would silently drop the edit the user just made.
-            setSaveError(err instanceof Error ? err.message : String(err));
-            break;
+          await window.api.updateEntryCanvas(id, pageJson, annotations, thumbnail);
+          if (queryIndexChanged) {
+            queryProjectionRef.current = nextQueryProjection;
+            setQueryRevision((revision) => revision + 1);
           }
-        } while (saveAgainRef.current);
-      } finally {
-        saveRunningRef.current = null;
-      }
+          await window.api.saveStampLibrary(stripJson);
+          controller.markSaved(saveVersion);
+          setSaveError(null);
+        } catch (err) {
+          // A failed write must never masquerade as saved. Keep the review dirty (don't markSaved),
+          // surface the reason, and stop this pass — the next edit or a manual Ctrl+S retries. We never
+          // rethrow here: a swallowed rejection would silently drop the edit the user just made.
+          setSaveError(err instanceof Error ? err.message : String(err));
+          return 'failed';
+        } finally {
+          if (queryIndexChanged) setQueryMutationCount((count) => Math.max(0, count - 1));
+        }
+      } while (saveAgainRef.current);
+      return 'saved';
     };
-    saveRunningRef.current = run();
-    return saveRunningRef.current;
+    const promise = run();
+    saveRunningRef.current = promise;
+    void promise.finally(() => {
+      if (saveRunningRef.current === promise) saveRunningRef.current = null;
+    });
+    return promise;
   }, []);
 
   useEffect(() => {
@@ -320,38 +449,52 @@ export function App(): JSX.Element {
   }, [stampLocked]);
   useEffect(() => {
     selectedEntryIdRef.current = selectedEntryId;
+    entryMetadataMutationRef.current += 1;
+    entryMetadataLoadedIdRef.current = null;
+    entryUserTagsRef.current = [];
+    entryDateRef.current = '';
+    setEntryMetadataLoadedId(null);
+    setEntryUserTags([]);
+    setEntryDate('');
     setLoadError(null); // a fresh selection starts clean; a prior review's load error must not linger
   }, [selectedEntryId]);
   useEffect(() => {
     entryUserTagsRef.current = entryUserTags;
   }, [entryUserTags]);
   useEffect(() => {
+    entryDateRef.current = entryDate;
+  }, [entryDate]);
+  useEffect(() => {
     selectedAnnotationRef.current = selectedAnnotation;
   }, [selectedAnnotation]);
-  useEffect(() => {
-    filterMatchRef.current = filterMatch;
-  }, [filterMatch]);
-
   // Recompute which reviews (and their co-occurring annotations) the active filter matches. Re-runs
   // when the filter or the library changes, so a newly added matching review appears automatically.
   useEffect(() => {
     if (isEmptyQuery(filter)) {
-      setFilterMatch(null);
+      setFilterResult(null);
       return;
     }
     let cancelled = false;
     void (async () => {
-      const matches = await window.api.runView(filter);
-      if (cancelled) return;
-      setFilterMatch({
-        ids: new Set(matches.map((m) => m.entryId)),
-        annById: new Map(matches.map((m) => [m.entryId, m.annotationIds])),
-      });
+      setRailError(null);
+      try {
+        const matches = await window.api.runView(filter);
+        if (cancelled) return;
+        setFilterResult({
+          key: filterRequestKey,
+          match: {
+            ids: new Set(matches.map((m) => m.entryId)),
+            annById: new Map(matches.map((m) => [m.entryId, m.annotationIds])),
+          },
+        });
+      } catch (err) {
+        if (!cancelled) setRailError(err instanceof Error ? err.message : String(err));
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [filter, entries]);
+  }, [filter, filterRequestKey, entries]);
 
   // Load the open review's date + user (non-`date`) entry tags for the Review tab.
   useEffect(() => {
@@ -363,8 +506,14 @@ export function App(): JSX.Element {
     let cancelled = false;
     void window.api.getEntry(selectedEntryId).then((entry) => {
       if (cancelled || !entry) return;
-      setEntryUserTags(entry.entryTags.filter((t) => t.group !== 'date'));
-      setEntryDate(entry.entryTags.find((t) => t.group === 'date')?.value ?? '');
+      const tags = entry.entryTags.filter((t) => t.group !== 'date');
+      const date = entry.entryTags.find((t) => t.group === 'date')?.value ?? '';
+      entryUserTagsRef.current = tags;
+      entryDateRef.current = date;
+      entryMetadataLoadedIdRef.current = selectedEntryId;
+      setEntryUserTags(tags);
+      setEntryDate(date);
+      setEntryMetadataLoadedId(selectedEntryId);
     });
     return () => {
       cancelled = true;
@@ -375,80 +524,122 @@ export function App(): JSX.Element {
   // else the selected group's value buckets. Counts are context-sensitive (within the active filter);
   // membership is read from the store (entry ∪ annotation) — never scanning canvas JSON.
   useEffect(() => {
-    const survivors = filterMatch ? entries.filter((e) => filterMatch.ids.has(e.id)) : entries;
+    if (activeFilterMatch === undefined) return;
+    setRailError(null);
+    const survivors = activeFilterMatch ? entries.filter((e) => activeFilterMatch.ids.has(e.id)) : entries;
     // `entries` arrives newest-first from the store; reverse for oldest-first. Both the month buckets
     // and the reviews inside every bucket follow this one order.
     const ordered = sortDir === 'asc' ? [...survivors].reverse() : survivors;
     if (pivot === 'all') {
-      setBuckets(yearMonthBuckets(ordered, sortDir));
+      setRailSnapshot({ contextKey: railContextKey, buckets: yearMonthBuckets(ordered, sortDir) });
       return;
     }
     const group = groups.find((g) => g.id === pivot);
     if (!group) {
-      setBuckets([]);
+      setRailSnapshot({ contextKey: railContextKey, buckets: [] });
       return;
     }
     let cancelled = false;
     void (async () => {
-      const next: Bucket[] = [];
-      for (const value of group.values) {
-        const ids = new Set(
-          (await window.api.queryEntriesByTag({ group: group.id, value: value.value })).map((e) => e.id),
+      try {
+        const next = await Promise.all(
+          group.values.map(async (value): Promise<Bucket> => {
+            const ids = new Set(
+              (await window.api.queryEntriesByTag({ group: group.id, value: value.value })).map(
+                (entry) => entry.id,
+              ),
+            );
+            return {
+              key: value.value,
+              label: value.label ?? value.value,
+              entries: ordered.filter((e) => ids.has(e.id)),
+              tag: { group: group.id, value: value.value },
+            };
+          }),
         );
-        next.push({
-          key: value.value,
-          label: value.label ?? value.value,
-          entries: ordered.filter((e) => ids.has(e.id)),
-          tag: { group: group.id, value: value.value },
-        });
+        if (!cancelled) setRailSnapshot({ contextKey: railContextKey, buckets: next });
+      } catch (err) {
+        if (!cancelled) setRailError(err instanceof Error ? err.message : String(err));
       }
-      if (!cancelled) setBuckets(next);
     })();
     return () => {
       cancelled = true;
     };
-  }, [pivot, groups, entries, filterMatch, sortDir]);
-
-  // Mirror the rail into a flat, de-duplicated id list in top-to-bottom order (spanning collapsed
-  // buckets). The wheel steps through THIS list, so a review filtered out of the rail is unreachable
-  // while one hidden in a collapsed bucket still is (its bucket is expanded on landing).
-  useEffect(() => {
-    const seen = new Set<string>();
-    const order: string[] = [];
-    for (const bucket of buckets) {
-      for (const entry of bucket.entries) {
-        if (!seen.has(entry.id)) {
-          seen.add(entry.id);
-          order.push(entry.id);
-        }
-      }
-    }
-    railOrderRef.current = order;
-  }, [buckets]);
+  }, [activeFilterMatch, entries, groups, pivot, railContextKey, sortDir]);
 
   const switchTo = useCallback(
-    async (nextId: string | null) => {
-      if (nextId === selectedEntryIdRef.current) return; // already open — re-selecting is a no-op
+    async (
+      nextId: string | null,
+      occurrence: BrowseOccurrence | null = null,
+      stillCurrent?: () => boolean,
+    ): Promise<boolean> => {
+      if (!occurrence && !stillCurrent) activationRequestRef.current += 1;
+      if (!occurrence) pendingFlashRef.current = null;
+      if (nextId === selectedEntryIdRef.current) {
+        if (stillCurrent && !stillCurrent()) return false;
+        setSelectedOccurrence(occurrence);
+        return true;
+      }
       // Fabric does not exit text editing when focus leaves the canvas, so freshly typed text is not yet
       // committed. Commit it first, then flush pending edits — otherwise switching reviews (rail click,
       // wheel, New, link) would silently discard what the user just typed. Gate the save on the
       // controller's LIVE dirty state, not the stale closure value.
       const controller = controllerRef.current;
-      controller?.commitTextEditing();
-      if (controller?.isDirty()) await saveNow();
+      const loaded = !!controller && loadedEntryIdRef.current === selectedEntryIdRef.current;
+      if (loaded) controller.commitTextEditing();
+      if (loaded && controller.isDirty() && (await saveNow()) === 'failed') return false;
+      if (stillCurrent && !stillCurrent()) return false;
       controllerRef.current = null;
+      loadedEntryIdRef.current = null;
+      queryProjectionRef.current = null;
+      setSelectedOccurrence(occurrence);
       setSelectedEntryId(nextId);
       setTool('select');
       setEditorState(EMPTY_EDITOR);
       setPopover(null);
       setSelectedAnnotation(null);
       await refresh();
+      return true;
     },
     [saveNow, refresh],
   );
+
+  const beginNavigationIntent = useCallback((): (() => boolean) => {
+    const requestId = ++activationRequestRef.current;
+    pendingFlashRef.current = null;
+    return () => activationRequestRef.current === requestId;
+  }, []);
+  // Clicking and wheel navigation activate the same concrete rail occurrence: reveal it, make it the
+  // sole active thumbnail, switch the durable artifact if needed, then run that occurrence's highlight.
+  const activateOccurrence = useCallback(
+    async (occurrence: BrowseOccurrence): Promise<void> => {
+      if (!railReady) return;
+      const requestId = ++activationRequestRef.current;
+      const contextKey = railContextKey;
+      const stillCurrent = (): boolean =>
+        activationRequestRef.current === requestId && railContextKeyRef.current === contextKey;
+      browserRef.current?.revealBucket(occurrence.bucketKey);
+      const annIds = filter.annotation.length > 0 ? activeFilterMatch?.annById.get(occurrence.entryId) : undefined;
+      const req: FlashReq | null =
+        occurrence.tag ? { tag: occurrence.tag } : annIds && annIds.length > 0 ? { annIds } : null;
+      pendingFlashRef.current = req ? { entryId: occurrence.entryId, contextKey, requestId, req } : null;
+      const switched = await switchTo(occurrence.entryId, occurrence, stillCurrent);
+      if (!switched || !stillCurrent()) {
+        if (pendingFlashRef.current?.requestId === requestId) pendingFlashRef.current = null;
+        return;
+      }
+      if (req && loadedEntryIdRef.current === occurrence.entryId) {
+        if ('annIds' in req) controllerRef.current?.flashAnnotationHighlight(req.annIds);
+        else controllerRef.current?.flashTagHighlight(req.tag);
+        if (pendingFlashRef.current?.requestId === requestId) pendingFlashRef.current = null;
+      }
+    },
+    [activeFilterMatch, filter.annotation.length, railContextKey, railReady, switchTo],
+  );
+
   useEffect(() => {
-    switchToRef.current = switchTo;
-  }, [switchTo]);
+    pendingFlashRef.current = null;
+  }, [railContextKey]);
 
   // Close / reload safety net: Fabric never commits an in-progress text edit on focus loss, so flush it
   // before the page unloads. saveNow dispatches its IPC synchronously, so the main process receives and
@@ -470,30 +661,33 @@ export function App(): JSX.Element {
   // out, or the open one isn't a rail member) has no position, so the wheel leaves it alone.
   const onWheelNavigate = useCallback((dir: 1 | -1): void => {
     const now = Date.now();
-    if (now - wheelNavAtRef.current < 450) return; // one step per scroll gesture
-    const order = railOrderRef.current;
-    const idx = selectedEntryIdRef.current ? order.indexOf(selectedEntryIdRef.current) : -1;
+    const gesture = wheelGestureRef.current;
+    if (now - gesture.lastAt > WHEEL_GESTURE_IDLE_MS) gesture.navigated = false;
+    gesture.lastAt = now;
+    if (gesture.navigated) return;
+    const idx = activeOccurrence
+      ? railOccurrences.findIndex((occurrence) => sameOccurrence(occurrence, activeOccurrence))
+      : -1;
     if (idx < 0) return;
     const target = idx + dir;
-    if (target < 0 || target >= order.length) return; // at the ends, stay put
-    wheelNavAtRef.current = now;
-    const targetId = order[target];
-    browserRef.current?.revealEntry(targetId); // if it hides in a collapsed bucket, open that bucket
-    void switchToRef.current(targetId);
-  }, []);
+    if (target < 0 || target >= railOccurrences.length) return; // at the ends, stay put
+    gesture.navigated = true;
+    void activateOccurrence(railOccurrences[target]);
+  }, [activateOccurrence, activeOccurrence, railOccurrences]);
 
   const createNew = useCallback(async () => {
+    const stillCurrent = beginNavigationIntent();
     setBusy(true);
     setError(null);
     try {
       const entry = await window.api.newEntry();
-      await switchTo(entry.id);
+      if (stillCurrent()) await switchTo(entry.id, null, stillCurrent);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [switchTo]);
+  }, [beginNavigationIntent, switchTo]);
 
   // Ctrl/Cmd+N creates a new blank review.
   useEffect(() => {
@@ -510,17 +704,36 @@ export function App(): JSX.Element {
   // Paste/drop an image: add it as a movable object on the open review, or capture a new one.
   const addImage = useCallback(
     async (bytes: Uint8Array) => {
+      const stillCurrent = beginNavigationIntent();
+      const targetEntryId = selectedEntryId;
+      const targetController = controllerRef.current;
       setBusy(true);
       setError(null);
       try {
-        if (selectedEntryId && controllerRef.current) {
+        if (targetEntryId && targetController) {
           const { hash } = await window.api.storeImage(bytes);
-          const { isFirst } = await controllerRef.current.addImage(`tj-image://${hash}`);
-          if (isFirst) await window.api.setEntryImage(selectedEntryId, hash);
+          if (
+            !stillCurrent() ||
+            selectedEntryIdRef.current !== targetEntryId ||
+            controllerRef.current !== targetController
+          ) {
+            return;
+          }
+          const inserted = await targetController.addImage(
+            `tj-image://${hash}`,
+            () =>
+              stillCurrent() &&
+              loadedEntryIdRef.current === targetEntryId &&
+              selectedEntryIdRef.current === targetEntryId &&
+              controllerRef.current === targetController,
+          );
+          if (!inserted) return;
+          const { isFirst } = inserted;
+          if (isFirst) await window.api.setEntryImage(targetEntryId, hash);
           // addImage() commits history → auto-saves the canvas + thumbnail via onContentChanged.
         } else {
           const entry = await window.api.ingestImageEntry(bytes);
-          await switchTo(entry.id);
+          if (stillCurrent()) await switchTo(entry.id, null, stillCurrent);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -528,7 +741,7 @@ export function App(): JSX.Element {
         setBusy(false);
       }
     },
-    [selectedEntryId, switchTo],
+    [beginNavigationIntent, selectedEntryId, switchTo],
   );
 
   const removeEntry = useCallback(
@@ -536,7 +749,12 @@ export function App(): JSX.Element {
       setMenu(null);
       await window.api.deleteEntry(id);
       if (id === selectedEntryId) {
+        activationRequestRef.current += 1;
+        pendingFlashRef.current = null;
         controllerRef.current = null;
+        loadedEntryIdRef.current = null;
+        queryProjectionRef.current = null;
+        setSelectedOccurrence(null);
         setSelectedEntryId(null);
         setEditorState(EMPTY_EDITOR);
         setPopover(null);
@@ -648,6 +866,8 @@ export function App(): JSX.Element {
 
   const onReady = useCallback((controller: CanvasController) => {
     controllerRef.current = controller;
+    loadedEntryIdRef.current = null;
+    queryProjectionRef.current = null;
     controller.onState(setEditorState);
     controller.onToolChange(setTool);
     controller.onSelectionStyle(setSelectionStyle);
@@ -828,31 +1048,46 @@ export function App(): JSX.Element {
   const onToggleStampLock = useCallback(() => setStampLocked((v) => !v), []);
   const jumpToAnnotation = useCallback(
     async (annotationId: string) => {
+      const stillCurrent = beginNavigationIntent();
       setPopover(null);
       const loc = await window.api.locateAnnotation(annotationId);
-      if (!loc) return;
+      if (!loc || !stillCurrent()) return;
       if (loc.entryId === selectedEntryId) {
         controllerRef.current?.selectAnnotationById(annotationId);
       } else {
         pendingSelectRef.current = annotationId;
-        await switchTo(loc.entryId);
+        await switchTo(loc.entryId, null, stillCurrent);
       }
     },
-    [selectedEntryId, switchTo],
+    [beginNavigationIntent, selectedEntryId, switchTo],
   );
   // Toggle a tag on the whole review (Review tab quick-pick). Entry tags save immediately.
   const onToggleEntryTag = useCallback(
     (tag: Tag, on: boolean) => {
       const id = selectedEntryIdRef.current;
-      if (!id) return;
+      if (!id || entryMetadataLoadedIdRef.current !== id) return;
       const cur = entryUserTagsRef.current;
       const has = cur.some((t) => t.group === tag.group && t.value === tag.value);
       const next = on ? (has ? cur : [...cur, tag]) : cur.filter((t) => !(t.group === tag.group && t.value === tag.value));
+      const mutationId = ++entryMetadataMutationRef.current;
+      entryUserTagsRef.current = next;
       setEntryUserTags(next);
-      void window.api.setEntryTags(id, next).then(() => {
-        void refresh();
-        void refreshGroups();
-      });
+      setQueryMutationCount((count) => count + 1);
+      void (async () => {
+        try {
+          await window.api.setEntryTags(id, next);
+          setQueryRevision((revision) => revision + 1);
+          await Promise.all([refresh(), refreshGroups()]);
+        } catch (err) {
+          if (selectedEntryIdRef.current === id && entryMetadataMutationRef.current === mutationId) {
+            entryUserTagsRef.current = cur;
+            setEntryUserTags(cur);
+          }
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setQueryMutationCount((count) => Math.max(0, count - 1));
+        }
+      })();
     },
     [refresh, refreshGroups],
   );
@@ -862,9 +1097,27 @@ export function App(): JSX.Element {
   const onChangeEntryDate = useCallback(
     (date: string) => {
       const id = selectedEntryIdRef.current;
-      if (!id || !date) return;
+      if (!id || !date || entryMetadataLoadedIdRef.current !== id) return;
+      const previous = entryDateRef.current;
+      const mutationId = ++entryMetadataMutationRef.current;
+      entryDateRef.current = date;
       setEntryDate(date);
-      void window.api.setEntryDate(id, date).then(() => void refresh());
+      setQueryMutationCount((count) => count + 1);
+      void (async () => {
+        try {
+          await window.api.setEntryDate(id, date);
+          setQueryRevision((revision) => revision + 1);
+          await refresh();
+        } catch (err) {
+          if (selectedEntryIdRef.current === id && entryMetadataMutationRef.current === mutationId) {
+            entryDateRef.current = previous;
+            setEntryDate(previous);
+          }
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setQueryMutationCount((count) => Math.max(0, count - 1));
+        }
+      })();
     },
     [refresh],
   );
@@ -931,33 +1184,26 @@ export function App(): JSX.Element {
     await refreshGroups();
   }, [refreshGroups]);
 
-  // Open a review from a browse bucket; a value bucket's tag briefly highlights its carriers.
-  const openFromBrowse = useCallback(
-    async (id: string, tag?: Tag) => {
-      const annIds = filterMatchRef.current?.annById.get(id);
-      const req: FlashReq | null = annIds && annIds.length > 0 ? { annIds } : tag ? { tag } : null;
-      if (id === selectedEntryIdRef.current) {
-        if (req && 'annIds' in req) controllerRef.current?.flashAnnotationHighlight(req.annIds);
-        else if (req) controllerRef.current?.flashTagHighlight(req.tag);
-        return;
-      }
-      pendingFlashRef.current = req;
-      await switchTo(id);
-    },
-    [switchTo],
-  );
-
-  const onEditorLoaded = useCallback(() => {
+  const onEditorLoaded = useCallback((entryId: string) => {
     setLoadError(null); // a successful (re)load clears any earlier load-failure notice
+    loadedEntryIdRef.current = entryId;
+    if (controllerRef.current) {
+      queryProjectionRef.current = annotationQueryProjection(controllerRef.current.extractAnnotations());
+    }
     const pending = pendingSelectRef.current;
     if (pending) {
       controllerRef.current?.selectAnnotationById(pending);
       pendingSelectRef.current = null;
     }
-    const req = pendingFlashRef.current;
-    if (req) {
-      if ('annIds' in req) controllerRef.current?.flashAnnotationHighlight(req.annIds);
-      else controllerRef.current?.flashTagHighlight(req.tag);
+    const pendingFlash = pendingFlashRef.current;
+    if (
+      pendingFlash &&
+      pendingFlash.entryId === entryId &&
+      pendingFlash.contextKey === railContextKeyRef.current &&
+      pendingFlash.requestId === activationRequestRef.current
+    ) {
+      if ('annIds' in pendingFlash.req) controllerRef.current?.flashAnnotationHighlight(pendingFlash.req.annIds);
+      else controllerRef.current?.flashTagHighlight(pendingFlash.req.tag);
       pendingFlashRef.current = null;
     }
   }, []);
@@ -966,6 +1212,8 @@ export function App(): JSX.Element {
   // over the review's real data, and surface a notice (the editor is replaced by a load-error panel).
   const onEditorLoadError = useCallback((message: string) => {
     controllerRef.current = null;
+    loadedEntryIdRef.current = null;
+    queryProjectionRef.current = null;
     setEditorState(EMPTY_EDITOR);
     setLoadError(message);
   }, []);
@@ -1042,6 +1290,7 @@ export function App(): JSX.Element {
         groups={groups}
         entryTags={entryUserTags}
         entryDate={entryDate}
+        entryMetadataReady={entryMetadataLoadedId === selectedEntryId}
         onChangeEntryDate={onChangeEntryDate}
         selectedAnnotation={selectedAnnotation}
         onToggleEntryTag={onToggleEntryTag}
@@ -1070,11 +1319,14 @@ export function App(): JSX.Element {
             totalCount={entries.length}
             sortDir={sortDir}
             onToggleSort={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
-            selectedEntryId={selectedEntryId}
+            selectedOccurrence={activeOccurrence}
             filterChips={chips}
             onClearFilter={() => setFilter(EMPTY_QUERY)}
-            onOpen={(id, tag) => void openFromBrowse(id, tag)}
+            onOpen={(occurrence) => void activateOccurrence(occurrence)}
             onContextMenu={openThumbMenu}
+            loading={!railReady && !railError}
+            error={railError}
+            onRetry={() => setRailRetry((retry) => retry + 1)}
           />
         </aside>
 

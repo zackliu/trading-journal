@@ -34,6 +34,7 @@ export function Thumbnails({ entries, selectedId, onOpen, onContextMenu }: Props
             key={entry.id}
             className={`thumb${entry.id === selectedId ? ' is-active' : ''}`}
             data-testid="entry-item"
+            data-entry-id={entry.id}
             onClick={() => onOpen(entry.id)}
             onContextMenu={(e) => {
               e.preventDefault();

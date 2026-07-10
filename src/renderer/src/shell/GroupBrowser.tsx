@@ -12,6 +12,14 @@ export interface Bucket {
   tag?: Tag;
 }
 
+/** One concrete thumbnail position in the current browse rail. */
+export interface BrowseOccurrence {
+  pivot: string;
+  bucketKey: string;
+  entryId: string;
+  tag?: Tag;
+}
+
 interface Props {
   groups: TagGroupView[];
   /** Active pivot dimension: `'all'` (year-month) or a group id. */
@@ -22,10 +30,16 @@ interface Props {
   /** Date order of the reviews in every bucket: 'desc' = newest first, 'asc' = oldest first. */
   sortDir: 'desc' | 'asc';
   onToggleSort: () => void;
-  selectedEntryId: string | null;
-  /** Open a review; `tag` (present for value buckets) briefly highlights its carriers. */
-  onOpen: (entryId: string, tag?: Tag) => void;
+  /** The exact active thumbnail occurrence; null when the open review is outside the current rail. */
+  selectedOccurrence: BrowseOccurrence | null;
+  /** Activate a thumbnail occurrence. Click and wheel navigation share the same App path. */
+  onOpen: (occurrence: BrowseOccurrence) => void;
   onContextMenu: (id: string, x: number, y: number) => void;
+  /** Current pivot/filter/sort is waiting for its matching atomic rail snapshot. */
+  loading: boolean;
+  /** Current rail query failed; old results stay unavailable until an explicit retry succeeds. */
+  error: string | null;
+  onRetry: () => void;
   /** The active view filter as compact chips (empty = no filter); each is scoped entry vs annotation. */
   filterChips: Array<{ text: string; scope: 'entry' | 'annotation' }>;
   onClearFilter: () => void;
@@ -34,8 +48,8 @@ interface Props {
 /** Imperative handle so the wheel-nav (which lives over the editor) can reveal a review the rail is
  *  currently hiding inside a collapsed bucket. */
 export interface GroupBrowserHandle {
-  /** Expand the (first) bucket carrying `entryId` so its thumbnail is shown. No-op if already open. */
-  revealEntry: (entryId: string) => void;
+  /** Expand the exact bucket containing the wheel target. No-op if it is already open. */
+  revealBucket: (bucketKey: string) => void;
 }
 
 /**
@@ -57,30 +71,31 @@ export const GroupBrowser = forwardRef<GroupBrowserHandle, Props>(function Group
   // A fresh pivot starts fully expanded.
   useEffect(() => setCollapsed(new Set()), [pivot]);
 
-  // Reveal a wheel-navigated review that sits in a collapsed bucket: expand that bucket so it shows.
+  // Reveal a wheel target that sits in a collapsed bucket: expand that exact occurrence's bucket.
   useImperativeHandle(
     ref,
     () => ({
-      revealEntry: (entryId: string): void => {
-        const bucket = buckets.find((b) => b.entries.some((e) => e.id === entryId));
-        if (!bucket) return;
+      revealBucket: (bucketKey: string): void => {
         setCollapsed((prev) => {
-          if (!prev.has(bucket.key)) return prev;
+          if (!prev.has(bucketKey)) return prev;
           const next = new Set(prev);
-          next.delete(bucket.key);
+          next.delete(bucketKey);
           return next;
         });
       },
     }),
-    [buckets],
+    [],
   );
 
-  // Keep the active review's thumbnail in view after a wheel step or rail click (minimal scroll). A
-  // review in a just-expanded bucket is covered because selecting it re-runs this once it renders.
+  // Keep the exact active occurrence in view after a wheel step or rail click (minimal scroll).
   useEffect(() => {
-    if (!props.selectedEntryId) return;
+    if (!props.selectedOccurrence) return;
     railRef.current?.querySelector('.thumb.is-active')?.scrollIntoView({ block: 'nearest' });
-  }, [props.selectedEntryId]);
+  }, [
+    props.selectedOccurrence?.pivot,
+    props.selectedOccurrence?.bucketKey,
+    props.selectedOccurrence?.entryId,
+  ]);
 
   const activeLabel = pivot === 'all' ? 'All reviews' : (groups.find((g) => g.id === pivot)?.label ?? 'All reviews');
 
@@ -186,7 +201,16 @@ export const GroupBrowser = forwardRef<GroupBrowserHandle, Props>(function Group
       </div>
 
       <div className="buckets" data-testid="buckets" ref={railRef}>
-        {buckets.length === 0 ? (
+        {props.error ? (
+          <div className="thumbs__empty" data-testid="buckets-error" role="alert">
+            <p>Couldn’t update reviews.</p>
+            <button type="button" className="filterbar__clear" onClick={props.onRetry}>
+              Retry
+            </button>
+          </div>
+        ) : props.loading ? (
+          <p className="thumbs__empty" data-testid="buckets-loading">Updating…</p>
+        ) : buckets.length === 0 ? (
           <p className="thumbs__empty">No reviews yet.</p>
         ) : (
           buckets.map((bucket) => {
@@ -211,8 +235,15 @@ export const GroupBrowser = forwardRef<GroupBrowserHandle, Props>(function Group
                   <div className="pbucket__body">
                     <Thumbnails
                       entries={bucket.entries}
-                      selectedId={props.selectedEntryId}
-                      onOpen={(id) => props.onOpen(id, bucket.tag)}
+                      selectedId={
+                        props.selectedOccurrence?.pivot === pivot &&
+                        props.selectedOccurrence.bucketKey === bucket.key
+                          ? props.selectedOccurrence.entryId
+                          : null
+                      }
+                      onOpen={(entryId) =>
+                        props.onOpen({ pivot, bucketKey: bucket.key, entryId, tag: bucket.tag })
+                      }
                       onContextMenu={props.onContextMenu}
                     />
                   </div>

@@ -36,6 +36,13 @@ test('an older journal migrates forward with every review preserved, and is back
     ]),
   );
   expect(entry?.canvasJson).toContain('tjPage');
+  const originalCanvasJson = entry?.canvasJson;
+
+  // Loading a preserved review for browsing is read-only. Merely opening it must not normalize,
+  // reserialize, or otherwise rewrite its durable canvas document.
+  await page.getByTestId('entry-item').click();
+  await expect(page.getByTestId('editor')).toHaveAttribute('aria-busy', 'false');
+  expect((await store.getEntry(page, entries[0].id))?.canvasJson).toBe(originalCanvasJson);
 
   // The annotation, its tag, and its recorded result survived.
   expect(entry?.annotations.length).toBe(1);

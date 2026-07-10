@@ -30,6 +30,7 @@ interface RibbonProps {
   groups: TagGroupView[];
   entryTags: Tag[];
   entryDate: string;
+  entryMetadataReady: boolean;
   onChangeEntryDate: (date: string) => void;
   selectedAnnotation: AnnotationSelection | null;
   onToggleEntryTag: (tag: Tag, on: boolean) => void;
@@ -396,6 +397,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 className="ribbon__date"
                 data-testid="review-date"
                 value={props.entryDate}
+                disabled={!props.entryMetadataReady}
                 onChange={(e) => props.onChangeEntryDate(e.target.value)}
               />
             </Group>
@@ -403,6 +405,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             <QuickTag
               groups={props.groups}
               selected={props.entryTags}
+              disabled={!props.entryMetadataReady}
               onToggle={props.onToggleEntryTag}
               onOpenSettings={props.onOpenSettings}
             />

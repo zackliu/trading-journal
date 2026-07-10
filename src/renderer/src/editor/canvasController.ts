@@ -163,8 +163,10 @@ export class CanvasController {
   private endY = 0;
   private draft: FabricObject | null = null;
   private history: string[] = [];
+  private historyRevisions: number[] = [];
+  private nextHistoryRevision = 0;
   private histIndex = -1;
-  private savedIndex = 0;
+  private savedRevision = 0;
   private restoring = false;
   private availW = 800;
   private availH = 600;
@@ -240,7 +242,13 @@ export class CanvasController {
         this.pushHistory();
       }
     });
-    this.canvas.on('object:modified', () => this.pushHistory());
+    this.canvas.on('object:modified', () => {
+      // Fabric fires this before our mouse:up drop resolver. During a drag the object may still be in
+      // a forbidden region (e.g. a page drawing momentarily over the locked strip); saving that
+      // transient position would publish a phantom stamp. handleDrop records the one resolved state.
+      if (this.dragHome && this.didMove) return;
+      this.pushHistory();
+    });
     this.canvas.on('selection:created', () => {
       this.styleRange = null;
       this.emit();
@@ -492,8 +500,10 @@ export class CanvasController {
     this.restoring = false;
 
     this.history = [this.serializeAll()];
+    const initialRevision = ++this.nextHistoryRevision;
+    this.historyRevisions = [initialRevision];
     this.histIndex = 0;
-    this.savedIndex = 0;
+    this.savedRevision = initialRevision;
     this.emit();
   }
 
@@ -592,8 +602,12 @@ export class CanvasController {
   }
 
   /** Insert a screenshot as a movable image object on the review page (never resizes the page). */
-  async addImage(imageUrl: string): Promise<{ isFirst: boolean }> {
+  async addImage(imageUrl: string, canCommit: () => boolean = () => true): Promise<{ isFirst: boolean } | null> {
     const img = await FabricImage.fromURL(imageUrl);
+    if (!canCommit()) {
+      img.dispose();
+      return null;
+    }
     const isFirst = this.canvas.getObjects().every((o) => !(o instanceof FabricImage));
     this.placeContained(img, isFirst);
     this.canvas.add(img);
@@ -960,14 +974,20 @@ export class CanvasController {
     }
   }
 
-  markSaved(): void {
-    this.savedIndex = this.histIndex;
+  /** Capture the exact history revision about to be serialized, or null before an Entry has loaded. */
+  captureSaveVersion(): number | null {
+    return this.histIndex >= 0 ? this.historyRevisions[this.histIndex] : null;
+  }
+
+  /** Confirm only the revision that was actually written; later edits remain dirty. */
+  markSaved(version: number): void {
+    this.savedRevision = version;
     this.emit();
   }
 
   /** True when there are edits not yet written (history is ahead of the last save). */
   isDirty(): boolean {
-    return this.histIndex !== this.savedIndex;
+    return this.histIndex >= 0 && this.historyRevisions[this.histIndex] !== this.savedRevision;
   }
 
   /**
@@ -1382,7 +1402,9 @@ export class CanvasController {
   private pushHistory(): void {
     if (this.restoring) return;
     this.history = this.history.slice(0, this.histIndex + 1);
+    this.historyRevisions = this.historyRevisions.slice(0, this.histIndex + 1);
     this.history.push(this.serializeAll());
+    this.historyRevisions.push(++this.nextHistoryRevision);
     this.histIndex = this.history.length - 1;
     this.emit();
     this.contentChangedCb?.(); // every committed edit auto-saves (page + strip)
@@ -1608,7 +1630,7 @@ export class CanvasController {
     this.stateCb?.({
       canUndo: this.histIndex > 0,
       canRedo: this.histIndex < this.history.length - 1,
-      dirty: this.histIndex !== this.savedIndex,
+      dirty: this.isDirty(),
       hasSelection: this.canvas.getActiveObjects().length > 0,
     });
     this.emitSelection();

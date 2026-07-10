@@ -736,6 +736,14 @@ button {
   min-height: 0;
   min-width: 0;
   display: flex;
+  position: relative;
+}
+
+.editor__loading {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  cursor: wait;
 }
 
 .editor__stage {
