@@ -1,5 +1,6 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'node:path';
 import type { Plugin } from 'vite';
 
 // Strict CSP for the shipped (file://) app. Injected only into the production
@@ -26,6 +27,14 @@ function cspMeta(): Plugin {
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          aiCompanion: resolve(__dirname, 'src/main/ai/aiCompanion.ts'),
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

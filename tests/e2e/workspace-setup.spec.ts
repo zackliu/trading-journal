@@ -79,8 +79,10 @@ test('General settings shows the active data folder', async () => {
   const dataDir = tmp('tj-data-');
   const { app, page } = await launchApp(dataDir);
 
+  await expect(page.getByTestId('ribbon-general')).toContainText('App settings');
   await page.getByTestId('ribbon-general').click();
   await expect(page.getByTestId('general-settings')).toBeVisible();
+  await expect(page.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
   const state = await store.getWorkspaceState(page);
   await expect(page.getByTestId('general-path')).toHaveText(state.dataDir ?? '');
 

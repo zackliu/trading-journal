@@ -35,6 +35,8 @@ import {
 } from './store/validation';
 import { IpcChannel, type PingResult } from '../shared/ipc';
 import type { WorkspaceState } from '../shared/domain';
+import type { AiAccessSettings } from '../shared/aiAccess';
+import { AiAccessController } from './ai/accessController';
 
 // Register the image-serving scheme before app 'ready' (privileged + secure).
 protocol.registerSchemesAsPrivileged([
@@ -46,6 +48,11 @@ let dataFolder: DataFolder | null = null;
 let mainWindow: BrowserWindow | null = null;
 // How the currently-open workspace was resolved (env override vs config pointer); reported to the UI.
 let workspaceSource: WorkspaceState['source'] = 'none';
+const aiAccess = new AiAccessController({
+  getDataFolder: () =>
+    dataFolder ? { sqlitePath: dataFolder.sqlitePath, imagesDir: dataFolder.imagesDir } : null,
+  getAppVersion: () => app.getVersion(),
+});
 
 function requireDb(): Db {
   if (!db) {
@@ -150,10 +157,11 @@ function registerIpc(): void {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
   });
 
-  ipcMain.handle(IpcChannel.setWorkspaceFolder, (_event, raw: unknown): WorkspaceState => {
+  ipcMain.handle(IpcChannel.setWorkspaceFolder, async (_event, raw: unknown): Promise<WorkspaceState> => {
     const dir = workspacePathSchema.parse(raw);
     const validated = validateWorkspaceDir(dir, 'config');
     if (validated.status !== 'ready' || !validated.dataDir) return validated; // don't switch to a bad folder
+    await aiAccess.stop();
     closeWorkspace();
     writeConfig({ ...readConfig(), dataDir: validated.dataDir });
     openWorkspaceAt(validated.dataDir, 'config');
@@ -164,7 +172,22 @@ function registerIpc(): void {
     if (dataFolder) void shell.openPath(dataFolder.root);
   });
 
-  ipcMain.handle(IpcChannel.quitApp, () => app.quit());
+  ipcMain.handle(IpcChannel.quitApp, async () => {
+    await aiAccess.stop();
+    app.quit();
+  });
+
+  ipcMain.handle(IpcChannel.getAiAccessStatus, () => aiAccess.status());
+  ipcMain.handle(IpcChannel.startAiAccess, (_event, confirmFullRead: unknown) =>
+    aiAccess.start(confirmFullRead === true),
+  );
+  ipcMain.handle(IpcChannel.stopAiAccess, () => aiAccess.stop());
+  ipcMain.handle(IpcChannel.copyAiHttpConfig, () => aiAccess.copyHttpConfig());
+  ipcMain.handle(IpcChannel.getAiAccessSettings, () => aiAccess.settings());
+  ipcMain.handle(IpcChannel.saveAiAccessSettings, (_event, settings: AiAccessSettings) =>
+    aiAccess.saveSettings(settings),
+  );
+  ipcMain.handle(IpcChannel.resetAiAccessKey, () => aiAccess.resetAccessKey());
 
   ipcMain.handle(IpcChannel.ingestImageEntry, (_event, raw: unknown) => {
     const bytes = toImageBuffer(raw);
@@ -378,8 +401,10 @@ app
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    db?.close();
-    db = null;
-    app.quit();
+    void aiAccess.stop().finally(() => {
+      db?.close();
+      db = null;
+      app.quit();
+    });
   }
 });

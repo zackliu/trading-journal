@@ -11,6 +11,8 @@ extraResources:
     to: icon.ico
 asarUnpack:
   - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
 win:
   icon: build/icon.ico
   target:

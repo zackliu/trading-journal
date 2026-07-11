@@ -20,11 +20,11 @@
 5. **app 提供机制，不预置目录**：group、group 内的 tag 值、可复用图章一律由用户自定义/设计；系统不内置默认集；`date` 是唯一结构性 group。文档里的任何具体名字都只是示例。
 6. **没有特殊标注类型，tag 放置分两级**：任意 annotation 都可带任意 group 的 tag；tag 贴 **Entry 级**或 **annotation 级**，annotation 级 tag 决定浏览该 tag 时高亮哪个元素；同一事实不两处存储。**一笔的结果不是 tag**：它是 annotation 上一个可选的 typed `result`（多维、每维 string 或 number、维度用户预定义），**只用于统计、不进浏览导航**，绝不做成 `outcome` group、也绝不融进 `setup` 等 tag 值。
 7. **图片字节存一份**：截图按内容 hash 存 `images/<hash>`，DB/canvas 按 hash 引用，**不 base64 塞进 canvas JSON**。
-8. **annotation 几何用 image 像素坐标**（V1 静态截图），不绑定价格/时间轴。
+8. **截图对象与 annotation 几何统一用 page 像素坐标**（V1 静态截图），不绑定价格 / 时间轴。
 9. 标签是 `group:value`、kebab-case、稳定 id；一个分类是被查询引擎泛化匹配的 tag 值，**不是硬编码分支**。
-10. **进程边界**：Electron **main** 拥有 Entry Store、Annotation-Tag Index、Tag & Query 引擎、统计、SQLite 与图片文件（durable / query 边界）；**renderer** 拥有 Fabric 画布与渲染/视图层。二者通过一套 typed IPC 契约（store/query API）通信；renderer 不直接开 SQLite 或读写文件。
-11. **测试方式（两层）**：因 better-sqlite3 按 Electron ABI 编译,领域测试分两层——(a) **纯逻辑单测**:tag 解析、布尔查询构造、result 聚合数学等**无 native 依赖**的模块用 **Vitest** 在 Node 跑(首个纯逻辑模块出现时即引入,约 Slice 7/8);(b) **契约 / 持久化 scenario test**:store/query/stats API(领域 slice 1、2、4、5、6、7、8、9、10)通过 **Playwright + Electron** harness 从 renderer 调 `window.api.<op>` 断言领域行为,**不绕过契约直接读 SQLite**。骨架 slice(0)跑启动冒烟;画布/视图 slice(3、5、6)驱动 renderer 跑真实交互并断言派生结果。
-12. **本计划不含**：PPT 迁移（brief §10 后续研究）、可回放/实盘图表、多端同步、云后端、经纪/回测/行情。
+10. **进程边界**：Electron **main** 拥有 Entry Store、Annotation-Tag Index、Tag & Query 引擎、统计、SQLite 与图片文件（durable / query 边界）；**renderer** 拥有 Fabric 画布与渲染/视图层。二者通过一套 typed IPC 契约（store/query API）通信；renderer 不直接开 SQLite 或读写文件。Slice 9 的 AI companion 是受 main 监管的独立进程，只接收专用 `JournalReadApi` 判别联合，不接收混合 IPC、DB path 或任何 write capability。
+11. **测试方式（两层 + AI 协议边界）**：因 better-sqlite3 按 Electron ABI 编译，领域测试分两层——(a) **纯逻辑单测**：tag 解析、布尔查询构造、result 聚合数学等无 native 依赖模块用 **Vitest** 在 Node 跑；(b) **契约 / 持久化 scenario test**：Slice 1–8 的 store/query/stats API 通过 **Playwright + Electron** harness 断言领域行为，不绕过契约直接读 SQLite。Slice 9 另用真实 MCP client 覆盖 Streamable HTTP、安全拒绝、分页快照、媒体资源与 non-mutation，并由 GitHub Copilot 做真实多模态 handoff；绝不通过 renderer 的混合 `window.api` 冒充 extension 边界。
+12. **本计划不含**：PPT 迁移（brief §10 后续研究）、可回放/实盘图表、多端同步、云后端、经纪/回测/行情、内置模型或 agent。可选 AI Access 只把用户授权的当前 journal 证据交给外部兼容 agent，不构成 Trading Journal 云后端。
 
 ## 3. Slice 0：项目骨架与可运行外壳（Walking Skeleton）
 
@@ -57,7 +57,7 @@ Expect：
 
 - **Slice 0 (walking skeleton) implemented.** Runnable Electron shell: boots to a status screen, opens a portable data folder (`app.sqlite` + `images/`), and a typed `app:ping` IPC round-trips main↔renderer. Layout: `src/main` (Electron main, data folder, SQLite open + ordered migration runner), `src/preload` (contextBridge `window.api`), `src/renderer` (React shell: `main.tsx` + `App.tsx`), `src/shared/` (typed IPC + domain contracts), `tests/e2e/boot.spec.ts` (Playwright + Electron boot smoke test).
 - Toolchain: **electron-vite** (separate main/preload/renderer builds) + **Vite** + **TypeScript**; renderer UI = **React** (`@vitejs/plugin-react`; a strict CSP is injected into the production build only, so dev keeps HMR/react-refresh); IPC payloads validated at the main-process boundary with **zod**; native `better-sqlite3` rebuilt for Electron's ABI via `electron-builder install-app-deps` (runs on `postinstall`); packaging via **electron-builder** (`--dir`); e2e via **@playwright/test** `_electron` (drives the real app, no browser download).
-- Decided tech: renderer UI = **React** (Vite-bundled, canvas kept imperative outside React); canvas = **Fabric.js** v6 (MIT; imperative, mounted outside React); shell = **Electron** (JS/TS, no Rust); storage = local **SQLite** (better-sqlite3) for entries/annotations/tags/results/views/stats + an `images/` folder for screenshots (referenced by hash, not base64-embedded), all under one portable data folder. Migration (reproduce the user's PPT annotations — boxes, text, arrows — as native editable annotations, not flat screenshots; high-difficulty) remains deferred research (see §14 与 brief 技术决策). Group/result vocabulary (which groups/tags/result dimensions exist) is user-defined at runtime, not a project decision. Do not assume other tech until it is chosen and recorded in this note.
+- Decided tech: renderer UI = **React** (Vite-bundled, canvas kept imperative outside React); canvas = **Fabric.js** v6 (MIT; imperative, mounted outside React); shell = **Electron** (JS/TS, no Rust); storage = local **SQLite** (better-sqlite3) for entries/annotations/tags/results/views/stats + an `images/` folder for screenshots (referenced by hash, not base64-embedded), all under one portable data folder. Migration (reproduce the user's PPT annotations — boxes, text, arrows — as native editable annotations, not flat screenshots; high-difficulty) remains deferred research in the brief. Group/result vocabulary (which groups/tags/result dimensions exist) is user-defined at runtime, not a project decision. Do not assume other tech until it is chosen and recorded in this note.
 - Verified commands (Windows, Node 22.22, npm 10.9): bootstrap `npm install` (postinstall rebuilds better-sqlite3 for Electron); build `npm run build`; typecheck `npm run typecheck`; lint `npm run lint`; run `npm run dev`; e2e `npm test` (build + Playwright suite: boot + store + ingest + editor scenarios), or `npm run test:e2e` after a prior `npm run build`; package `npm run package` (→ `dist/win-unpacked/TradingJournal.exe`).
 
 ## 4. Slice 1：Durable Entry & Annotation-Tag Store
@@ -156,7 +156,7 @@ Expect：
 - **单一 Office 式 Ribbon（无模式切换、无返回）**：顶部常驻一条 Ribbon（品牌 + 标签页 `Home / Draw / Tags / Browse / Stats`，每页内是带标题的分组命令），底部一条状态条（健康点 + 保存态「Saving… / All changes saved」 + zoom 控件）。命令按上下文启用 / 禁用：无复盘打开时 `Draw` 工具与删除置灰，无选中对象时删除所选 / 排列置灰；打开复盘自动切到 `Draw` 页。**编辑即自动保存**，故无「未保存」门控；手动 Save 按钮在 `Home` 页、全局 Ctrl+S 为习惯性「立即保存」（见 §8）。
 - **主体左栏 + 中间画布，无 Daily / 编辑器两态切换**：左栏（group→tag 导航 + 复盘缩略图廊）｜中间（打开复盘时是 Canvas 编辑器，否则「开始复盘」空状态）。同一外壳常驻，打开复盘即在中间渲染画布，不再有「进编辑器 / 返回」两态。**Stamp 印章条不是独立右栏——自 Slice 5 起它并入中间这张画布**（复盘页右侧、一条细分隔线、共享同一缩放，见 §8）。
 - **本 slice 已接行为的部分**：`Home`（新建 / 保存 / 删除复盘）、`Draw`（画布工具 / 样式 / 排列，见 B）、左栏复盘缩略图廊 + 右键「删除复盘」、状态栏 zoom 控件。
-- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页（Slice 6 起改为 `Review` 页 = entry 级 tag + 快捷选择）、`Home` 的 Settings 词表窗口与选中标注才出现的 `Annotation` 上下文页（Slice 6；词表演化 Slice 9）、左栏按单一 group 维度 pivot 分桶的**浏览行为**与 `Browse` 页（Slice 6）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 8）。标注的 tag 编辑自 Slice 6 起走 `Annotation` 上下文页，result / link 走 Slice 4 的右键浮窗。
+- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页（Slice 6 起改为 `Review` 页 = entry 级 tag + 快捷选择）、`Home` 的 Settings 词表窗口与选中标注才出现的 `Annotation` 上下文页（Slice 6）、左栏按单一 group 维度 pivot 分桶的**浏览行为**与 `Browse` 页（Slice 6）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 8）。标注的 tag 编辑自 Slice 6 起走 `Annotation` 上下文页，result / link 走 Slice 4 的右键浮窗。
 - 这些占位是**非功能骨架**（图标、按钮、空面板、区域标题），真正行为在各自 slice 接入，不在本 slice 实现。
 
 **B. Canvas 标注层（本 slice 真正实现的能力）**
@@ -259,7 +259,7 @@ Expect：
 - 浮窗也能给该 annotation 设 / 改 / 清可选的 `result`：从用户预定义的 result 维度里选维度并填值，值类型为 string 或 number（由维度定义决定）。result 只用于统计、不进浏览导航。
 - result 维度管理：用户可预定义 result 维度（id、label、type ∈ string | number）；app 不预置维度。
 - 笔记 = 文本框 annotation：其文本即笔记，本身也能打 tag（右键同一浮窗设置）；没有独立 note 字段。
-- annotation 的 geometry 用 image 像素坐标；一个 Entry 可含多个带 tag 的 annotation。
+- annotation 的 geometry 用 page 像素坐标；一个 Entry 可含多个截图对象与多个带 tag 的 annotation。
 - annotation links：把一个 annotation 单向关联到另一个 annotation（跨图对比）；反向「谁 link 到我」由对 links 的查询得到，不单独存反向边。
 - 写入随 Entry 同步进 Annotation-Tag Index（tag 进 `annotation_tags`、result 进 `annotation_results`）。
 - **不再有常驻 Inspector 右栏**——右栏让位给 Stamp 库（Slice 5）；标注的 tag / result / link 编辑一律走右键浮窗。
@@ -417,7 +417,7 @@ Expect：
 - `Home` 页一个 **Settings** 按钮 → **独立的模态窗口**：列出所有 group（含 label、pinned）与各自的值，可**新增 / 删除 group、新增 / 删除值、勾「钉到快捷选择」**（pinned）。**新建值只在这里做**（Ribbon 只选不建）。
 - **可拖排序**：group 与 group 内的值都渲染成带 ☰ 拖柄的行，**按住拖柄上下拖**即可改顺序（`tag_groups` / `tag_values` 的 `sort` 落库，migration `005`）；Ribbon 一律按此顺序渲染。拖动时被拖行跟随光标、其余行平滑让位（CSS transform 过渡），松手落位、写回顺序。
 - 用户输入自然文本（见 A）：值 / group 名都键入人类写法，id 由 `slugify` 派生、原文存 label。
-- 本 slice 只做**声明 / 删除 / 排序**；**重命名 / 合并 + 批量迁移引用**这类演化留给 Slice 9。
+- 本 slice 的词表能力包含声明、排序、稳定 id 下改显示名、软归档 / 恢复与使用计数；不提供合并或改 id 的批量引用迁移。
 - 全部经 store API，renderer 不直接开 SQLite。
 
 **C. Review 页与 Annotation 上下文页（同一套快捷标签控件）**
@@ -535,6 +535,7 @@ Expect：
 - **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（出现但**不抢占 `Draw`**），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.15s 柔和琥珀光晕**（device-space 分层 shadow-blur，短促 bloom 后向外溢出淡出；无硬描边、不覆盖对象内部；派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Links**（result 编辑迁至 `Annotation` 页）。
 - **Ribbon 双行版式**：band 固定高（92px）、**跨所有页等高**（`tests/e2e/ribbon.spec.ts` 断言）；`Draw` 页刻意排成**双行簇**（Tools 4+3、Stroke / Fill&opacity / Text / Edit / Arrange 皆两行；组名作**底部小标题**），为将来扩容留量；`Review` / `Annotation` 的 QuickTag 直接渲染，chip **两行环绕**、组名同样落到**底部小标题**，长 chip 不半截裁切；`BrowserWindow` 设 `minWidth: 980`（band 内容 966px），保证缩窗时 `Draw` **永不横向溢出**。
 - **测试**：`tests/e2e/vocab-browse.spec.ts`（11 项：注册表声明 / 删除、entry tag 存查且 `date` 不被覆盖、并集去重 + 计数 + 零复制、`Review` 一键打 tag → 进桶、Settings 自然文本 → slug id + label、**排序落库并跨重启持久**、**溢出组收成搜索伸缩板并从全表打 tag**、`Annotation` 上下文页选中即现 + 打 tag、All reviews 年-月且 `date` 不入 Settings/pivot、折叠 / 全部展开、高亮派生不落库）；`annotation-popover` 与 `stamp-library` 改为经 Ribbon 快捷控件打 tag（浮窗只留 result / link）；`tests/e2e/ribbon.spec.ts` 断言 band 跨五页**等高不变量**。**47/47 e2e 全绿**。
+- **词表演化基线已并入本 slice**：migration `007` 给 group / value / result dimension / result value 注册表增加 `archived`；重命名只改 label、稳定 id 不变；删除改为软归档并可 Restore，使用引用与计数不动；有使用的项先二次确认；归档 tag 可永久清除注册行但绝不级联 `entry_tags` / `annotation_tags`，result dimension 因类型与 FK 契约不提供硬删。`listGroups` / `listResultVocabulary` 返回 distinct-entry 使用计数。未实现的合并 / 改 id 不再列为后续路线。
 - 已验证命令：`npm run typecheck`、`npm run lint`、`npm run build`、`npm test`（Playwright + Electron，47 项）。
 
 ## 10. Slice 7：View 查询引擎（两维度筛选 + 保存的视图）
@@ -627,153 +628,561 @@ Expect：
 - 已验证命令：`npm run typecheck`、`npm run lint`、`npm run build`、`npm test`（Playwright + Electron，55 项）。
 - **迭代 2（UI）已落地。** Ribbon `Browse` 页更名为 **`View`**（等高 band 不变；`Filter` 组「Edit filter… / Clear / 摘要」+ `Saved views` 组快速加载下拉）；`shell/ViewBuilder.tsx` 两栏模态构建器——**Entry conditions（whole review）**与 **Annotation conditions（one trade）**，各 group 下值作 `vchip` 开关，Annotation 栏含 **result 谓词**（string→`distinctResultValues` 取到的值 chips、number→min/max），底部**保存 / 加载 / 删除**视图；左栏 `GroupBrowser` 顶部 **filter bar**（entry chip 绿、annotation chip 蓝、Clear），buckets 在**筛选幸存者**上分桶、计数随上下文；打开命中复盘时 `canvasController.flashAnnotationHighlight(ids)` 高亮**共现命中的那枚标注**（沿用琥珀光晕、派生不落库）。新增只读 IPC `view:result-values`。测试 `tests/e2e/view-ui.spec.ts`（2 项：构建器收窄 + 双色 chip、SavedView 列入选择器且重跑）+ `ribbon.spec.ts` 更名断言。
 
-## 11. Slice 8：Statistics
+## 11. Slice 8：Statistics —— 从自己的复盘证据回答一个问题
 
-目标：用户能先用分类 tag 的布尔组合切片，再对命中 annotation 的 typed `result` 维度做聚合——string 维度给计数/占比，number 维度给均值与阈值命中率，并可按一个或多个分类 tag 分组。数据实时反映 tag 与 result。
+目标：Stats 不是一屏固定 KPI，也不是通用 BI / 回测工具；它把用户已经记录的分类与 result 组成一个短而完整的复盘闭环：**圈定结果样本 → 选择一个 result 问题 → 可选一个分类 group 做对比 → 回到原图核对证据**。用户能回答「这个分类下的结果分布怎样」「在不同市场背景下是否不同」，同时始终看得见样本量、缺失值和原始复盘，不被一个脱离证据的百分比误导。
 
-**用户动作流程与直觉逻辑**：用户先用几个 tag 圈出一批交易，再问「这类形态我平均赚几个 R、胜率多少」，数字当场算出来——直觉上这是**对我自己手记结果的描述性统计**，不是回测、不是预测，所以 result 只在这里被聚合、绝不混进浏览导航。
+### 用户动作流程与直觉逻辑
 
-实现范围：
+1. 用户先在 View 中用 Entry 条件和 Annotation 条件圈出自己关心的分类，例如某种整图背景 + 某类标注。点击 `Stats` 后，Stats **一次性复制当前 View 的分类条件**；若当前 View 含 result predicates，Stats 不继承它们，并明确提示「已忽略 N 个结果筛选，避免只统计预先挑过的结果」。之后 Stats 配置在本次会话内独立保留；`Use current View` 才重新导入。
+2. 用户在 Ribbon 中只处理四件事：`Sample`（查看 / 编辑分类范围）、`Period`（All / 30D / 90D / Custom）、`Measure`（一次一个 result 维度）、`Compare`（None 或一个分类 group）。number measure 可再填一个中性条件，如 `≥ 1` 或 `≤ 0`；系统称其为 **condition match**，不擅自解释成 win。
+3. 主区切到全宽 Stats workspace，不把报表塞进 Ribbon，也不在 canvas 上盖卡片。顶部先显示口径：`scope Entries / population samples / contributing Entries / recorded / missing / coverage`；用户先知道「这些数字由多少记录构成」，再看均值或占比。
+4. Overall 先回答一个问题。number 显示 mean、median、可选 threshold 的 `matched / recorded`；string 用带精确 count / recorded 百分比的水平分布条。所有百分比同时显示分子 / 分母，`recorded = 0` 时显示 N/A，missing 永远不当作 0 或亏损。
+5. 若选择 Compare，下面只按**一个** group 展开对比。每行是该 group 一个 value 的独立 membership cohort，按词表顺序排列，不按表现排名；另有 `No value` 行。若同一样本带同 group 多个值，它会出现在多行，页面明确提示「N 个样本出现在多个 rows；rows 不应相加」。
+6. 点击 Overall、cohort、string segment、threshold matched / not matched、recorded / missing 的 `Review examples`，切回既有左栏 + canvas，并显示固定返回条 `Statistics examples: … / Back to Statistics`。examples 是对当前 StatsQuery 的临时重跑，不保存为 SavedView、不复制 Entry、不建立第二套 gallery；返回后恢复 Stats 的 measure、compare、threshold 与滚动位置。由 result 选出的 examples **不触发 result-derived highlight**。
 
-- 从 Annotation-Tag Index 聚合：先按分类 tag 的布尔组合筛出一批 annotation，再对其 `result` 维度聚合。
-- 度量：string result 维度 → 每个值的计数与占比；number result 维度 → 均值（及可选 min/max/median）与阈值命中率（如 R 倍数 ≥ 1 的占比）。
-- 可选按一个或多个分类 tag（group 值）分组，得到分组 × 度量的表。
-- 统计只读索引（`annotation_tags` + `annotation_results` + entry tags），不读 canvas JSON；这是对已手工记录的 result 的描述性查询，不是回测。
+### 设计取舍
 
-Scenario-based test：`scenario: results are aggregated over a tag-filtered population`
+- **不用固定交易 dashboard**：系统不知道哪个 string 值代表 win，也不知道 number 维度是否「越大越好」；因此不硬编码胜率、Profit Factor、Sharpe、drawdown、equity curve 或 MAE/MFE。用户若定义 string outcome，会自然看到每个值的占比；若定义 number R，可用 mean / median 和自定义 threshold 回答相同问题。
+- **不用多轴 pivot**：Slice 8 最多 Compare 一个 group。多个 group × 多个 result 的任意透视会把日常复盘变成 BI 工具，也会快速产生无法解释的小样本格子。
+- **不自动下结论**：统计只描述手工记录，不做显著性检验、预测、排名或「最佳 setup」建议。`recordedCount < 10` 时显示中性提示「Very small sample — review the examples」，但不隐藏数字。
+- **证据优先**：每个主要数字都能回看构成它的原始 Entries；Stats 不保存第二份 artifact，也不把聚合结果落库。
 
-Given：
+### Population 与分母口径
 
-- 若干 annotation 带某分类 group 的 tag（如 setup），并带 typed result（number 维度如 R 倍数、string 维度如 回调深度）。
+- 统计单位始终是一枚 annotation（UI 称「结果样本」），不是 Entry。同一 Entry 可贡献多个样本；不得称为系统识别出的「全部交易」，因为领域模型没有特殊 Trade 类型。
+- Entry predicates 与日期先筛 Entries。
+- Annotation predicates 非空时，population = 在这些 Entries 中满足全部 annotation 分类 predicates 的 annotations；这些 annotations 即使尚未填写所选 measure，也留在 population，因而 missing / coverage 有真实分母。
+- Annotation predicates 为空时，population 显式采用 `active-result-bearing`：在 Entry / 日期范围内，至少带任一**活跃 result dimension**记录的 annotations。它只代表「已有某项结果记录的样本」；完全没填任何 result 的 annotation 不进入此默认 population，也不把纯说明文字 / 图形误算成样本。
+- `scopeEntryCount` = Entry / 日期条件命中的 Entries；`populationCount` = population annotations；`contributingEntryCount` = population 所在的 distinct Entries；`recordedCount` = 所选 dimension 有值的 population；`missingCount = populationCount - recordedCount`；`coverage = recordedCount / populationCount`。
+- `active-result-bearing` 中的「活跃」固定为查询执行时 `result_dimensions.archived = 0`。该默认 population 的 missing / coverage 文案必须写成 `Not recorded for <measure> / result-bearing samples`，因为系统不知道所选维度是否适用于并集里的每个样本；只有 `matching-annotations` 由用户用分类 predicates 明确定义 eligible population 后，UI 才可称为该范围的填写 coverage。
+- number mean / median / threshold rate 与 string 分布都只以 `recordedCount` 为分母。stored 但已不在活跃预设词表中的 string 值仍必须列出，保证各 segment 与 recordedCount 对账。
+- Period 使用结构性 `date` 的闭区间 calendar date；`30D` = 今天及之前 29 天，`90D` 同理。统一共享 `effectiveDate = entry_tags 中的 date tag ?? createdAt 的本地 calendar date` 解析器，report 与 examples 必须使用同一结果。默认 `All`，不暗中缩小样本。
 
-Expect：
+### Compare 语义
 
-- 给定一个分类 tag 切片（如 `setup:<value>`），number 维度给出均值与阈值命中率（如 R 倍数 ≥ 1 的占比），string 维度给出每个值的计数与占比。
-- 数字与 Annotation-Tag Index 一致，不依赖 canvas JSON。
+- `compareBy.level = entry`：population annotation 继承其 Entry 对该 group 的 membership，适合比较整图 / 交易日背景。
+- `compareBy.level = annotation`：只看同一 population annotation 自己的 tag membership，适合比较样本自身分类。
+- group 可多值，所以 cohort 独立、允许重叠。report 返回：
+  - `multiAssignedPopulationCount`：属于该 group 两个以上 values 的 unique population annotations；
+  - `unassignedPopulationCount`：该 level 下没有该 group value 的 population annotations。
+- cohort values 从 population 中实际存在的 `entry_tags / annotation_tags` membership 生成：活跃值按用户词表顺序，仍被使用的 archived / unregistered 值随后列出并标记，最后才是 `No value`。`No value` 只表示该 level 完全没有这个 group 的 tag；归档值绝不能被算作 No value。
+- UI 每行同时显示 `population n / distinct Entries / recorded / coverage`；不显示 cohort 合计，也不要求 cohort 汇总等于 Overall。Overall 始终按 unique population annotations 计算。
 
-Scenario-based test：`scenario: grouping by a classification tag splits the result aggregates`
+### 领域契约
 
-Given：
+```ts
+interface StatsDateRange {
+  from: string; // YYYY-MM-DD, inclusive
+  to: string;   // YYYY-MM-DD, inclusive
+}
 
-- annotation 分属不同 `setup` 值，各带 result。
+type StatsPopulation =
+  | { kind: 'matching-annotations'; predicates: TagPredicate[] }
+  | { kind: 'active-result-bearing' };
 
-Expect：
+interface StatsScope {
+  entry: TagPredicate[];
+  population: StatsPopulation;
+  dateRange?: StatsDateRange;
+}
 
-- 按 `setup` 分组时，每个 setup 值给出各自的 result 聚合（number 均值/命中率、string 计数/占比）。
-- 与不分组的总体聚合口径一致（分组汇总回到总体）。
+interface StatsThreshold {
+  op: 'gte' | 'lte';
+  value: number;
+}
 
-Scenario-based test：`scenario: editing an annotation's result updates the statistics`
+interface StatsCompareBy {
+  level: 'entry' | 'annotation';
+  group: string;
+}
 
-Given：
+interface StatsQuery {
+  scope: StatsScope;
+  dimension: string;
+  threshold?: StatsThreshold; // number dimension only
+  compareBy?: StatsCompareBy; // at most one group
+}
+```
 
-- 一个 annotation 的某 number result（如 R 倍数）从 1.0 改成 2.0，或某 string result 值改变。
+```ts
+interface StatsSampleCounts {
+  contributingEntryCount: number;
+  populationCount: number;
+  recordedCount: number;
+  missingCount: number;
+  coverage: number | null; // populationCount = 0 -> null
+}
 
-Expect：
+interface NumberAggregate {
+  kind: 'number';
+  mean: number | null;
+  median: number | null;
+  threshold?: {
+    op: 'gte' | 'lte';
+    value: number;
+    matchCount: number;
+    rate: number | null; // recordedCount = 0 -> null
+  };
+}
 
-- 相关聚合（均值、阈值命中率、计数/占比）随之变化，无需手工刷新。
+interface StringAggregate {
+  kind: 'string';
+  segments: Array<{
+    value: string;
+    label?: string;
+    archivedOrUnregistered: boolean;
+    count: number;
+    rate: number | null; // recordedCount = 0 -> null
+  }>;
+}
 
-## 12. Slice 9：词表演化与 result 维度管理（post-MVP）
+type StatsAggregate = NumberAggregate | StringAggregate;
 
-目标：在 Slice 6 已落地的词表注册表（声明 / 删除 group 与值、钉快捷选择）之上，让用户管理**分类词表**（group 与其 tag 值）和 **result 维度**随时间的**演化**——重命名、合并，且已有引用一致更新、计数守恒。不在 brief §8 MVP 内(post-MVP 硬化)。
+interface StatsCohort extends StatsSampleCounts {
+  value: string | null; // null = No value
+  label: string;
+  archivedOrUnregistered: boolean;
+  aggregate: StatsAggregate;
+}
 
-**用户动作流程与直觉逻辑**：用了一阵后，用户想「把这两个其实是一回事的 tag 合并」「给这个 group 改个名」——改完所有旧引用自动跟着更新、计数守恒。直觉上「我在整理我的**词汇表**，不是逐张去改图」。
+interface StatsReport {
+  measure: { id: string; label: string; type: 'string' | 'number' };
+  scopeEntryCount: number;
+  counts: StatsSampleCounts;
+  overall: StatsAggregate;
+  cohorts?: StatsCohort[];
+  overlap?: {
+    multiAssignedPopulationCount: number;
+    unassignedPopulationCount: number;
+  };
+}
 
-实现范围：
+type StatsExamplesSegment =
+  | { kind: 'all' }
+  | { kind: 'recorded' }
+  | { kind: 'missing' }
+  | { kind: 'string-value'; value: string }
+  | { kind: 'threshold-match' }
+  | { kind: 'threshold-miss' }; // recorded but not matched; never includes missing
 
-- 在 Slice 6 的 Settings 之上，为每个 group / 值 / result 维度显示**使用计数**（读 Annotation-Tag Index / entry tags / annotation_results），供演化操作参考。
-- 改显示名：**只改显示 label，稳定 id 不变**（就地铅笔编辑）；改 id（含批量迁移全部引用）留待后续。
-- 合并两个 tag 值（把 A 的引用并入 B 并删除 A）；合并 / 删除 result 维度同理。
-- 删除 group / tag 值 / result 维度 = **软删除（归档）**：对**有使用**的项二次确认后置 `archived=1`（隐藏出快捷选择 / pivot / 活跃 Settings），引用（`entry_tags` / `annotation_tags` / `annotation_results`）与计数**不动**、可从 Archived 恢复；未使用的项直接归档。**不做**破坏性级联移除引用。
-- 全部经 store API,索引、计数、统计随之一致。
+interface StatsExamplesQuery {
+  stats: StatsQuery;
+  cohortValue?: string | null;
+  segment: StatsExamplesSegment;
+}
 
-Scenario-based test：`scenario: renaming a tag value updates every reference and its query`
+interface StatsExamplesEntry {
+  entryId: string;
+  annotationIds: string[];
+}
+```
 
-Given：
+`StatsQuery` validation 固定：`matching-annotations.predicates` 非空；date 是真实 `YYYY-MM-DD` 且 `from <= to`；dimension 当前活跃；threshold 仅允许 number dimension；compare group 当前可用。`StatsReport` 的 aggregate 必须与 `measure.type` 同 kind；mean / median / rate / coverage 在零分母时一律为 `null`，不返回 0。
 
-- 若干 annotation / entry 带 `<group>:<old>`。
+`StatsExamplesQuery` 返回 exact `StatsExamplesEntry[]` membership。它是只读、transient 的统计 drill-down contract，不扩展 SavedView、不持久化命中 ID。renderer 用既有 rail / canvas 展示 distinct Entries，并带 Back to Statistics session；result 不产生 brief-highlight。examples bar 显示 `This review: N matching samples` 与 Previous / Next；进入某 Entry 时对当前匹配 annotation 使用普通 canvas selection 定位（非光晕、非 result highlight、非持久化），同一 Entry 有多枚样本时可逐枚切换。
 
-Expect：
+### UI 结构
 
-- 重命名为 `<group>:<new>` 后,旧值查询为空、新值查询命中全部原对象,计数守恒,`entries` 无复制。
+- `Stats` tab 是分析 workspace，而不是普通 canvas 命令页：选中时 body 使用完整报表布局；切回 Home / Draw / Review / View 即回 canvas。Stats 状态留在 App session，不写 journal。
+- Ribbon `Stats` band：
+  - `Sample`：口径摘要、`Edit sample…`、`Use current View`；
+  - `Period`：All / 30D / 90D / Custom segmented control；
+  - `Measure`：活跃 result dimension 下拉；number 时出现 `≥ / ≤ + value`；
+  - `Compare`：None，或按分组标题列出的 `Review tag · <group>` / `Sample tag · <group>`。
+- 主报表是不嵌套卡片的全宽区段：Population 摘要带 → Overall → Compare table / distribution。number compare 用紧凑表格；string overall 用水平条，compare 用 100% stacked distribution + 精确 count / coverage。
+- 空态：
+  - 无活跃 result dimension：`No result dimensions yet` + `Define result…`；
+  - scope 无 population：`No samples match this scope` + `Edit sample` / `Review matching entries`；
+  - population 有值但 selected dimension recorded = 0：显示真实 population 与 0% coverage，提供 `Choose another result` / `Review missing examples`，不显示 0 均值；
+  - 查询失败：明确错误 + Retry，不回退旧 report。
 
-Scenario-based test：`scenario: merging two tag values consolidates references`
+### 数据与边界
 
-Given：
+- Stats 只读 `entries.created_at`、`entry_tags`（含结构性 date）、`annotations`、`annotation_tags`、`annotation_results`、result dimension registry；绝不扫描 canvas JSON。
+- 聚合与 examples 查询在 Electron main 的 Tag & Query Engine 边界，经 typed IPC + zod validation 暴露；renderer 不直接读 SQLite。
+- 不新增或修改 Entry / Annotation / canvas_json 持久化格式；StatsQuery、report、examples session 均不落 journal DB，因此 Slice 8 不需要 schema migration。
+- median、rate、overlap 等纯数学放入无 native 依赖的纯函数模块，并在 Slice 8A 引入 Vitest；SQLite 查询只负责产生结构化 population rows，不在 renderer 做 SQL 语义。
 
-- `<group>:<a>` 命中 m 个、`<group>:<b>` 命中 n 个（对象可能重叠）。
+### 实现分解
 
-Expect：
+1. **Slice 8A — 统计口径与聚合契约**：定义 StatsQuery / StatsReport / validation；从索引读取 population rows；实现 pure aggregate（number / string / median / threshold / coverage / overlap）；typed IPC；领域测试。无 UI、无 schema 变化。
+2. **Slice 8B — Overall workspace + evidence loop**：让 Ribbon Stats 控制 App workspace；实现 Sample scope、Period、Measure、number threshold、population 摘要与 Overall；同时交付 Overall / recorded / missing / string segment / threshold examples、普通 selection 定位与 Back to Statistics。session 保留配置；完整空态与错误态。
+3. **Slice 8C — Compare**：最多一个 group 的 entry / annotation cohort、实际 membership values、archived 标记、No value / overlap 提示与 cohort examples；复用 8B 已验证的 evidence loop。
 
-- 合并 a→b 后,`<group>:<b>` 命中去重并集,`<group>:<a>` 消失,计数正确。
+### Scenario-based tests
 
-Scenario-based test：`scenario: deleting a result dimension removes it from statistics`
+`scenario: default statistics disclose their population and coverage`
 
-Given：
+- 无 annotation predicates 时，只把带任一活跃 result 的 annotations 放入 population；纯笔记 / 图形不进入。
+- report 同时给出 scopeEntryCount、populationCount、contributingEntryCount、recorded、missing、coverage；missing 不进入 measure 分母；默认 population 的文案不把 missing 称为「应该填写却漏填」。
 
-- 一个 number result 维度被若干 annotation 使用。
+`scenario: number and string results use explicit denominators`
 
-Expect：
+- number 覆盖负数、0、奇 / 偶数样本 median、gte / lte threshold；mean / median / rate 只基于 recorded。
+- string 每值 count / recorded rate 对账；归档预设值若仍有 recorded rows 也出现在分布中。
 
-- 软删除（归档）后该维度不在活跃词表 / 统计中列出，但 `annotation_results` 行**保留**（可 Restore 复原），其它维度不受影响。
+`scenario: statistics inherit classification scope but never result selection bias`
 
-**实现状态（重命名 + 软删除 + 二次确认 + 归档永久删除已落地；合并 / 改 id 迁移未做。70/70 e2e 全绿）**
+- 从同时含 entry tag、annotation tag、result predicates 的 View 进入 Stats；只复制两级分类条件，显示忽略 result filter 的提示。
+- threshold 只产生 matched 指标，不缩小 Overall denominator。
 
-- migration `007`（`user_version` → 7）给 `tag_groups` / `tag_values` / `result_dimensions` / `result_dimension_values` 各加 `archived INTEGER NOT NULL DEFAULT 0` 列。
-- **重命名 = 只改显示 label，稳定 id 不变**：`EditableName`（铅笔 → 就地输入，Enter/失焦提交、Esc 取消）复用 `defineGroup` / `defineValue` / `defineResultDimension` 的 upsert（同 id + 新 label）。因 `ON CONFLICT DO UPDATE … archived = 0`，「声明」同时**复活**同 id 的归档项（Add 重新输入即恢复）。result **值**逐字存储、其本身即 label，故不提供重命名。
-- **删除 = 软删除（归档）**：`deleteGroup` / `deleteValue` / `deleteResultDimension` / `deleteResultValue` 改为 `UPDATE archived = 1`；`listGroups` / `listResultVocabulary` 过滤 `archived = 0`；`restore*` 置回 0；`listArchivedGroups` / `listArchivedResults` 列出归档项。引用与计数完全不动——归档纯粹是词表层。
-- **对有使用的项二次确认**：Settings 内删除按钮在 `count > 0` 时弹 `ConfirmDialog`（"N reviews use this…"，可 Cancel / Archive），未使用项直接软删；两个 Settings 底部有可折叠 **Archived** 区，每项带 Restore。
-- **归档项永久删除（“清空回收站”，仅 tag group/value）**：Archived 区每个归档 tag 行除 Restore 外还有一个垃圾桶按钮，直接 `DELETE FROM tag_groups/tag_values WHERE … AND archived = 1`（`purgeGroup` / `purgeValue`，IPC `vocab:purge-group` / `vocab:purge-value`）。**只清词表注册行、绝不级联**到 `entry_tags` / `annotation_tags`（tag 用法与注册表本就无 FK，删组仅在注册表内 FK 级联到其值声明）。**result 维度不做永久删除**：`annotation_results.dimension_id` 是 RESTRICT 外键且投影时需维度类型在册，硬删会违约/破坏重存，故 result 归档区维持 Restore-only。
-- **使用计数**：`listGroups` 每值 distinct-entry 计数（Slice 6 已有）；result 现每维度 + 每值 distinct-entry 计数（`countEntriesForDimension` / `countEntriesForResultValue`，读 `annotation_results`），`ResultDimensionView` / `ResultDimensionValue` 带 `count`。
-- 新增 domain 契约：`ArchivedVocab` / `ArchivedResults`（+ 其元素类型）；IPC 增 `vocab:restore-group` / `vocab:restore-value` / `vocab:list-archived` / `result:restore-dimension` / `result:restore-value` / `result:list-archived`。
-- **未做（留本 slice 续做）**：改 id 的批量引用迁移、合并两个 tag 值 / result 维度。
-- 验证命令：`npm run typecheck && npm run lint && npm run build && npx playwright test`。测试：重写 `result-vocab.spec.ts` 的删除断言为软删 / 归档 / 恢复 / 重命名保 id+用量；`vocab-manage.spec.ts` 覆盖重命名只改 label 保 id、未使用值静默归档 + 恢复、有使用值二次确认 + 归档 + 恢复且引用不动，以及**归档 tag 永久删除只清注册行、不级联 entry/annotation 用法**（含垃圾桶按钮 UI）。
+`scenario: comparing by a multi-value group keeps cohorts honest`
 
-## 13. Slice 10：编辑与生命周期（post-MVP）
+- 分别验证 entry-level 与 annotation-level membership；同一样本多值时进入多行；No value、multiAssigned、unassigned 正确。
+- 活跃值、仍被使用的 archived / unregistered 值、No value 顺序和对账正确；归档 membership 不进入 No value。
+- Overall 按 unique population 计算；cohort rows 允许重叠，不断言 rows 汇总等于 Overall，也不按表现排序。
 
-目标：在 Slice 3 已实现的「删除复盘」（左栏右键缩略图 → 删 `entries` 行 + DB 外键 `ON DELETE CASCADE` 自动清 tag / annotation / result 投影）之上，补齐它未覆盖的两件事——**图片按引用计数回收**，以及**改 / 删单个 annotation 的 tag 与 result**；系统保持索引、统计与图片资产一致。不在 brief §8 MVP 内。
+`scenario: editing a result updates the live report`
 
-**用户动作流程与直觉逻辑**：用户删掉一张复盘、或改掉某个标注的结果，系统悄悄保持一致——共享底图不会被误删、统计跟着变。直觉上「删就删干净、改就到处都对」，他不必操心底层残留。
+- number / string result 修改或清除后，recorded、missing、coverage、aggregate 与 cohort 实时变化；不需手工刷新，Entry 数不变。
 
-实现范围：
+`scenario: statistics examples return to the source evidence without copies`
 
-- **图片引用计数 GC**：删除 Entry 时，`images/<hash>` 仅当无其它 Entry 再引用该 hash 时才回收，避免误删共享底图（当前 Slice 3 的删除只清 DB 行，不回收孤儿图片字节）。
-- 编辑 annotation：改 / 删其 tag、改 / 清其 result,投影与计数、统计同步（打 tag / 设 result 的新增在 Slice 4,此处补删除与批量）。
-- 删除单个 annotation：从画布与索引一并移除;指向它的 link 反向查询相应失效。
-- 全程经 store API,不直接改 canvas JSON 做查询 / 统计。
+- Overall / cohort / string segment（含具体 value）/ threshold / missing drill-down 返回 exact Entry + annotation membership；threshold miss 不含 missing；一张 Entry 多枚样本时可逐枚普通选中定位；左栏每个 Entry 仍只有一个 durable row。
+- examples 不保存为 SavedView，不改变 Stats 配置，不持久化命中 ID；Back 恢复 Stats；result 条件不触发 canvas brief-highlight。
 
-Scenario-based test：`scenario: a shared image is kept until its last entry is gone`
+`scenario: date presets use the structural review date`
 
-Given：
+- All / 30D / 90D / Custom 使用闭区间 date；边界日计入；无 date 的旧 Entry 按 createdAt-day fallback；examples 与 report membership 完全一致。
 
-- 两个 Entry 引用同一 `images/<hash>`。
+### 明确不做
 
-Expect：
+- 固定内置 result 维度、win 值或 R 阈值；Profit Factor / Sharpe / drawdown / equity curve / MAE / MFE。
+- 两个以上 compare groups、多维 pivot、相关性矩阵、自动排名、显著性检验、AI 交易建议。
+- 把 result 变成 tag、browse bucket 或 highlight；把 annotation 特判成 TradeMarker；复制 Entry 来保存报表或 examples。
 
-- 删除其一后该 hash 文件仍在；删除最后一个引用者后才回收。
+## 12. Slice 9：Read-only AI Access Extension（post-MVP）
 
-Scenario-based test：`scenario: clearing an annotation's result updates statistics`
+目标：用户可以让**自己选择、自己信任的兼容 agent**读取当前 Trading Journal 中的结构化复盘与视觉证据，帮助完成近期复盘、分类对比、反例 / 离群样本检查、相似案例回看、跨图 link 追踪与数据完整性审计。Trading Journal 只提供本机、按需、可撤销的只读 MCP 数据能力；它不内置模型、不绑定供应商、不替用户保存 AI 结论，并且**永远不向 agent 暴露任何 journal write 能力**。本 slice 按用户要求先于 Slice 8 落地；Slice 8 未实现期间不暴露 statistics / data-gaps 空壳 tool。
 
-Given：
+这里的 extension 是一个**第一方可选 companion package / process**，不是通用第三方插件平台。用户可以使用任何通过支持矩阵验证、能连接本 extension Streamable HTTP MCP 能力的 agent；不承诺所有 agent 都支持 Authorization header、Resources 或 image content。
 
-- 一个 annotation 带一个 number result。
+### 用户动作流程与直觉逻辑
 
-Expect：
+1. `Home → App settings → AI` 是独立 Settings 页面，默认是 Off；`General` 页只管 journal data，不与 AI 内容混排。用户第一次点 `Start` 时只确认一件事：`While AI Access is on, any client using the copied local configuration can read this entire journal, including text and chart images, and may send it to its model provider. Trading Journal cannot control that provider.` **确认并 Start 就是完整只读授权**，不再出现逐 agent、逐字段或逐图片权限步骤。
+2. Start 后页面只有 `Copy Copilot config` 与 `Stop`。应用自动维护一个本机 access key，并把它放进复制出的 Streamable HTTP 配置；用户不创建 connection、不命名 agent、不管理 credential，也不在 Trading Journal 中选择模型、填写模型 API key 或登录 AI 供应商。
+3. 用户可先编辑 **Agent Guide**，告诉 agent 自己的图该怎么读：图表方向 / 布局、颜色与形状含义、常用 stamp、入场 / 出场 / 无效点如何标、bar count 的两端与 candle / interval 口径、result 如何解释、哪些视觉线索不能从截图推断。Prompt Library 中的内置工作流可编辑 / 启停 / 恢复默认，也可新增自定义 prompt。
+4. 用户在自己的 agent 里选择这些 MCP prompts 或直接提问，例如：
+  - 「总结最近 90 天我记录的 setup，先看样本和统计，再挑原图证据。」
+  - 「比较两个市场背景下同一 setup 的结果，找结果相反的盘面。」
+  - 「找出 R 倍数离群的样本，逐张看入场 annotation 周围的图。」
+  - 「哪些明确属于这个 setup 的样本还没填 result？」
+  - 「沿着这些 annotation links 回顾我当时如何修正判断。」
+5. Agent 先调用有界结构化查询，再为少量候选 annotation 请求视觉证据包。包同时提供已提交页面、编号 locator、局部 focus、可用时的原始截图 native crop，以及 annotation geometry ↔ screenshot instance 的结构化映射；不会先把整个 journal 和全部图片一次性塞进上下文。回答引用 `A1 + annotationId + Entry date / id`，并把结构化事实、视觉观察与推断分开。Slice 8 将来落地后可再增加直接委托其统计 contract 的 tool，但不由 AI layer 预做另一套统计。
+6. 应用状态栏与 AI Access 页面只显示当前连接数、正在调用的 tool / resource / prompt 与最近 20 次读取摘要。日志仅保存在内存，Stop / 重启即清空，不写 journal。
+7. 用户点 `Stop`、关闭应用或切换 workspace，就立即终止所有 sessions，并令 cursor 与 resource link 失效。若复制的配置曾被不该持有的人拿到，`Reset access key` 一次使所有旧 HTTP 配置失效；它放在 Advanced，不成为日常流程。
 
-- 清除后相关统计聚合随之变化,该 annotation 仍存在（只是不再带 result）。
+### 支持范围与威胁模型
 
-## 14. Slice 依赖顺序与完成定义
+- **兼容 agent**：支持当前已验证 MCP protocol version、Streamable HTTP 与 bearer header 的 client。若 client 不支持 Resources / image content，它仍可使用结构化 tools，但不能声称看过盘面图片。
+- **Start 的含义**：AI Access On 时，任何持有复制配置的本机 client 都被视为获准读取当前整个 journal，包括结构化数据、可读文字和 chart images。分页、rate limit、单次结果上限只保护性能 / 上下文，**不是**授权边界。
+- **外部数据流**：companion 自身不上传数据、不调用模型；但外部 agent 可能把读取到的文本 / 图片发送给其模型供应商。Trading Journal 通过首次 Start 的一次性完整披露、显眼 On 状态与 Stop / Reset key 控制出口，不替外部 provider 做隐私保证。
+- **journal 内容是不可信证据**：annotation text、标题、图片中的文字都可能包含指令式内容。MCP 输出把它们标记为 `untrusted journal evidence`，从不拼接成 server instruction；这能降低 prompt-injection 风险，但不能保证外部 agent 不受图片 / 文本影响。
+- **工程级只读保证**：这是第一方受审计代码，不是运行任意第三方 extension 的 OS sandbox。保证的是「通过 MCP 可达的能力不能修改 journal」；port、access-key reference、Agent Guide 与 Prompt Library 等 machine-local 设置由主应用写入本机配置，不属于 journal data write。
 
-- Slice 0 无前置依赖，是其余所有 slice 的运行前提（工具链 + 可运行外壳 + 进程边界）。
-- 主干：Slice 0 → 1 → 2 → 3 → 4（骨架 → 存储契约 → 导入 → 画布 + 主界面外壳 → 给 annotation 打 tag 与 result）。
-- **主界面外壳在 Slice 3 一次立好**（Ribbon `Home / Draw / Tags / Browse / Stats` + 三区布局）：`Home`/`Draw`/画布 / 左栏缩略图 + 右键删除已接行为，其余为占位。后续 slice 把功能**填进外壳预留的占位或就地入口**，不另造界面：Slice 4 = 标注的**右键浮窗**（tag / result；不再是常驻 Inspector）、Slice 5 = **右栏 Stamp 库**、Slice 6 = `Tags`→`Review` 页 entry tag + `Home` 的 Settings 词表窗口 + 选中标注的 `Annotation` 上下文页 + 左栏 pivot 浏览 + 短暂高亮（填 `Browse` 页）、Slice 7 填查询 / 保存视图入口、Slice 8 填 `Stats` 页。
-- Slice 4 依赖 1/3（Entry 存储 + 画布标注）；Slice 5 依赖 3/4（画布 + 带 tag 的标注数据）；Slice 6 依赖 1/3/4（entry 存储 + 画布 + 标注 tag 机制：词表注册表 + entry/annotation 打 tag + 按维度浏览 + 高亮）；Slice 7 依赖 4/6（跨 annotation 级与 entry 级标签的布尔查询 + 保存视图）；Slice 8（统计）依赖 4/6/7（对 tag 切片 + 对 result 统计）。
-- **post-MVP**（不在 brief §8 MVP）：Slice 9（词表演化：重命名 / 合并 / 迁移 + result 维度管理，UI 落在 Settings 窗口）依赖 6/7/8（先有注册表、查询、统计才谈演化）；Slice 10（生命周期）依赖 1/4——**删除复盘本身已在 Slice 3 落地**，Slice 10 只补图片引用计数 GC 与 annotation 级改 / 删。
-- 项目级未决项见 §15「待定决策」（UI 框架、PPT 迁移范围）；领域测试策略已在原则 #11 定为两层。
-- 每个 slice 的完成定义：其 scenario test 全绿 + 该 slice 的用户可观察能力可演示 + 未引入违规（扫描 canvas JSON 做查询/统计、复制 artifact 满足视图、把高亮/浏览态落库、内置默认词表/图章、把某种 annotation 特判成特殊标注类型、把 result 做成可浏览的 tag/group 或塞进浏览导航）。
-- 每完成一个 slice，把该 slice 的落地状态与已验证命令记进它自己的「实现状态」段，不写进 `AGENTS.md`。
+### 进程与数据边界
 
-## 15. 待定决策（项目级，未收敛）
+```text
+Compatible agent
+  │  Streamable HTTP
+  ▼
+AI Access companion (supervised utility process)
+  │  strict MessagePort request union
+  ▼
+JournalReadService (Electron main)
+  ├─ dedicated SQLite connection: readonly + fileMustExist + PRAGMA query_only=ON
+  ├─ read repositories: entries / index / views / stats only
+  └─ VisualEvidenceService → isolated read-only offscreen renderer
+```
 
-以下选择尚未拍板,但会影响后续 slice。按 product-spec-writing 约定集中放这里,不散落进设计正文。UI 框架已定为 **React**（见 brief §10 与 §1，已在 Slice 0 落地并验证），领域测试策略已定为两层（见原则 #11）;余下未决:
+- companion 由 Electron main 启动、监控和终止；崩溃只使 AI Access 离线，不使主应用退出。companion 不接收 workspace path、SQLite path、DB handle、`IpcApi` 或任意文件路径。
+- main 新建独立 `JournalReadApi` 与严格判别联合；**不能**从现有读写混合 `IpcApi` 做 `Pick<>`，也不能设计通用 `invoke(method,args)`。MessagePort 只接受精确 allowlist operations，未知 operation 直接拒绝。
+- `JournalReadService` 在 workspace migration 完成后，单独以 `readonly: true / fileMustExist: true` 打开当前 SQLite，并执行 `PRAGMA query_only=ON`。read repository 不导入 Entry Store / vocabulary / stamp 等 writer；架构 lint 阻止 extension / read package import write modules。
+- app main 是当前 workspace 的唯一 owner。extension 读取**最后一次已提交 autosave**，MCP 调用绝不触发 flush / save，也不等待或修改 renderer 正在编辑的页面。所有结构化响应带 `snapshotAt`、`journalInstanceId` 与相关 `updatedAt`，让 agent 知道证据时点。
+- VisualEvidenceService 使用专用 hidden / offscreen renderer + `StaticCanvas`、与编辑器相同的 Fabric class registry 和共享的纯 page-scene 配方；它只接收单 Entry 的已提交 `canvas_json` 与经校验的 image bytes，在内存派生 geometry、screenshot transform、locator 与 PNG。page scene 只含白页、screenshot objects 与 annotations，不含 selection、stamp strip、brief highlight 或编辑器 chrome。它不复用 `CanvasController`、没有 store preload、没有 autosave / history / selection 写回路径。
+- extension 不新增 AI 专用索引、embedding、vector DB、SavedView 副本或持久化报告；查询 / stats 复用既有 index 与 Slice 8 contract，视觉证据和 pagination snapshot 只在内存缓存。
 
-- **PPT 存量迁移是否属于目标**——brief §10 现列为「后续研究、高难度」。要把历史 PPT 复盘搬进来成可编辑 annotation 则需专门立项；否则明确「只面向新复盘」。此项不定,不影响其余 slice 的推进。
+### Streamable HTTP 与连接安全
+
+- 使用官方 MCP SDK 实现 Streamable HTTP，不手写 JSON-RPC / session 状态机；以协议协商支持兼容版本，并至少覆盖 MCP `2025-06-18` 的 initialize、POST / GET、JSON / SSE、`Mcp-Session-Id`、protocol-version header 与 DELETE teardown。
+- 首次启用时选择一个随机可用端口并保存到 machine-local config，之后保持稳定，便于 agent 配置长期复用；端口冲突时明确报错并让用户选择 / 重新生成，绝不静默漂移。
+- 只绑定 `127.0.0.1`，不绑定 `0.0.0.0`、LAN 或公网。每个请求验证 remote address 与精确 `Host: 127.0.0.1:<port>`；无 wildcard CORS。
+- 所有 POST / GET / DELETE 请求都必须带 `Authorization: Bearer <token>`；token 绝不放 URL/query。整个 AI Access 服务只有一把由应用自动生成的 256-bit access key，constant-time compare；Windows 通过 Electron safeStorage / DPAPI 加密，machine config 只存密文，**没有明文 fallback**。若 OS-protected encryption 不可用则不能 Start。用户只通过 Copy config 使用它；`Reset access key` 生成新 key 并关闭全部 sessions。
+- 默认并永久拒绝任何带 `Origin` 的请求；Slice 9 不支持 browser MCP client，也不实现 CORS / OPTIONS。无 Origin 的 native client 仍必须通过 bearer auth。若未来需要 browser client，必须单独设计精确 Origin、严格 preflight 与 provider 风险，不在本 slice 留开关。
+- session id 必须随机且不可预测；Stop / Reset access key 立即关闭全部 sessions。设置 body / response / image byte / pixel、并发、调用频率与超时上限；错误不泄露 DB path、image path、SQL 或 stack。
+- 本 slice 不开放 remote access。未来若支持非 loopback，必须单独设计 HTTPS + MCP OAuth 2.1 / resource audience validation；不能把当前 bearer token 搬到公网。
+
+### 专用只读领域契约
+
+```ts
+interface AiReadContext {
+  journalInstanceId: string;
+  accessEpoch: string;
+  sessionId: string;
+  snapshotAt: string;
+}
+
+type JournalReadRequest =
+  | { op: 'overview' }
+  | { op: 'list-vocabulary'; input: VocabularyQuery }
+  | { op: 'search-entries'; input: EntrySearchQuery }
+  | { op: 'search-samples'; input: SampleSearchQuery }
+  | { op: 'entry-context'; input: EntryContextQuery }
+  | { op: 'linked-context'; input: LinkedContextQuery }
+  | { op: 'visual-evidence'; input: VisualEvidenceQuery }
+  | { op: 'read-resource'; input: { uri: string } };
+```
+
+`JournalReadRequest` 是封闭联合；其中不存在 mutation、raw SQL、raw canvas JSON、filesystem path 或 generic method 字段。每个 input 都有 runtime validation；MCP tool 返回 typed `structuredContent`（另带兼容 text JSON）。
+
+### MCP Tools（少而强、组合使用）
+
+| Tool | 用途与主要输入 | 有界输出 |
+| --- | --- | --- |
+| `get_journal_overview` | 当前 journal 的 Entry / sample 数、effective date 范围、group / result / SavedView 数、各 result recorded count | 小型摘要 + server / app / schema / read-api version；不输出全词表 |
+| `list_vocabulary` | `kind = groups / results / saved-views`、includeArchived、cursor | 稳定 id、label、type、usage count / query 描述；分页 |
+| `search_entries` | typed `ViewQuery` 或 `savedViewId`、date range、sort、cursor | Entry id / date / entry tags / matching sample count / context resource link；Entry 为单位 |
+| `search_samples` | Entry predicates + 同一 annotation 共现的 tag / result predicates、date range、result existence / missing、稳定排序、cursor | annotation id / bounds / tags / results + Entry id / date；不读 canvas JSON |
+| `get_entry_context` | 单个 `entryId` | Entry tags、indexed annotations、results、links、受限 title / text objects 与 media resource links；不返回 raw JSON |
+| `get_linked_context` | 起始 `annotationId`、depth（默认 1、最大 2） | 有界 link graph；处理循环、broken link，节点 / 边数硬上限 |
+| `get_visual_evidence` | 单个 `entryId` + 1..8 个属于该 Entry 的 `annotationIds` | 创建 revision-bound `VisualEvidenceBundle`；返回 manifest、核心 image content 与延迟 resource links，不接受任意 image id / path / bbox |
+
+- 不提供通用 `get_media` tool。`get_visual_evidence` 只编排一个有界证据包；inline image content、resource read 与后端缓存全部复用同一 VisualEvidenceService、ownership check 与 bundle revision，不形成第二条媒体权限路径。
+- 不提供任意全文搜索、embedding 或视觉相似度 API。Agent 可以先用结构化 tag / result 缩小候选，再读取少量图片自行比较；不能为了“相似案例”扫描全库 canvas JSON 或建立隐形向量库。
+- `search_samples` 保持 Slice 7 的同一 annotation 共现语义。Slice 8 未实现时 `tools/list` 中明确没有 statistics / data-gaps；未来若接入，只能直接复用 Slice 8 contract，AI extension 不拥有另一套 query / stats engine。
+
+### 分页、快照与有界读取
+
+- list / search 默认 `limit = 20`，最大 50；稳定排序必须带 id tie-breaker。服务按稳定 sort key 物化**单个最多 1000 rows 的内存窗口**，cursor 到达窗口尾时可携带 opaque continuation 打开下一窗口，直至穷尽授权范围；同时返回 `narrowQueryHint` 鼓励 agent 优先按日期 / tag / result 收窄。1000 不是总结果截断。
+- cursor 是不透明随机值，绑定 `accessEpoch + sessionId + journalInstanceId + queryHash + window boundary + snapshot sequence + offset`，TTL 10 分钟；不保持长 SQLite transaction。下一窗口从前一窗口最后稳定 sort key 继续，同一 snapshot sequence 内不得重复 / 漏项；cursor 不可跨 access epoch / session / app instance 使用。
+- Stop、Reset access key、workspace switch、app restart 或 snapshot TTL 到期均返回明确 expired error，不回退成新的查询结果。分页内不重复、不跳项；新写入只出现在下一次查询 snapshot。
+- 持 access key 的 client 可通过多次合法查询遍历当前整个 journal；上限只保护 app 响应、模型上下文和误操作，不宣称防止导出数据。
+
+### MCP Resources 与可验证视觉证据
+
+`resources/list` 只列 journal overview 与当前 Agent Guide 这两个具体 resource，**不枚举全库 Entry**；其余 parameterized URI 只由 `resources/templates/list` 声明。单纯把整页图和 annotation bounding box 交给模型不足以建立可靠对应：bbox 会丢失箭头方向、线段端点、折线路径与多截图关系，而视觉模型本身也不擅长精确空间定位和密集对象计数。因此视觉入口统一为 `get_visual_evidence` 创建的临时 `VisualEvidenceBundle`。
+
+#### Bundle 生命周期与交付
+
+- `VisualEvidenceQuery` 必须给出一个 `entryId` 和 1..8 个属于该 Entry 的 `annotationIds`。超出上限由 agent 分批请求；服务不接受调用方自造 bbox、image hash、文件路径或全库图片扫描。
+- bundle 绑定 `accessEpoch + sessionId + journalInstanceId + entryId + evidenceRevision`。`evidenceRevision` 由已提交 `canvas_json` digest、Entry `updatedAt` 与所有引用 image hashes 派生；Stop、workspace switch、session teardown、TTL 到期、整包 LRU 淘汰或 Entry revision 改变后全部 links 以区分原因的 expired / evicted error 明确失效，不回退到新内容。
+- tool result 用 `structuredContent` 返回 manifest；`content` 按「asset id 文本标签 → ImageContent」相邻排列，并为所有资产返回 `ResourceLink`。为兼容已实测不会自动把 ResourceLink 图片交给模型的 Copilot host，`overview / locator / focus / source locator+clean` 在 20 MiB inline 预算内都直接进入同一次 tool result；source pair 原子纳入或原子省略。超限资产列入 `omittedInlineAssetIds`，仍保留可读 link，不能静默省略或只给半对。
+- MCP Resource 可被 client 读取，不代表图片一定会被送入模型。支持矩阵必须分别验证「client 能读 resource」与「多模态模型实际收到 ImageContent」；text-only 或未转发图片的 client 只能使用 manifest，必须明确说明没有进行盘面视觉分析。
+- bundle、marks、派生 geometry、PNG 与 native crop 都只存在于有界内存 LRU；不写 journal、machine config、临时文件或第二套 AI 索引。LRU 只能按整个 bundle 原子保留 / 淘汰，不能单独淘汰 locator、clean 或 manifest；source-native pair 同时生成并占用预算，任一成员超限就拒绝整对并返回明确原因，不能留下无法对照的半对证据。
+
+#### 最小证据包
+
+| Asset / Resource URI template | 内容 | 约束 |
+| --- | --- | --- |
+| `trading-journal://journal/{instance}/overview` | 有界 JSON journal overview | structured |
+| `trading-journal://journal/{instance}/entries/{entryId}/context?rev={updatedAt}` | 单 Entry context JSON | 含受限 title / text；有界解析，不返回 raw JSON |
+| `trading-journal://journal/{instance}/entries/{entryId}/thumbnail?rev={updatedAt}` | 400px 导航预览 | 不能作为唯一盘面证据 |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/manifest` | `VisualEvidenceManifest` | 与 tool `structuredContent` 同一 schema / revision |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/overview` | 已提交 page composition | 含全部用户 annotations；不含 AI marks |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/locator` | overview + `A1 / A2 …` locator | 与 overview 同尺寸、同 page-to-render transform |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/annotations/{mark}/focus?context={level}` | 单 annotation 周围的实际 composition | 保留全部用户 annotations；mark 位于 crop 外部 gutter，不 dim 其它对象 |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/annotations/{mark}/source?context={level}&variant={locator|clean}` | 可选 source-native locator / clean pair | 只有唯一、完整、可逆的 screenshot 空间映射时存在；两图必须同 ROI / frame |
+| `trading-journal://journal/{instance}/evidence/{bundleId}/annotations/{mark}/underlay?context={level}` | 可选 page-underlay crop | source-native 不安全时的派生 fallback；隐藏 journal annotations 并显式列出 removed ids |
+
+- `overview` 与 `locator` 使用完全相同的输出 frame，并都预留同尺寸外部 gutter；overview 的 gutter 留空，locator 的 mark / legend 放在 gutter，leader 或 outline 终止于 annotation `paintBounds` 外缘，不覆盖目标盘面。locator 是用于对应 id 的派生图，不能拿来数 bar。
+- `focus` 是用户真实已提交 composition 的局部视图，A-mark 同样放在外部 gutter；不隐藏、不淡化、不改写任何 annotation。默认只生成 `near`；`tight / wide` 由同一 bundle 延迟读取，不预生成全部尺寸。
+- source-native 资产按需成对读取：`locator` 与 `clean` 使用同一个整数 source-pixel ROI、同一输出 frame 和同尺寸外部 gutter。locator 把 A-mark、精确 source-local 边界 / 路径 / 端点以细线派生 overlay 映射到 native chart pixels；clean 的 chart 区域完全不画 overlay，供 agent 查看被 annotation / locator 遮住的 candle。两图都无损编码为 PNG，clean 的 chart 区域不缩放，保证 VisualEvidenceService 输出来自原始 decoded raster samples，但不声称与原文件压缩 bytes 相同，也不能保证外部 MCP client / 模型不再缩放。locator 负责「指哪里」，clean 负责「那里实际有什么」；需要精细视觉判断或 bar count 时必须成对读取，不能只看其中一张。
+- `underlay` 是「隐藏 annotations 后重新渲染 page crop」的反事实派生图，不是用户看到的页面。它只与对应 focus 成对提供，标注 `derived: true`、`notUserVisibleComposition: true`、`removedAnnotationIds`，只帮助看被遮住的 raster，不能用来推断用户意图；无法安全生成时不提供任何 chart-only 资产。
+
+#### Manifest、geometry 与截图映射
+
+- manifest 明确定义三个坐标空间：持久化 `pagePx`、bundle 输出 `renderPx`、每个 screenshot instance 的原始 `sourcePx`；返回完整 affine `pageToRender`、`sourceToPage` 与可逆时的 `pageToSource`，不让 agent 猜缩放比例。每个 asset descriptor 另返回 pixel dimensions、外部 gutter / chart `contentRect`、page / source ROI、对应 crop transform、clipping 与 paired asset id，保证 locator / clean / focus 的关系可由程序验证。非等比缩放 / skew 的质量信息返回 $2 \times 2$ 线性部分及 singular-value `min / max`，不用一个虚假的 `sourcePixelsPerPagePixel` scalar。
+- 每个 annotation 返回 bundle 内稳定但不持久化的 `markId + annotationId`、index 中用于查询 / 高亮的 `indexBounds`、包含 stroke / arrowhead / text-box 外框的派生 `paintBounds`、style、z-order、受限 text，以及 index 提供的 tags / result / links。若 index 与 `canvas_json` 的 `tjId` 对不上，返回 integrity error / warning；不能让 canvas 中的 tag / result 成为第二事实来源。
+- geometry 是判别联合：rect / text 返回变换后 quad；line / arrow 返回 start、end、`arrowTip` 与 arrowhead polygon；polyline 返回路径点；MeasuredMove 返回 anchors / levels；group / stamp 返回有界 composite child geometry；freehand Path 返回 `precision: 'flattened'`、误差容限与点数；未知 class、奇异矩阵或不支持的 clip / filter 返回 `unsupported`，绝不静默降级成 bbox。`arrowTip` 只描述图形端点，不命名为 `target / entry / exit`。
+- 所有 geometry adapter 从 hydrated Fabric object 使用 `calcTransformMatrix()` 派生 page geometry；Polyline / Arrow 计入 `pathOffset`，TextBox 计入自绘 padding，MeasuredMove 复用编辑器 anchor / level 公式，image 计入 scale / rotation / skew / flip / crop 与受支持的 group transform。`getBoundingRect()` 只做候选预筛与 crop envelope，不决定精确关联。
+- 每个 screenshot object 都是独立实例 `S1 / S2 …`，即使引用相同 hash 也不合并；manifest 返回 native size、page quad、z-order、可见 source region 与 transform。annotation ↔ screenshot 只称为 **spatial association**：点报告 inside，线报告相交长度，面报告相交面积；重叠截图、跨图 annotation、clip 或多个候选一律返回 `ambiguous` 和全部候选，不按最近、最大面积或最高 z-order 偷选。
+- 只有唯一 spatial candidate、矩阵可逆、目标 geometry 完整位于该 screenshot 的可见 source region 时才提供 `source`。`geometryClipped` 与 context margin 导致的 `contextClipped` 分开报告；quality 另含 native crop availability、source resolution、association、overlapping annotation count 与 occlusion `none / partial / substantial / unknown`。
+- 空间唯一只证明像素映射，不证明语义归属。框的哪两边定义区间、箭头尖端是否代表入场、stamp 中心是否是事件点，都只能来自 User-authored Agent Guide；guide 未定义时 agent 必须提问或标为 uncertain。
+
+#### 读取安全与范围
+
+- 不提供全局 `image/{hash}` 或 `file://` URI。source ownership 只解析目标 Entry 的 cover + 单 Entry `canvas_json` 中 `tj-image://<hash>` 引用，绝不为验证 source 扫描全库；路径穿越、跨 Entry source、未知 annotation、伪造 bundle、过期 revision 一律拒绝且不泄露路径。
+- 单 Entry text / media-ref 解析使用结构化 JSON parser，设输入字节、对象深度、对象数、总字符数上限；只提取 title、text object、`tjId` 映射、geometry 所需对象字段和 image refs。分类 / 搜索 / 统计仍只读 Annotation-Tag Index，绝不扫描 canvas JSON。
+- renderer 无 `CanvasController`、事件监听或 contextBridge store API；限制输出尺寸、总像素、PNG bytes、并发与 timeout。所有 tool inline / resource read 共用相同 bundle cache 和 ownership check，缓存不写磁盘。
+- image bytes 先 sniff MIME 并验证为受支持图片；resource 返回 MCP binary / image content，不返回磁盘路径。每个资源标注 `audience: ['assistant','user']`、revision / lastModified、asset kind 和 `untrusted evidence`。
+
+### 可编辑 Agent Guide 与 MCP Prompt Library
+
+#### Agent Guide：教 agent 如何读我的图
+
+AI Access 提供一份用户可编辑的 Markdown guide，初始模板只有帮助性标题，不预置任何颜色 / 形状语义：
+
+```md
+# How to read my trading journal
+## Chart layout and axes
+## Visual legend: colors, boxes, arrows and stamps
+## How I mark entries, exits and invalidation
+## How I count bars and include interval endpoints
+## Annotation and note conventions
+## How I interpret my result dimensions
+## Analysis rules, caveats and things not to infer
+```
+
+- 用户可以用自然语言写「时间从左到右」「红框表示候选区域而非实际入场」「某个 stamp 的中心才是 entry」「蓝箭头尖端是事后说明而非目标」「bar count 两端都算 candle，若问间隔则是 candle 数减一」「不要从截图猜精确价格」等个人约定。
+- guide 是**用户主动写入的可信 AI 配置**，与 journal 中的 title / note / OCR-like image text（不可信 evidence）严格区分。它存于 machine-local AI config，不进入 journal，不随 Entry 保存。
+- MCP `resources/list` 除 overview 外还列出 `trading-journal://agent-guide/{revision}`；`get_journal_overview` 也返回该 resource link。Agent 可先读 guide 再查询数据。
+- 每个 `prompts/get` 返回的 prompt messages 都把当前 guide 作为独立、标明 `User-authored Agent Guide` 的首段内容，再附具体 workflow prompt；guide 为空时明确 `No chart-reading guide configured`，不偷偷套系统默认解释。
+
+#### Prompt Library：可编辑的复盘工作流
+
+```ts
+interface AiPromptArgument {
+  name: string;        // snake_case, stable within this prompt
+  description: string;
+  required: boolean;
+}
+
+interface AiPromptTemplate {
+  id: string;          // slug; built-in id stable, custom id creation后不改
+  title: string;
+  description: string;
+  enabled: boolean;
+  body: string;        // Markdown, max 16 KiB
+  arguments: AiPromptArgument[]; // max 12
+  source: 'built-in' | 'custom';
+}
+```
+
+- 内置模板不是硬编码不可改的“系统提示词”；它们只是可用起点：
+  - `understand_my_journal`：先读 Agent Guide、词表与 result dimensions，复述 agent 将如何理解这些约定并指出仍不清楚之处；
+  - `inspect_entry_visual`：按 `entry_id` 与选中 annotation 创建 visual evidence bundle，依次读 guide → manifest → overview / locator → focus / chart-only；用 `A-mark + annotationId` 引证，并区分 observed / inferred / uncertain，不从截图编造精确价格或伪精确 bar count；
+  - `review_recent_period`：先 overview / stats，再取少量代表、反例与 missing examples，引用 Entry date / id；
+  - `compare_classifications`：用同一 denominator 比较 cohorts，明确 overlap / sample size，再看盘面；
+  - `inspect_outliers`：按 number result 找离群样本，读取 visual evidence bundle，区分数据事实、视觉观察与假设；
+  - `find_counterexamples`：在相同结构化条件下找相反 result，禁止把少数图直接推成规律；
+  - `audit_data_quality`：在明确 eligible population 下查缺 result / tag、broken links 与 coverage。
+- 用户可编辑 built-in 的 title / description / body / arguments、启停、Duplicate、Reset to default；可 Add custom prompt，并删除 custom prompt。修改只写 machine-local AI config；不改变 journal。
+- body 中 `{{argument_name}}` 必须对应 arguments 中声明的字段；保存时验证 snake_case、重复名、必填参数、长度与未知 placeholder。`prompts/get` 对 arguments 做长度 / 类型验证后纯文本替换；不执行代码、URL、SQL 或 template expression。
+- MCP 声明 `prompts: { listChanged: true }`。`prompts/list` 只列 enabled prompts（分页）；`prompts/get` 返回当前 guide + 已解析 workflow messages。用户在应用中保存 / 启停 / 新增 / 删除 prompt 后，所有在线 sessions 收到 `notifications/prompts/list_changed`。
+- Prompt 可以指导 agent 调用 tools 与读取 resources，但 server 本身不自动执行 prompt、不调用 sampling / LLM。Prompt arguments 与返回内容不能绕过 JournalReadApi、resource ownership、分页和只读边界。
+
+machine-local AI config 至少保存：stable port、access-key credential reference、Agent Guide、Prompt Library overrides / custom prompts。它与 journal data folder 分离；MCP 没有修改 guide / prompt 的 tool 或 resource，只有 Trading Journal UI 能写这些配置。
+
+### UI：Home → App settings → AI
+
+- Settings 窗口有固定 `General / AI` 两页；默认打开 General，切到 AI 才看到 AI Access。切页不关闭窗口，也不丢失尚未保存的 Agent Guide / Prompt Library 草稿；两页共用固定 header / tabs，各自内容独立滚动。
+- 顶部状态：`Off / Listening on 127.0.0.1:<port> / N clients`。日常操作只有 Start / Stop、Copy Copilot config；首次 Start 显示完整只读与外部 provider 披露，之后页面始终显示 `AI Access On = full read of this journal, including text and images`。
+- 不显示 Connections、agent name、权限矩阵、token、Origin、LAN 或 remote 设置。所有连接共享同一完整只读范围。Advanced 只有 `Reset access key`，用于一次性让所有旧配置与 session 失效；用户无需日常管理。
+- `Agent Guide` 是一个有 starter headings 的大文本编辑区，Save / Reset starter / Preview compiled guide；长内容区封顶滚动。
+- `Prompt Library` 是限高可滚列表：enabled、title、description、Edit、Duplicate；built-in 有 Reset，custom 有 Delete；顶部 Add prompt。编辑 modal 包含 title、stable id（新建时自动 slug）、description、arguments 与 Markdown body，并实时预览 `prompts/get` 将返回的 messages。
+- `Recent activity` 只显示最近 20 次时间、MCP clientInfo（若提供，仅作显示、不作为身份）、tool / resource / prompt、row / byte count、成功 / 拒绝；只在内存。请求进行时状态栏显示低干扰 AI read 指示。
+- Stop 后 guide / prompts / stable endpoint 配置仍在 machine-local config，但无 listener。切 workspace 时服务先 Stop；再次 Start 才把新 workspace 完整授权给同一 access key。
+
+### 无 write 的可证明性
+
+1. MCP `tools/list` / resources / prompts 中没有 create、update、delete、tag、result、note、save、export-all、execute、SQL 或 filesystem tool。
+2. `JournalReadRequest` 是封闭 allowlist；未知 tool、大小写 / 前缀 / 同义 write 名、额外 HTTP route 与不支持 method 全部拒绝。
+3. companion 不获得 DB path；main read service 使用 readonly SQLite + `query_only`，测试中直接尝试 INSERT / UPDATE / DELETE / PRAGMA write 必须失败。
+4. extension package dependency rule 禁止导入 store writers、preload `IpcApi`、`fs` journal paths；VisualEvidence renderer 无 write preload。
+5. non-mutation audit 在一轮完整调用前后比较 canonical journal domain digest：排序后的 Entries（含原始 canvas_json）、tags、annotations、results、views、stamp library、image 文件名 + bytes hash 全部不变。不能只比较物理 `app.sqlite` hash，因为 WAL / checkpoint / `schema_meta` provenance 可变化而不代表用户数据变化。
+6. extension 不创建 schema / migration，不向 journal 写 session、cursor、cache、log、prompt 或 AI report；machine-local stable port、access-key reference、Agent Guide 与 Prompt Library 是唯一配置写入，且 MCP 无修改这些配置的能力。
+
+### 实现分解
+
+1. **Slice 9A — Read boundary + threat model**
+  - 冻结 `JournalReadApi`、tool / resource output schemas、Start = full-read grant、access epoch、query snapshot / cursor contract；
+  - 建 dedicated readonly / query-only connection 与 read repositories；复用 Slice 7 / 8 query / stats 语义；
+  - 完成 pagination snapshot、canonical domain digest、write-attempt rejection 与 package import boundary tests；
+  - 无 HTTP、无 UI、无 schema migration。
+2. **Slice 9B — Supervised MCP companion + simple local access**
+  - utility process supervisor + strict MessagePort；官方 SDK Streamable HTTP；stable loopback endpoint、session、单一 access key、Origin rejection / Host / auth / limits；
+  - Home → App settings 的 General / AI 分页；AI 页的一次性完整披露、Start / Stop、Copy Copilot config、应用内 VS Code 配置步骤、Advanced Reset key、轻量内存 activity；
+  - 独立 MCP client 的 initialize / tools / pagination 互操作测试，并以 GitHub Copilot 做最终 agent integration。
+3. **Slice 9C1 — Visual Evidence Contract**
+  - 冻结 `VisualEvidenceBundle` / manifest schema、geometry adapters、三个坐标空间、screenshot spatial association、revision 生命周期与 byte / pixel / annotation limits；
+  - 实现共享 page-scene 的专用 offscreen renderer、Set-of-Mark locator、focus、source-native / underlay 资产和有界 LRU；不接 MCP、不加 schema migration；
+  - 完成 transform / pixel 确定性测试后才允许把视觉证据接到外部 client。
+4. **Slice 9C2 — Entry context + MCP visual delivery + editable prompts**
+  - bounded 单 Entry text / image-ref parser；`get_visual_evidence`、bundle-bound resource templates、ImageContent / ResourceLink 交付；
+  - linked context、Agent Guide resource、built-in/custom Prompt Library、prompts/list/get/list_changed；
+  - visual ownership、oversize / malformed / prompt-injection-as-data、prompt template validation、renderer non-write、multi-image composition 与真实 multimodal client handoff tests。
+
+### Scenario-based tests
+
+`scenario: AI Access is off by default and exists only while the app owns the workspace`
+
+- 新安装 / 新机器配置下无 listener；首次 Start 明确说明这是当前 journal 的完整只读授权（结构化数据 + 文字 + 图片），确认后只监听 stable `127.0.0.1:<port>`。
+- Stop / app quit / workspace switch 后 endpoint、sessions、cursors、resource links 全失效；再次 Start 才授权当前 workspace。
+- companion crash 不使主应用退出；用户可重新 Start。
+
+`scenario: a compatible Streamable HTTP client receives the complete read-only capability`
+
+- 独立 clients 完成 initialize / protocol negotiation / session；tools / resources / prompts 一致，session-bound bundle 不可跨 client 读取。
+- GitHub Copilot 在同一次 tool call 中实际收到 source locator / clean pair；不支持 image content 的 client 明确报告能力限制，而不是静默声称看过图片。
+
+`scenario: connection security rejects every invalid, browser, or non-loopback request`
+
+- 缺失 / 错误 / URL query token、错误 Host、LAN remote、任意非空 Origin、OPTIONS、额外 route、unsupported method / protocol version 全部拒绝。
+- Stop 关闭 listener；Reset access key 立即使所有旧 HTTP 配置与 sessions 失效；错误不含路径、SQL 或 stack。
+
+`scenario: every MCP operation leaves the journal domain digest unchanged`
+
+- 对每个 tool / resource / prompt 运行正常、分页、错误与取消路径；再尝试 create / update / delete / tag / save / SQL 名称变体。
+- 调用前后 canonical domain rows、canvas_json、stamp library 与 image bytes digest 完全相同；readonly DB 上任何 write statement 失败。
+
+`scenario: structured searches preserve journal query semantics and exhaustible snapshot pagination`
+
+- Entry 与 annotation level predicates、同一 annotation 共现、result predicates、SavedView 与 date range 结果同 Slice 7；一份 Entry 仍一行。
+- 超过 1000 个相同业务条件的 rows 也可经多个窗口穷尽且无重复 / 漏项；期间新增数据不混入旧 snapshot sequence；TTL / app instance / client 不匹配时明确 expired。
+
+`scenario: a single Entry context exposes bounded text and grounded annotation evidence`
+
+- 服务 On 时可读 tags / bounds / results / links、受限 title / note 与视觉 resource；只解析该 Entry 且截断超限文本 / 对象。首次 Start 披露图片和机器可读文字都会提供给 client。
+- journal 文本中的指令按 untrusted evidence 原样返回，不进入 tool description / prompt instruction。
+
+`scenario: visual evidence deterministically maps annotation ids to chart pixels`
+
+- overview 正确包含白页、多 screenshot 与全部用户 annotations；locator 与 overview frame / transform 完全一致，`A1 / A2` legend 映射正确，marks / leader 不覆盖目标 `paintBounds`；focus 保留真实 composition。
+- rect / text / line / arrow / polyline / freehand / MeasuredMove / composite 在 scale / rotation / skew / flip / group transform 下得到正确 page geometry；arrow tip、stroke / arrowhead paint bounds、Path precision 与 unsupported 降级均显式。
+- 单图唯一且完整时 source crop 的中心 chart pixels 与原始 decoded raster ROI 逐像素一致，reference gutter 不改 chart pixels；重复 hash 的实例、重叠截图、跨图 annotation、clip、奇异矩阵与边缘截断返回正确 association / warning，不偷偷挑 source。
+- underlay 只在 source-native 不可用且可安全派生时出现，并带 `notUserVisibleComposition + removedAnnotationIds`；不能把它误作用户原图或 annotation 语义证据。
+- forged / cross-entry source、path traversal、未知 annotation、伪造 / 过期 bundle、超 annotation / pixel / byte 请求被拒；响应无磁盘 path。offscreen renderer 不调用 store write，cache 只在内存并随 revision / Stop 失效。
+- 至少一个真实 multimodal MCP client 证明 tool 的 ImageContent 与 resource image 最终都到达模型，并在同一次模型调用中同时交付 source locator / clean pair；不支持图像转发的 client 明确降级。已知 synthetic candlestick fixture 用于人工兼容评估 mark ↔ annotation 与 bar-count 表现，模型随机输出不作为 CI 硬门。
+
+`scenario: the editable Agent Guide teaches compatible agents how to read this user's charts`
+
+- 用户在 UI 写入颜色 / 形状 / stamp / 入场点 / 不可推断事项后，`agent-guide` resource 与每个 `prompts/get` 的首段都返回同一 revision；空 guide 不补系统猜测。
+- journal 中含指令式文字时仍作为 untrusted evidence，不能覆盖 user-authored guide 或 server tool contract。
+
+`scenario: editing the Prompt Library updates MCP prompts without granting prompt writes`
+
+- built-in prompt 可编辑、disable、reset、duplicate；custom prompt 可新增 / 编辑 / 删除。invalid placeholder、重复 argument、超限 body 被 UI validation 拒绝。
+- 在线 client 的 `prompts/list` 只列 enabled prompts；保存 / 启停 / 新增 / 删除后收到 `notifications/prompts/list_changed`；`prompts/get` 校验 arguments并返回 guide + resolved workflow。
+- MCP 不存在 create/update/delete prompt tool；未知 prompt mutation request 被拒；配置只写 machine-local AI config，canonical journal digest 不变。
+
+`scenario: evidence-first prompts cite reviews and never mutate or execute`
+
+- 默认或用户编辑后的 prompts 先查 population / stats，再选 examples，视觉分析先读 guide 与 manifest，再用 `A-mark + annotationId + Entry id / date` 引证。回答区分 structured fact / observed / inferred / uncertain，并说明 small sample。
+- bar count 只能在同 ROI 的 source-native locator / clean pair 上尝试：先用 locator 确认 A-mark 的边界，再在 clean 的未缩放 chart pixels 上计数。回答说明两端是否计入、数的是 candles 还是 intervals、crop 是否截断和置信度。无 guide、无完整 source pair、边界模糊或分辨率不足时只给范围或明确不能精确回答；绝不把视觉计数写成结构化行情事实。
+- server 不发 sampling request、不调用 LLM、不自动执行 prompt、不生成 write tool call、不持久化报告或建议。
+
+### 明确不做
+
+- 任何 journal write tool / resource：不自动打 tag、改 result、写 note、建 SavedView、删 Entry、保存 AI 总结或执行“确认后写入”。**本 slice 不留 future write hook。**
+- 任意 SQL、数据库文件下载、任意文件路径、全库 raw canvas_json / image dump、通用 filesystem resource。
+- 内置聊天 UI、模型选择、API key 管理、模型调用、sampling、agent 编排、第三方 extension runtime / marketplace。
+- embeddings、vector DB、全库全文索引、自动视觉相似度模型；结构化筛选后由外部 agent 按需看图。
+- OCR / candle detector、截图转 OHLC、价格 / 时间轴绑定或精确 bar-count service；视觉 bundle 只提高 grounding，不把静态截图升级为行情数据。
+- LAN / remote server、后台常驻 daemon、app 关闭后继续服务；远程 OAuth 属独立未来设计，不复用本地 token。
+- 实时行情、预测、下单、回测、自动排名或把 AI 输出当作事实。AI 只能读取用户已记录的证据并在外部对话中提出分析。
+
+### 依赖与完成定义
+
+- Slice 9 当前只依赖 Slice 6 / 7 的词表与 query semantics，以及 image / canvas data contract；按用户要求不等待 Slice 8。Slice 8 将来落地后，statistics 接入是直接委托其 contract 的后续扩展，不改变当前 read boundary。
+- Slice 9 完成 = 9A / 9B / 9C1 / 9C2 scenario tests 全绿 + Streamable HTTP client 与 GitHub Copilot 真实多模态 handoff 可用 + security / non-mutation audit 通过 + golden-DB 保持绿色。
+- 未引入 schema / canvas_json migration；AI connection、token、session、cursor、cache、log 和 report 都不进入 journal data folder。
+
+**实现状态（已落地，Slice 8 按要求跳过）**
+
+- 已实现 7 个真实只读 tools：overview、vocabulary、Entry search、sample search、Entry context、linked context、visual evidence；`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力。
+- 已实现 Streamable HTTP companion、loopback / Host / bearer / Origin 防护、session 与 rate / concurrency / cursor / image byte 上限、DPAPI 加密 access key、Start / Stop / Reset，以及 Home → App settings 独立 AI 页内的 Copilot 配置步骤、Agent Guide 与 Prompt Library。
+- AI Supervisor、readonly repository、Fabric 与 Sharp 只在用户点 Start 后动态加载；AI Access Off 的正常 main bundle 保持轻量，不让可选 extension 拖慢每次应用启动。packaged `TradingJournal.exe` 已验证可加载 lazy chunk、Sharp / libvips 与 companion。
+- visual evidence 已覆盖 exact Rect / line / arrowhead / polyline / MeasuredMove / text / group bounds、unsupported Path 拒绝 source pair、重复 hash screenshot instance、crop / transform、session / revision ownership，以及同 ROI source locator / clean pair。
+- 真实 GitHub Copilot CLI integration 已通过：Copilot 实际调用 overview → search → context → visual evidence，在同一上下文收到 5 张图片，正确返回 `A1 → count-zone`、可见累计编号 `3, 6, …, 30`，并按 center-in-rectangle 口径数出 8 根 candle；随机模型输出不作为 CI 硬门，协议 / 像素行为由 deterministic e2e 固定。
+- 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；完整 Playwright + Electron suite **107 / 107** 全绿（list reporter、workers=1、测试窗口不抢焦点）。

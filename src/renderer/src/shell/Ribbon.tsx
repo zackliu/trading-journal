@@ -174,7 +174,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 <Icon name="gauge" /> Result
               </button>
               <button type="button" className="rtext" data-testid="ribbon-general" onClick={props.onOpenGeneral}>
-                <Icon name="folder" /> General
+                <Icon name="settings" /> App settings
               </button>
             </Group>
           </>

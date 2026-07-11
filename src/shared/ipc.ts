@@ -18,6 +18,7 @@ import type {
   ViewQuery,
   WorkspaceState,
 } from './domain';
+import type { AiAccessSettings, AiAccessStatus } from './aiAccess';
 
 export interface PingResult {
   ok: boolean;
@@ -34,6 +35,13 @@ export interface IpcApi {
   setWorkspaceFolder(dir: string): Promise<WorkspaceState>;
   revealWorkspace(): Promise<void>;
   quitApp(): Promise<void>;
+  getAiAccessStatus(): Promise<AiAccessStatus>;
+  startAiAccess(confirmFullRead: boolean): Promise<AiAccessStatus>;
+  stopAiAccess(): Promise<AiAccessStatus>;
+  copyAiHttpConfig(): Promise<string>;
+  getAiAccessSettings(): Promise<AiAccessSettings>;
+  saveAiAccessSettings(settings: AiAccessSettings): Promise<AiAccessSettings>;
+  resetAiAccessKey(): Promise<AiAccessStatus>;
   ingestImageEntry(bytes: Uint8Array): Promise<Entry>;
   listEntries(): Promise<EntrySummary[]>;
   newEntry(): Promise<Entry>;
@@ -90,6 +98,13 @@ export const IpcChannel = {
   setWorkspaceFolder: 'workspace:set-folder',
   revealWorkspace: 'workspace:reveal',
   quitApp: 'workspace:quit',
+  getAiAccessStatus: 'ai-access:status',
+  startAiAccess: 'ai-access:start',
+  stopAiAccess: 'ai-access:stop',
+  copyAiHttpConfig: 'ai-access:copy-http-config',
+  getAiAccessSettings: 'ai-access:get-settings',
+  saveAiAccessSettings: 'ai-access:save-settings',
+  resetAiAccessKey: 'ai-access:reset-key',
   ingestImageEntry: 'ingest:image-entry',
   listEntries: 'store:list-entries',
   newEntry: 'store:new-entry',

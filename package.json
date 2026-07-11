@@ -18,12 +18,15 @@
     "postinstall": "electron-builder install-app-deps",
     "test:e2e": "playwright test",
     "test": "npm run build && playwright test",
+    "test:package-ai": "node tests/integration/packaged-ai-smoke.mjs",
     "package": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder --win nsis"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.5.0",
     "fabric": "^6.9.1",
+    "sharp": "^0.35.3",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
@@ -34,6 +37,7 @@
     "@eslint/js": "^9.13.0",
     "@playwright/test": "^1.48.0",
     "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.7.5",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",

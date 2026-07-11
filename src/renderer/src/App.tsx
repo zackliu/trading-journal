@@ -52,7 +52,7 @@ const DEFAULT_STYLE: DrawStyle = {
 const EMPTY_EDITOR: EditorState = { canUndo: false, canRedo: false, dirty: false, hasSelection: false };
 const EMPTY_QUERY: ViewQuery = { entry: [], annotation: [], results: [] };
 const EMPTY_BUCKETS: Bucket[] = [];
-const WHEEL_GESTURE_IDLE_MS = 250;
+const WHEEL_GESTURE_IDLE_MS = 400;
 
 interface FilterMatch {
   ids: Set<string>;
@@ -209,7 +209,11 @@ export function App(): JSX.Element {
   const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
   const selectedEntryIdRef = useRef(selectedEntryId);
-  const wheelGestureRef = useRef({ lastAt: 0, navigated: false });
+  const wheelGestureRef = useRef<{ lastAt: number; direction: 1 | -1 | 0; navigated: boolean }>({
+    lastAt: 0,
+    direction: 0,
+    navigated: false,
+  });
   const browserRef = useRef<GroupBrowserHandle | null>(null);
   const activationRequestRef = useRef(0);
   const railContextKeyRef = useRef('');
@@ -662,8 +666,9 @@ export function App(): JSX.Element {
   const onWheelNavigate = useCallback((dir: 1 | -1): void => {
     const now = Date.now();
     const gesture = wheelGestureRef.current;
-    if (now - gesture.lastAt > WHEEL_GESTURE_IDLE_MS) gesture.navigated = false;
+    if (dir !== gesture.direction || now - gesture.lastAt > WHEEL_GESTURE_IDLE_MS) gesture.navigated = false;
     gesture.lastAt = now;
+    gesture.direction = dir;
     if (gesture.navigated) return;
     const idx = activeOccurrence
       ? railOccurrences.findIndex((occurrence) => sameOccurrence(occurrence, activeOccurrence))

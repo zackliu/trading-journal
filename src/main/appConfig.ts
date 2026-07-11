@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AiPromptTemplate } from '../shared/aiAccess';
 import type { WorkspaceState } from '../shared/domain';
 
 /**
@@ -14,6 +15,13 @@ import type { WorkspaceState } from '../shared/domain';
  */
 export interface AppConfig {
   dataDir?: string;
+  aiAccess?: {
+    port?: number;
+    encryptedAccessKey?: string;
+    disclosureAccepted?: boolean;
+    guide?: string;
+    prompts?: AiPromptTemplate[];
+  };
 }
 
 function configPath(): string {
@@ -24,13 +32,71 @@ export function readConfig(): AppConfig {
   try {
     const parsed: unknown = JSON.parse(readFileSync(configPath(), 'utf8'));
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const dataDir = (parsed as Record<string, unknown>).dataDir;
-      if (typeof dataDir === 'string' && dataDir.trim()) return { dataDir };
+      const record = parsed as Record<string, unknown>;
+      const dataDir = typeof record.dataDir === 'string' && record.dataDir.trim() ? record.dataDir : undefined;
+      const aiAccess = parseAiAccessConfig(record.aiAccess);
+      return { ...(dataDir ? { dataDir } : {}), ...(aiAccess ? { aiAccess } : {}) };
     }
   } catch {
     // No config yet (first run) or unreadable — treated as unset.
   }
   return {};
+}
+
+function parseAiAccessConfig(raw: unknown): AppConfig['aiAccess'] | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const port = typeof record.port === 'number' && Number.isInteger(record.port) && record.port > 0 && record.port <= 65_535
+    ? record.port
+    : undefined;
+  const encryptedAccessKey = typeof record.encryptedAccessKey === 'string' ? record.encryptedAccessKey : undefined;
+  const disclosureAccepted = record.disclosureAccepted === true;
+  const guide = typeof record.guide === 'string' && record.guide.length <= 64 * 1024 ? record.guide : undefined;
+  const prompts = Array.isArray(record.prompts)
+    ? record.prompts.filter(isPromptTemplate).map((prompt) => ({ ...prompt, arguments: [...prompt.arguments] }))
+    : undefined;
+  return { port, encryptedAccessKey, disclosureAccepted, guide, prompts };
+}
+
+function isPromptTemplate(raw: unknown): raw is AiPromptTemplate {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const value = raw as Record<string, unknown>;
+  if (
+    typeof value.id !== 'string' ||
+    !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(value.id) ||
+    typeof value.title !== 'string' ||
+    !value.title.trim() ||
+    typeof value.description !== 'string' ||
+    !value.description.trim() ||
+    typeof value.enabled !== 'boolean' ||
+    typeof value.body !== 'string' ||
+    value.body.length > 16 * 1024 ||
+    (value.source !== 'built-in' && value.source !== 'custom') ||
+    !Array.isArray(value.arguments) ||
+    value.arguments.length > 12
+  ) {
+    return false;
+  }
+  const argumentNames = new Set<string>();
+  const argumentsValid = value.arguments.every((argument) => {
+    if (!argument || typeof argument !== 'object' || Array.isArray(argument)) return false;
+    const item = argument as Record<string, unknown>;
+    if (
+      typeof item.name !== 'string' ||
+      !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(item.name) ||
+      argumentNames.has(item.name) ||
+      typeof item.description !== 'string' ||
+      typeof item.required !== 'boolean'
+    ) {
+      return false;
+    }
+    argumentNames.add(item.name);
+    return true;
+  });
+  if (!argumentsValid) return false;
+  return (
+    [...value.body.matchAll(/\{\{([a-z0-9_]+)\}\}/g)].every((match) => argumentNames.has(match[1]))
+  );
 }
 
 export function writeConfig(config: AppConfig): void {

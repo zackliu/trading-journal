@@ -26,9 +26,9 @@ export interface LaunchedApp {
 }
 
 /** Launch the built Electron app against an isolated portable data folder. */
-export async function launchApp(dataDir: string): Promise<LaunchedApp> {
+export async function launchApp(dataDir: string, userDataDir?: string): Promise<LaunchedApp> {
   const app = await electron.launch({
-    args: ['.'],
+    args: ['.', ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : [])],
     env: { ...process.env, TJ_DATA_DIR: dataDir, TJ_TEST: '1' },
   });
   const page = await app.firstWindow();
