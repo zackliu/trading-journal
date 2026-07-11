@@ -74,6 +74,51 @@
 - **编辑即保存**：没有"保存"仪式，每次改动都自动落盘并刷新左侧缩略图；**Ctrl+S** 只是习惯性地"立即存一下"。
 - **绝不弄坏旧数据**：升级 App 时会先自动备份、按需迁移，绝不静默破坏或降级打开你的历史复盘；万一某张截图暂时读不到（比如 OneDrive 还没同步下来），会明确提示"打不开、数据安全、可重试"，而不是甩给你一张空白页。
 
+## AI Access（只读 MCP）
+
+Trading Journal 可以在本机启动一个可选的 **MCP server**，让 GitHub Copilot 等兼容 agent 读取当前 journal，帮助做样本研究、盘面核对和渐进式复盘。应用本身不内置模型、不要求模型 API key，也不保存 AI 回答。
+
+AI Access 默认关闭。打开 **Home → Settings → AI** 后：
+
+1. 首次点击 **Start**，确认完整只读授权说明。开启期间，持有复制配置的本机 client 可以读取当前 journal 的结构化数据、文字和图表图片，并可能把内容发送给它所使用的模型服务商。
+2. 点击 **Copy Copilot config**。
+3. 在 VS Code 命令面板运行 **MCP: Open User Configuration**，把复制内容合并到 `servers` 下并保存。
+4. 运行 **MCP: List Servers**，启动 `trading-journal`，再在 Copilot Chat 的 Agent 模式中选择 Trading Journal prompt 或直接提问。
+
+Trading Journal 必须保持运行且 AI Access 为 **On**。点击 **Stop**、退出应用或切换数据文件夹后，现有 session、分页 cursor、图片 resource 和临时 visual plan 会立即失效。若配置意外泄露，可用 **Reset access key** 让所有旧配置失效。
+
+### Agent 能做什么
+
+- **结构化研究**：按日期、Entry tag、annotation tag、result 和 Saved View 搜索；一次准备明确的样本总体、Entry 数、recorded / missing、结果分布和后续视觉批次。
+- **读取复盘上下文**：查看 Entry、annotation、tag、typed result、文字和 annotation links，并沿用户建立的 links 回看相关复盘。
+- **可验证视觉证据**：取得已提交页面、`A1 / A2…` locator、annotation 局部 focus，以及能唯一映射时的原始截图 native locator / clean crop pair。图片与 Entry revision 绑定，annotation id、页面坐标和 screenshot instance 都有明确对应。
+- **原图与多种裁剪**：按 screenshot instance 导出原始存储 bytes、当前图片对象的 source window、任意有界 source/page ROI 或 annotation context。响应包含 checksum 和建议文件名。
+- **逐 bar 渐进复盘**：围绕入场点选择局部窗口，先校准当前截图的 bar center 间距，再一次只揭示一根新的 bar；未来帧在 `next` 前没有可读取的 item id。
+
+### 围绕入场点渐进复盘
+
+Prompt Library 内置 **“围绕入场点渐进复盘”**（`review_entry_progressively`）。它不会默认从截图第一根开始，而是从入场前足以理解 setup 的最小局部结构开始，逐根观察入场和其后的有限发展：
+
+1. 用入场 annotation 确认正确的 screenshot / 周期 panel，并在原图像素坐标中选择入场前后的局部 ROI。
+2. 优先用相距较远的累计 bar 编号估算首版间距；没有可靠编号时，用多个相邻 candle center 的间距中位数估算。
+3. 同时检查 ROI 头部、中部和尾部的 locator / clean 放大图。三处等量偏移说明只需修 phase；偏差随距离增加则修 spacing；非线性漂移则缩小或拆分 ROI，不能强行接受。
+4. 接受校准 proposal 后，用 plan-local bar 编号建立入场前后窗口。每看一帧，先记录当时可见信息下的结构、行动与失效条件，再调用 `next`。
+5. 到达入场 bar 时，先回答“在不知道后续结果时是否会入场、依据是什么”，再继续揭示后续走势。
+
+这项能力是对**静态截图做未来像素遮罩**，用于减少 hindsight bias，不是真实行情 replay。已经出现在可见区域里的指标、画线、文字或结果标记仍可能泄露未来信息；bar count、价格和时间也只是视觉观察，不能当作结构化行情事实。
+
+### Agent Guide 与 Prompt Library
+
+- **Agent Guide**：可写入个人图表布局、周期、颜色 / 图章含义、入场标记方式、bar count 口径和不可推断事项。Agent 会在视觉分析前读取它。
+- **Prompt Library**：内置理解 journal、分析分类表现、检查单条复盘、围绕入场点渐进复盘、回顾近期样本和追踪 links 等工作流。模板可编辑、启停和复制，也可新增 custom prompt。
+- 新版本增加 built-in prompt 时，只会补入此前不存在的模板；已经修改或禁用的模板和所有 custom prompt都会保留。
+
+### 永久只读与保存到研究目录
+
+MCP 的全部能力仍然是**只读**的：没有创建 / 修改 / 删除 Entry、tag、result、note 或 Saved View 的工具，也没有任意 SQL、文件路径或文件写入能力。AI Access 使用独立 readonly SQLite connection，并启用 `PRAGMA query_only=ON`。
+
+图片“导出”只是返回 revision-bound resource / bytes、SHA-256 和建议文件名。若 coding agent 需要把原图、crop 或已经揭示的 frame 放进用户自己的 repo / 研究目录，它必须使用**自身已有的 workspace 或 terminal 文件工具**保存；Trading Journal 不接收目标路径，也不会替 agent 创建、覆盖或删除任何文件。没有文件工具的 client 只能查看图片，不能声称已经保存。
+
 ## 技术栈
 
 - **Electron** —— 桌面外壳（main / preload / renderer 三进程）
@@ -165,7 +210,7 @@ npm run package
 npm run dist
 ```
 
-产物是单个安装文件 `dist/TradingJournal-<version>-Setup.exe`（`<version>` 取自 `package.json` 的 `version`，当前 `0.0.0`，即 `TradingJournal-0.0.0-Setup.exe`）。把这个 `Setup.exe` 发给对方即可，双击后：
+产物是单个安装文件 `dist/TradingJournal-<version>-Setup.exe`（`<version>` 取自 `package.json` 的 `version`，当前 `0.2.0`，即 `TradingJournal-0.2.0-Setup.exe`）。把这个 `Setup.exe` 发给对方即可，双击后：
 
 - 可选择安装目录（`allowToChangeInstallationDirectory`）；
 - 按用户安装、**不需要管理员权限**（`perMachine: false`、`oneClick: false`）；
@@ -176,7 +221,7 @@ npm run dist
 
 ### 发布新版本
 
-改 `package.json` 的 `version`（如 `0.1.0`）后重新 `npm run dist`，安装包文件名会随之变化。
+改 `package.json` 的 `version` 后重新 `npm run dist`，安装包文件名会随之变化。
 
 ### 可选：自定义图标与代码签名
 
