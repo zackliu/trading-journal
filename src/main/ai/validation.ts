@@ -38,11 +38,36 @@ const sampleSearchQuery = z
   })
   .strict();
 
+const sampleStudyQuery = z
+  .object({
+    query: viewQuerySchema,
+    dateRange: dateRange.optional(),
+    sort: z.enum(['newest', 'oldest']).optional(),
+    resultDimensions: z.array(id).max(20).optional(),
+    maxSamples: z.number().int().min(1).max(500).optional(),
+    nearbyTextLimitPerEntry: z.number().int().min(0).max(12).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.query.annotation.length > 0 || value.query.results.length > 0,
+    'prepare_sample_study requires an explicit annotation or result population',
+  );
+
+const visualEvidenceQuery = z.object({ entryId: id, annotationIds: z.array(id).min(1).max(8) }).strict();
+const visualEvidenceBatch = z
+  .object({ requests: z.array(visualEvidenceQuery).min(1).max(4) })
+  .strict()
+  .refine(
+    (value) => value.requests.reduce((total, request) => total + request.annotationIds.length, 0) <= 8,
+    'visual evidence batch supports at most 8 annotations total',
+  );
+
 export const journalReadRequestSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('overview') }).strict(),
   z.object({ op: z.literal('list-vocabulary'), input: vocabularyQuery }).strict(),
   z.object({ op: z.literal('search-entries'), input: entrySearchQuery }).strict(),
   z.object({ op: z.literal('search-samples'), input: sampleSearchQuery }).strict(),
+  z.object({ op: z.literal('prepare-sample-study'), input: sampleStudyQuery }).strict(),
   z
     .object({
       op: z.literal('entry-context'),
@@ -58,8 +83,15 @@ export const journalReadRequestSchema = z.discriminatedUnion('op', [
   z
     .object({
       op: z.literal('visual-evidence'),
-      input: z.object({ entryId: id, annotationIds: z.array(id).min(1).max(8) }).strict(),
+      input: visualEvidenceQuery,
     })
     .strict(),
+  z.object({ op: z.literal('visual-evidence-batch'), input: visualEvidenceBatch }).strict(),
   z.object({ op: z.literal('read-resource'), input: z.object({ uri: z.string().min(1).max(2048) }).strict() }).strict(),
+  z
+    .object({
+      op: z.literal('read-resources'),
+      input: z.object({ uris: z.array(z.string().min(1).max(2048)).min(1).max(40) }).strict(),
+    })
+    .strict(),
 ]);

@@ -944,13 +944,17 @@ type JournalReadRequest =
 | `list_vocabulary` | `kind = groups / results / saved-views`、includeArchived、cursor | 稳定 id、label、type、usage count / query 描述；分页 |
 | `search_entries` | typed `ViewQuery` 或 `savedViewId`、date range、sort、cursor | Entry id / date / entry tags / matching sample count / context resource link；Entry 为单位 |
 | `search_samples` | Entry predicates + 同一 annotation 共现的 tag / result predicates、date range、result existence / missing、稳定排序、cursor | annotation id / bounds / tags / results + Entry id / date；不读 canvas JSON |
+| `prepare_sample_study` | 显式 annotation/result population、可选 date、result dimensions、明细 / nearby-text 上限 | 一次返回 exact sample / Entry 分母、recorded / missing、string counts / number summary、按 Entry 聚合的命中样本与邻近文字、可直接传给 batch visual 的分包计划 |
 | `get_entry_context` | 单个 `entryId` | Entry tags、indexed annotations、results、links、受限 title / text objects 与 media resource links；不返回 raw JSON |
 | `get_linked_context` | 起始 `annotationId`、depth（默认 1、最大 2） | 有界 link graph；处理循环、broken link，节点 / 边数硬上限 |
 | `get_visual_evidence` | 单个 `entryId` + 1..8 个属于该 Entry 的 `annotationIds` | 创建 revision-bound `VisualEvidenceBundle`；返回 manifest、核心 image content 与延迟 resource links，不接受任意 image id / path / bbox |
+| `get_visual_evidence_batch` | `prepare_sample_study.visualBatches[n].requests`；最多 4 Entries / 8 annotations | 一次返回跨 Entry manifests 与有效图片；所有图片共享 inline byte budget，source locator / clean pair 原子纳入或省略 |
 
 - 不提供通用 `get_media` tool。`get_visual_evidence` 只编排一个有界证据包；inline image content、resource read 与后端缓存全部复用同一 VisualEvidenceService、ownership check 与 bundle revision，不形成第二条媒体权限路径。
+- Companion 对一份 single / batch visual result 只发一次内部 `read-resources` RPC 读取全部图片，不再每张图单独跨进程往返。Agent 应优先使用 study / batch 工具，只有追查单张异常时才回退到 search / context / single visual 原语。
 - 不提供任意全文搜索、embedding 或视觉相似度 API。Agent 可以先用结构化 tag / result 缩小候选，再读取少量图片自行比较；不能为了“相似案例”扫描全库 canvas JSON 或建立隐形向量库。
 - `search_samples` 保持 Slice 7 的同一 annotation 共现语义。Slice 8 未实现时 `tools/list` 中明确没有 statistics / data-gaps；未来若接入，只能直接复用 Slice 8 contract，AI extension 不拥有另一套 query / stats engine。
+- 所有 tool-level 领域 / validation 失败返回稳定 `{ code, message, hint, field?, retryable }`。错误隐藏 SQL、路径与 stack，但不得隐藏可操作原因；例如错误 population 提示使用 `query.annotation`，未知 result dimension 提示 `list_vocabulary(kind='results')`，过期 evidence 提示重建 bundle。
 
 ### 分页、快照与有界读取
 
@@ -1011,17 +1015,19 @@ type JournalReadRequest =
 
 #### Agent Guide：教 agent 如何读我的图
 
-AI Access 提供一份用户可编辑的 Markdown guide，初始模板只有帮助性标题，不预置任何颜色 / 形状语义：
+AI Access 提供一份用户可编辑的中文 Markdown guide。初始内容写入用户已经确认的稳定约定：三图时左上 1h、左下 15m、右侧主图 5m；单图通常为 5m；主图蓝线是 5m EMA20、橙线是叠加的 1h EMA20；每 3 根显示一次累计 bar 编号并在交易日结束后重置；红色小块是 sell、绿色小块是 buy、反色外圈表示失败入场，标记通常位于 entry bar 正上 / 下方；倾斜线通常是趋势 / 通道，横线必须动态研判；橙色文本框是一般想法 / 入场理由，紫色文本框是待研究疑问；纯白背景是 RTH、浅灰背景是 ETH。未确认的线条颜色、竖向虚线与底部指标明确列为“不可擅自推断”：
 
 ```md
-# How to read my trading journal
-## Chart layout and axes
-## Visual legend: colors, boxes, arrows and stamps
-## How I mark entries, exits and invalidation
-## How I count bars and include interval endpoints
-## Annotation and note conventions
-## How I interpret my result dimensions
-## Analysis rules, caveats and things not to infer
+# 我的交易复盘图解读指南
+## 回答语言与证据层级
+## 常见图表布局与周期
+## EMA
+## Bar 编号与计数
+## 入场点标记
+## 线条与区域
+## 文本框与交易时段背景
+## 当前尚未定义的视觉元素
+## 不可过度推断
 ```
 
 - 用户可以用自然语言写「时间从左到右」「红框表示候选区域而非实际入场」「某个 stamp 的中心才是 entry」「蓝箭头尖端是事后说明而非目标」「bar count 两端都算 candle，若问间隔则是 candle 数减一」「不要从截图猜精确价格」等个人约定。
@@ -1180,7 +1186,8 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 
 **实现状态（已落地，Slice 8 按要求跳过）**
 
-- 已实现 7 个真实只读 tools：overview、vocabulary、Entry search、sample search、Entry context、linked context、visual evidence；`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力。
+- 已实现 9 个真实只读 tools：overview、vocabulary、Entry search、sample search、sample study、Entry context、linked context、single visual、batch visual；`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力。
+- 高效研究路径已落地：`list_vocabulary → prepare_sample_study → get_visual_evidence_batch`。Vocabulary 同时返回 Entry-level usage、annotation sample count 与 annotation distinct-Entry count；study 从完整 population 计算分母，明细截断不改变统计，并附最近文字与视觉批次。稳定错误 code / hint 取代模糊的 `Journal read request failed`。
 - 已实现 Streamable HTTP companion、loopback / Host / bearer / Origin 防护、session 与 rate / concurrency / cursor / image byte 上限、DPAPI 加密 access key、Start / Stop / Reset，以及 Home → App settings 独立 AI 页内的 Copilot 配置步骤、Agent Guide 与 Prompt Library。
 - AI Supervisor、readonly repository、Fabric 与 Sharp 只在用户点 Start 后动态加载；AI Access Off 的正常 main bundle 保持轻量，不让可选 extension 拖慢每次应用启动。packaged `TradingJournal.exe` 已验证可加载 lazy chunk、Sharp / libvips 与 companion。
 - visual evidence 已覆盖 exact Rect / line / arrowhead / polyline / MeasuredMove / text / group bounds、unsupported Path 拒绝 source pair、重复 hash screenshot instance、crop / transform、session / revision ownership，以及同 ROI source locator / clean pair。

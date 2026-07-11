@@ -92,6 +92,9 @@ export interface AiVocabularyItem {
   valueType?: 'string' | 'number';
   archived: boolean;
   usageCount?: number;
+  entryUsageCount?: number;
+  annotationUsageCount?: number;
+  annotationEntryUsageCount?: number;
   query?: ViewQuery;
 }
 
@@ -130,6 +133,84 @@ export interface AiSampleSummary {
   result?: Result;
   links: string[];
   contextResource: string;
+}
+
+export interface AiSampleStudyQuery {
+  query: ViewQuery;
+  dateRange?: AiDateRange;
+  sort?: 'newest' | 'oldest';
+  resultDimensions?: string[];
+  maxSamples?: number;
+  nearbyTextLimitPerEntry?: number;
+}
+
+export interface AiResultValueCount {
+  value: string;
+  count: number;
+  rate: number;
+}
+
+export interface AiResultDimensionSummary {
+  id: string;
+  label: string;
+  type: 'string' | 'number' | 'unknown';
+  populationCount: number;
+  recordedCount: number;
+  missingCount: number;
+  stringValues?: AiResultValueCount[];
+  numberSummary?: {
+    min: number;
+    max: number;
+    mean: number;
+  };
+}
+
+export interface AiStudySample extends AiSampleSummary {
+  text?: string;
+  textTrust?: AiEvidenceTrust;
+}
+
+export interface AiNearbyTextEvidence {
+  annotationId: string;
+  text: string;
+  bounds: Bounds;
+  nearestSampleAnnotationId: string;
+  distancePx: number;
+  evidenceTrust: AiEvidenceTrust;
+}
+
+export interface AiSampleStudyEntry {
+  entryId: string;
+  effectiveDate: string;
+  title?: string;
+  entryTags: Tag[];
+  samples: AiStudySample[];
+  nearbyTexts: AiNearbyTextEvidence[];
+  contextResource: string;
+}
+
+export interface AiVisualEvidenceBatchRequest {
+  requests: AiVisualEvidenceQuery[];
+}
+
+export interface AiSampleStudyVisualBatch {
+  requests: AiVisualEvidenceQuery[];
+  sampleCount: number;
+}
+
+export interface AiSampleStudy {
+  query: ViewQuery;
+  dateRange?: AiDateRange;
+  snapshotAt: string;
+  populationSampleCount: number;
+  distinctEntryCount: number;
+  returnedSampleCount: number;
+  truncated: boolean;
+  narrowQueryHint?: string;
+  resultDimensions: AiResultDimensionSummary[];
+  entries: AiSampleStudyEntry[];
+  visualBatches: AiSampleStudyVisualBatch[];
+  evidenceTrust: AiEvidenceTrust;
 }
 
 export interface AiAnnotationContext extends AiSampleSummary {
@@ -238,6 +319,7 @@ export interface AiVisualEvidenceManifest {
   screenshots: AiScreenshotInstance[];
   annotations: AiVisualAnnotation[];
   assets: AiVisualAsset[];
+  inlineAssetIds?: string[];
   omittedInlineAssetIds?: string[];
   evidenceTrust: AiEvidenceTrust;
   warnings: string[];
@@ -249,6 +331,10 @@ export interface AiVisualEvidenceQuery {
   annotationIds: string[];
 }
 
+export interface AiVisualEvidenceBatch {
+  manifests: AiVisualEvidenceManifest[];
+}
+
 export interface AiResourceRead {
   uri: string;
   mimeType: string;
@@ -256,22 +342,54 @@ export interface AiResourceRead {
   blob?: string;
 }
 
+export interface AiResourceBatchRead {
+  items: AiResourceRead[];
+}
+
+export type AiReadErrorCode =
+  | 'INVALID_REQUEST'
+  | 'INVALID_SAMPLE_POPULATION'
+  | 'NOT_FOUND'
+  | 'CURSOR_EXPIRED'
+  | 'SESSION_MISMATCH'
+  | 'REVISION_EXPIRED'
+  | 'EVIDENCE_EXPIRED'
+  | 'LIMIT_EXCEEDED'
+  | 'BUSY'
+  | 'RATE_LIMITED'
+  | 'TIMEOUT'
+  | 'READ_FAILED';
+
+export interface AiReadError {
+  code: AiReadErrorCode;
+  message: string;
+  hint: string;
+  field?: string;
+  retryable: boolean;
+}
+
 export type JournalReadRequest =
   | { op: 'overview' }
   | { op: 'list-vocabulary'; input: AiVocabularyQuery }
   | { op: 'search-entries'; input: AiEntrySearchQuery }
   | { op: 'search-samples'; input: AiSampleSearchQuery }
+  | { op: 'prepare-sample-study'; input: AiSampleStudyQuery }
   | { op: 'entry-context'; input: { entryId: string; expectedUpdatedAt?: number } }
   | { op: 'linked-context'; input: AiLinkedContextQuery }
   | { op: 'visual-evidence'; input: AiVisualEvidenceQuery }
-  | { op: 'read-resource'; input: { uri: string } };
+  | { op: 'visual-evidence-batch'; input: AiVisualEvidenceBatchRequest }
+  | { op: 'read-resource'; input: { uri: string } }
+  | { op: 'read-resources'; input: { uris: string[] } };
 
 export type JournalReadResponse =
   | { op: 'overview'; value: AiJournalOverview }
   | { op: 'list-vocabulary'; value: AiPage<AiVocabularyItem> }
   | { op: 'search-entries'; value: AiPage<AiEntrySummary> }
   | { op: 'search-samples'; value: AiPage<AiSampleSummary> }
+  | { op: 'prepare-sample-study'; value: AiSampleStudy }
   | { op: 'entry-context'; value: AiEntryContext }
   | { op: 'linked-context'; value: AiLinkedContext }
   | { op: 'visual-evidence'; value: AiVisualEvidenceManifest }
-  | { op: 'read-resource'; value: AiResourceRead };
+  | { op: 'visual-evidence-batch'; value: AiVisualEvidenceBatch }
+  | { op: 'read-resource'; value: AiResourceRead }
+  | { op: 'read-resources'; value: AiResourceBatchRead };

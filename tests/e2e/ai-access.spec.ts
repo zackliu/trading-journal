@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { expect, test } from '@playwright/test';
 import sharp from 'sharp';
-import type { AiAccessStatus, AiVisualEvidenceManifest } from '../../src/shared/aiAccess';
+import type { AiAccessStatus, AiSampleStudy, AiVisualEvidenceManifest } from '../../src/shared/aiAccess';
 import type { IpcApi } from '../../src/shared/ipc';
 import { launchApp, store } from './electronApp';
 
@@ -21,6 +21,7 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
 
   await store.defineGroup(page, { id: 'setup', label: 'Setup', pinned: true });
   await store.defineValue(page, { groupId: 'setup', value: 'breakout', label: 'Breakout' });
+  await store.defineDimension(page, { id: 'outcome', label: 'Outcome', type: 'string' });
   const chart = await countedChartPng();
   const { hash } = await store.storeImage(page, chart.toString('base64'));
   const entry = await store.createEntry(page, {
@@ -67,6 +68,7 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
         id: 'ann-1',
         bounds: { x: 280, y: 110, width: 220, height: 220 },
         tags: [{ group: 'setup', value: 'breakout' }],
+          result: { outcome: 'Success' },
         links: [],
       },
       {
@@ -119,14 +121,32 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
     'list_vocabulary',
     'search_entries',
     'search_samples',
+    'prepare_sample_study',
     'get_entry_context',
     'get_linked_context',
     'get_visual_evidence',
+    'get_visual_evidence_batch',
   ]);
   expect(tools.tools.map((tool) => tool.name).join(' ')).not.toMatch(/create|update|delete|save|sql|statistics/i);
 
   const overview = await client.callTool({ name: 'get_journal_overview', arguments: {} });
   expect(overview.structuredContent).toMatchObject({ entryCount: 1, annotationCount: 2 });
+
+  const vocabulary = await client.callTool({
+    name: 'list_vocabulary',
+    arguments: { kind: 'groups', limit: 50 },
+  });
+  expect(vocabulary.structuredContent).toMatchObject({
+    items: expect.arrayContaining([
+      expect.objectContaining({
+        id: 'setup:breakout',
+        usageCount: 1,
+        entryUsageCount: 0,
+        annotationUsageCount: 1,
+        annotationEntryUsageCount: 1,
+      }),
+    ]),
+  });
 
   const samples = await client.callTool({
     name: 'search_samples',
@@ -136,7 +156,84 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
     },
   });
   expect(samples.structuredContent).toMatchObject({
-    items: [{ annotationId: 'ann-1', entryId: entry.id, tags: [{ group: 'setup', value: 'breakout' }] }],
+    items: [
+      {
+        annotationId: 'ann-1',
+        entryId: entry.id,
+        tags: [{ group: 'setup', value: 'breakout' }],
+        result: { outcome: 'Success' },
+      },
+    ],
+  });
+
+  const studyResult = await client.callTool({
+    name: 'prepare_sample_study',
+    arguments: {
+      query: { entry: [], annotation: [{ group: 'setup', values: ['breakout'] }], results: [] },
+      resultDimensions: ['outcome'],
+      maxSamples: 50,
+      nearbyTextLimitPerEntry: 4,
+    },
+  });
+  const study = studyResult.structuredContent as unknown as AiSampleStudy;
+  expect(study).toMatchObject({
+    populationSampleCount: 1,
+    distinctEntryCount: 1,
+    returnedSampleCount: 1,
+    truncated: false,
+    resultDimensions: [
+      {
+        id: 'outcome',
+        type: 'string',
+        populationCount: 1,
+        recordedCount: 1,
+        missingCount: 0,
+        stringValues: [{ value: 'Success', count: 1, rate: 1 }],
+      },
+    ],
+    entries: [
+      {
+        entryId: entry.id,
+        samples: [expect.objectContaining({ annotationId: 'ann-1', result: { outcome: 'Success' } })],
+        nearbyTexts: [expect.objectContaining({ annotationId: 'ann-note', text: 'Bull spike, then deep pullback' })],
+      },
+    ],
+    visualBatches: [{ requests: [{ entryId: entry.id, annotationIds: ['ann-1'] }], sampleCount: 1 }],
+  });
+
+  const invalidStudy = await client.callTool({
+    name: 'prepare_sample_study',
+    arguments: {
+      query: { entry: [{ group: 'setup', values: ['breakout'] }], annotation: [], results: [] },
+    },
+  });
+  expect(invalidStudy).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: {
+        code: 'INVALID_SAMPLE_POPULATION',
+        hint: expect.stringContaining('query.annotation'),
+        retryable: false,
+      },
+    },
+  });
+
+  const unknownDimension = await client.callTool({
+    name: 'prepare_sample_study',
+    arguments: {
+      query: { entry: [], annotation: [{ group: 'setup', values: ['breakout'] }], results: [] },
+      resultDimensions: ['not-a-dimension'],
+    },
+  });
+  expect(unknownDimension).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: {
+        code: 'NOT_FOUND',
+        hint: expect.stringContaining('list_vocabulary'),
+        retryable: false,
+      },
+    },
   });
 
   const context = await client.callTool({ name: 'get_entry_context', arguments: { entryId: entry.id } });
@@ -165,6 +262,13 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
     association: { kind: 'unique', screenshotIds: ['S1'] },
   });
   expect(manifest.evidenceTrust).toBe('untrusted-journal-evidence');
+  expect(manifest.inlineAssetIds).toEqual([
+    'overview',
+    'locator',
+    'A1-focus',
+    'A1-source-locator',
+    'A1-source-clean',
+  ]);
   expect(manifest.assets.map((asset) => asset.kind)).toEqual([
     'overview',
     'locator',
@@ -199,17 +303,33 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
   expect(await sharp(locatorBytes).metadata()).toMatchObject({ width: sourceLocator.width, height: sourceLocator.height });
   expect(await sharp(cleanBytes).metadata()).toMatchObject({ width: sourceClean.width, height: sourceClean.height });
 
+  const batchVisual = await client.callTool({
+    name: 'get_visual_evidence_batch',
+    arguments: { requests: study.visualBatches[0].requests },
+  });
+  expect(batchVisual.structuredContent).toMatchObject({
+    manifests: [
+      expect.objectContaining({
+        entryId: entry.id,
+        inlineAssetIds: ['overview', 'locator', 'A1-focus', 'A1-source-locator', 'A1-source-clean'],
+      }),
+    ],
+  });
+  const batchContent = (batchVisual as { content?: Array<{ type: string }> }).content ?? [];
+  expect(batchContent.filter((item) => item.type === 'image')).toHaveLength(5);
+  expect(batchContent.filter((item) => item.type === 'resource_link')).toHaveLength(5);
+
   const secondTransport = new StreamableHTTPClientTransport(new URL(connection.url), {
     requestInit: { headers: { Authorization: connection.headers.Authorization } },
   });
   const secondClient = new Client({ name: 'other-session', version: '1.0.0' }, { capabilities: {} });
   await secondClient.connect(secondTransport);
-  await expect(secondClient.readResource({ uri: sourceClean.uri })).rejects.toThrow(/does not belong to this session/);
+  await expect(secondClient.readResource({ uri: sourceClean.uri })).rejects.toThrow(/SESSION_MISMATCH/);
   await secondClient.close();
 
   const guide = await client.readResource({ uri: 'trading-journal://agent-guide/current' });
   expect(guide.contents[0]).toMatchObject({ mimeType: 'text/markdown' });
-  expect('text' in guide.contents[0] ? guide.contents[0].text : '').toContain('once every three bars');
+  expect('text' in guide.contents[0] ? guide.contents[0].text : '').toContain('每 3 根显示一次编号');
   const prompts = await client.listPrompts();
   expect(prompts.prompts.map((prompt) => prompt.name)).toContain('inspect_entry_visual');
 
@@ -267,7 +387,7 @@ test('AI search order and revision-bound resources stay deterministic', async ()
     newer.id,
     JSON.stringify({ version: '6.9.1', tjPage: { width: 200, height: 100 }, objects: [], revisionProbe: true }),
   );
-  await expect(client.readResource({ uri: contextUri })).rejects.toThrow(/revision expired/);
+  await expect(client.readResource({ uri: contextUri })).rejects.toThrow(/REVISION_EXPIRED/);
 
   await client.close();
   await page.evaluate(() => (globalThis as unknown as WindowWithApi).api.stopAiAccess());
@@ -442,7 +562,11 @@ test('App settings has a dedicated AI page with MCP setup and editable prompts',
   await expect(page.getByTestId('settings-tab-ai')).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByTestId('ai-access-steps')).toContainText('MCP: Open User Configuration');
   await expect(page.getByTestId('ai-access-steps')).toContainText('MCP: List Servers');
-  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/once every three bars/);
+  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/左上是 1 小时图（1h）/);
+  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/蓝色平滑曲线是 5m EMA20/);
+  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/红色小块表示 sell 入场点/);
+  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/每 3 根显示一次编号/);
+  await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/纯白背景通常表示 RTH 时段/);
   await expect(page.getByTestId('ai-prompt-inspect_entry_visual')).toBeVisible();
   await page.getByTestId('ai-agent-guide').fill('Unsaved guide draft');
   await page.getByTestId('settings-tab-general').click();

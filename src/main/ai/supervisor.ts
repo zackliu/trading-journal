@@ -8,6 +8,7 @@ import type {
   AiMainToCompanionMessage,
 } from '../../shared/aiCompanionProtocol';
 import { JournalReadService } from './journalReadService';
+import { toAiReadError } from './readErrors';
 
 export interface AiSupervisorStartOptions {
   sqlitePath: string;
@@ -186,8 +187,12 @@ export class AiAccessSupervisor {
       });
     } catch (error) {
       console.error('[ai-read]', error);
-      const text = publicReadError(error);
-      child.postMessage({ type: 'read-result', requestId: message.requestId, ok: false, error: text } satisfies AiMainToCompanionMessage);
+      child.postMessage({
+        type: 'read-result',
+        requestId: message.requestId,
+        ok: false,
+        error: toAiReadError(error),
+      } satisfies AiMainToCompanionMessage);
       this.callbacks.onActivity({
         at: new Date().toISOString(),
         client: message.client,
@@ -230,25 +235,4 @@ function companionEnvironment(bootConfig: string): NodeJS.ProcessEnv {
     if (process.env[name] !== undefined) environment[name] = process.env[name];
   }
   return environment;
-}
-
-function publicReadError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const safe = [
-    /^entry not found:/,
-    /^annotation not found:/,
-    /^annotation does not belong to Entry:/,
-    /^saved view not found:/,
-    /^cursor expired$/,
-    /^cursor does not belong to this session$/,
-    /^Entry context revision expired$/,
-    /^visual evidence bundle /,
-    /^Visual evidence bundle /,
-    /^AI access epoch expired$/,
-    /^journal instance changed$/,
-    /^missing AI session id$/,
-    /^Entry canvas is too large for visual evidence$/,
-    /^Entry page exceeds the visual evidence pixel limit$/,
-  ];
-  return safe.some((pattern) => pattern.test(message)) ? message : 'Journal read request failed.';
 }

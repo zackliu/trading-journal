@@ -29,6 +29,8 @@ const chart = await sharp(Buffer.from(chartSvg)).png().toBuffer();
 
 const seeded = await page.evaluate(
   async ({ base64 }) => {
+    await globalThis.api.defineGroup({ id: 'setup', label: 'Setup', pinned: true });
+    await globalThis.api.defineValue({ groupId: 'setup', value: 'counted-move', label: 'Counted Move' });
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);

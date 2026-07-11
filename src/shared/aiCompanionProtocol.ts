@@ -1,4 +1,4 @@
-import type { AiAccessActivity, AiPromptTemplate, JournalReadRequest, JournalReadResponse } from './aiAccess';
+import type { AiAccessActivity, AiPromptTemplate, AiReadError, JournalReadRequest, JournalReadResponse } from './aiAccess';
 
 export interface AiCompanionBootConfig {
   port: number;
@@ -29,4 +29,4 @@ export type AiMainToCompanionMessage =
   | { type: 'start' }
   | { type: 'stop' }
   | { type: 'read-result'; requestId: string; ok: true; response: JournalReadResponse }
-  | { type: 'read-result'; requestId: string; ok: false; error: string };
+  | { type: 'read-result'; requestId: string; ok: false; error: AiReadError };

@@ -299,8 +299,8 @@ export function GeneralSettingsDialog({ dataDir, busy, error, onChange, onReveal
             <div className="ai-access__editor">
               <div className="ai-access__editor-head">
                 <div>
-                  <h4>Agent Guide</h4>
-                  <p>These are your trusted chart-reading conventions. The starter already records that labels below bars appear every three bars.</p>
+                  <h4>Agent Guide（图表解读指南）</h4>
+                  <p>这里保存长期有效的个人图表约定。默认指南已包含常见三图布局、入场标记和每 3 根 bar 编号方式。</p>
                 </div>
                 <button type="button" className="general__btn" disabled={!aiSettings || aiTransitioning} onClick={() => void saveAiSettings()}>
                   Save AI settings

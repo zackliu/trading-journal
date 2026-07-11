@@ -65,6 +65,8 @@ export class JournalReadService {
           op: request.op,
           value: this.page(context, request.input, () => this.repository.searchSamples(request.input)),
         };
+      case 'prepare-sample-study':
+        return { op: request.op, value: this.repository.prepareSampleStudy(request.input) };
       case 'entry-context':
         return {
           op: request.op,
@@ -74,8 +76,24 @@ export class JournalReadService {
         return { op: request.op, value: this.repository.linkedContext(request.input) };
       case 'visual-evidence':
         return { op: request.op, value: await this.visualEvidence.create(request.input, context.sessionId) };
+      case 'visual-evidence-batch':
+        return {
+          op: request.op,
+          value: {
+            manifests: await Promise.all(
+              request.input.requests.map((item) => this.visualEvidence.create(item, context.sessionId)),
+            ),
+          },
+        };
       case 'read-resource':
         return { op: request.op, value: this.visualEvidence.read(request.input.uri, context.sessionId) };
+      case 'read-resources':
+        return {
+          op: request.op,
+          value: {
+            items: request.input.uris.map((uri) => this.visualEvidence.read(uri, context.sessionId)),
+          },
+        };
     }
   }
 
