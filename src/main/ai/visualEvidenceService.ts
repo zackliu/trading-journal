@@ -6,11 +6,24 @@ import sharp from 'sharp';
 import type { Db } from '../db';
 import type {
   AiAffineTransform,
+  AiBarAlignmentProbe,
+  AiPixelRect,
   AiPoint,
+  AiProgressiveReveal,
+  AiProgressiveRevealAdvanceRequest,
+  AiProgressiveRevealFrame,
   AiResourceRead,
+  AiResolvedBar,
   AiScreenshotInstance,
+  AiUniformBarAlignment,
   AiVisualAnnotation,
   AiVisualAsset,
+  AiVisualArtifactChunk,
+  AiVisualArtifactChunkRequest,
+  AiVisualArtifactItem,
+  AiVisualArtifactKind,
+  AiVisualArtifactPlan,
+  AiVisualArtifactPlanRequest,
   AiVisualEvidenceManifest,
   AiVisualEvidenceQuery,
   AiVisualGeometry,
@@ -58,15 +71,47 @@ interface CachedBundle {
   entryId: string;
   sessionId: string;
   updatedAt: number;
+  evidenceRevision: string;
   expiresAt: number;
   byteCount: number;
   assets: Map<string, CachedAsset>;
+  pageWidth: number;
+  pageHeight: number;
+  scene: SceneObject[];
+  screenshots: Array<Omit<ScreenshotData, 'bytes'>>;
+  annotations: AnnotationData[];
+}
+
+interface CachedArtifactItem extends CachedAsset {
+  descriptor: AiVisualArtifactItem;
+}
+
+interface CachedReveal {
+  descriptor: AiProgressiveReveal;
+  bars: AiResolvedBar[];
+  source: Buffer;
+  currentFrame: number;
+  highestRevealedFrame: number;
+}
+
+interface CachedArtifactPlan {
+  manifest: AiVisualArtifactPlan;
+  sessionId: string;
+  bundleId: string;
+  expiresAt: number;
+  byteCount: number;
+  items: Map<string, CachedArtifactItem>;
+  reveals: Map<string, CachedReveal>;
 }
 
 const BUNDLE_TTL_MS = 10 * 60 * 1000;
 const MAX_BUNDLES = 20;
+const MAX_ARTIFACT_PLANS = 20;
 const MAX_BUNDLE_BYTES = 32 * 1024 * 1024;
 const MAX_CACHE_BYTES = 128 * 1024 * 1024;
+const MAX_ARTIFACT_PLAN_BYTES = 64 * 1024 * 1024;
+const MAX_ARTIFACT_EXPORT_BYTES = 512 * 1024 * 1024;
+const MAX_REVEAL_FRAMES = 240;
 const MAX_CANVAS_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_PIXELS = 8_000_000;
 const OVERVIEW_MAX_WIDTH = 1800;
@@ -78,6 +123,7 @@ const IDENTITY: AiAffineTransform = [1, 0, 0, 1, 0, 0];
 
 export class VisualEvidenceService {
   private readonly bundles = new Map<string, CachedBundle>();
+  private readonly artifactPlans = new Map<string, CachedArtifactPlan>();
 
   constructor(
     private readonly database: Db,
@@ -227,22 +273,397 @@ export class VisualEvidenceService {
     };
     const manifestUri = this.uri(bundleId, 'manifest');
     assets.set(manifestUri, { mimeType: 'application/json', bytes: Buffer.from(JSON.stringify(manifest)) });
-    const byteCount = [...assets.values()].reduce((total, asset) => total + asset.bytes.byteLength, 0);
+    const byteCount =
+      Buffer.byteLength(row.canvas_json, 'utf8') +
+      [...assets.values()].reduce((total, asset) => total + asset.bytes.byteLength, 0);
     if (byteCount > MAX_BUNDLE_BYTES) throw new Error('Visual evidence bundle exceeds the encoded byte limit');
     this.bundles.set(bundleId, {
       entryId: input.entryId,
       sessionId,
       updatedAt: row.updated_at,
+      evidenceRevision,
       expiresAt,
       byteCount,
       assets,
+      pageWidth,
+      pageHeight,
+      scene,
+      screenshots: screenshots.map((screenshot) => ({
+        id: screenshot.id,
+        hash: screenshot.hash,
+        nativeWidth: screenshot.nativeWidth,
+        nativeHeight: screenshot.nativeHeight,
+        pageQuad: screenshot.pageQuad,
+        sourceToPage: screenshot.sourceToPage,
+        pageToSource: screenshot.pageToSource,
+        zIndex: screenshot.zIndex,
+        mimeType: screenshot.mimeType,
+        objectWidth: screenshot.objectWidth,
+        objectHeight: screenshot.objectHeight,
+        cropX: screenshot.cropX,
+        cropY: screenshot.cropY,
+      })),
+      annotations,
     });
     this.enforceBundleLimit();
     return manifest;
   }
 
+  async createArtifacts(input: AiVisualArtifactPlanRequest, sessionId: string): Promise<AiVisualArtifactPlan> {
+    this.prune();
+    const bundle = this.requireBundle(input.bundleId, sessionId);
+    const planId = randomUUID();
+    const planHash = createHash('sha256')
+      .update(JSON.stringify({ bundleId: input.bundleId, evidenceRevision: bundle.evidenceRevision, specs: input.specs }))
+      .digest('hex');
+    const expiresAt = Math.min(bundle.expiresAt, Date.now() + BUNDLE_TTL_MS);
+    const items = new Map<string, CachedArtifactItem>();
+    const descriptors: AiVisualArtifactItem[] = [];
+    const probes: AiBarAlignmentProbe[] = [];
+    const reveals = new Map<string, CachedReveal>();
+    const revealDescriptors: AiProgressiveReveal[] = [];
+    let itemNumber = 0;
+    let hydrated: ScreenshotData[] | undefined;
+    const screenshots = async (): Promise<ScreenshotData[]> => {
+      hydrated ??= await this.hydrateScreenshots(bundle);
+      return hydrated;
+    };
+    const addItem = (
+      kind: AiVisualArtifactKind,
+      bytes: Buffer,
+      mimeType: AiVisualArtifactItem['mimeType'],
+      width: number,
+      height: number,
+      details: Partial<Pick<AiVisualArtifactItem, 'screenshotId' | 'annotationId' | 'sourceRoi' | 'pageRoi'>>,
+      warnings: string[] = [],
+    ): string => {
+      itemNumber += 1;
+      const id = `I${String(itemNumber).padStart(3, '0')}`;
+      const extension = mimeExtension(mimeType);
+      const uri = this.artifactUri(planId, id);
+      const descriptor: AiVisualArtifactItem = {
+        id,
+        kind,
+        uri,
+        mimeType,
+        filename: `${id}-${kind}.${extension}`,
+        width,
+        height,
+        byteCount: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        ...details,
+        derived: kind !== 'source-original',
+        evidenceTrust: 'untrusted-journal-evidence',
+        warnings,
+      };
+      descriptors.push(descriptor);
+      items.set(uri, { mimeType, bytes, descriptor });
+      return id;
+    };
+
+    for (const spec of input.specs) {
+      if (spec.kind === 'source-original') {
+        const screenshot = screenshotById(await screenshots(), spec.screenshotId);
+        addItem(
+          spec.kind,
+          screenshot.bytes,
+          screenshot.mimeType,
+          screenshot.nativeWidth,
+          screenshot.nativeHeight,
+          { screenshotId: screenshot.id, sourceRoi: { x: 0, y: 0, width: screenshot.nativeWidth, height: screenshot.nativeHeight } },
+        );
+        continue;
+      }
+      if (spec.kind === 'instance-source-window') {
+        const screenshot = screenshotById(await screenshots(), spec.screenshotId);
+        const roi = sourceWindowRect(screenshot);
+        const bytes = await extractPng(screenshot.bytes, roi);
+        addItem(spec.kind, bytes, 'image/png', roi.width, roi.height, { screenshotId: screenshot.id, sourceRoi: roi });
+        continue;
+      }
+      if (spec.kind === 'source-region') {
+        const screenshot = screenshotById(await screenshots(), spec.screenshotId);
+        const roi = strictPixelRect(spec.roi, screenshot.nativeWidth, screenshot.nativeHeight, 'source ROI');
+        const bytes = await extractPng(screenshot.bytes, roi);
+        addItem(spec.kind, bytes, 'image/png', roi.width, roi.height, { screenshotId: screenshot.id, sourceRoi: roi });
+        continue;
+      }
+      if (spec.kind === 'page-region') {
+        const roi = strictPixelRect(spec.roi, bundle.pageWidth, bundle.pageHeight, 'page ROI');
+        const pageScene =
+          spec.composition === 'committed-page'
+            ? bundle.scene
+            : bundle.scene.filter((object) => stringValue(object.data.src)?.startsWith('tj-image://'));
+        const page = await renderPage(
+          pageScene,
+          await screenshots(),
+          bundle.pageWidth,
+          bundle.pageHeight,
+          bundle.pageWidth,
+          bundle.pageHeight,
+        );
+        const bytes = await extractPng(page, roi);
+        addItem(
+          spec.kind,
+          bytes,
+          'image/png',
+          roi.width,
+          roi.height,
+          { pageRoi: roi },
+          spec.composition === 'clean-underlay'
+            ? ['Derived page underlay with journal annotations removed; do not treat it as the user-visible composition.']
+            : [],
+        );
+        continue;
+      }
+      if (spec.kind === 'annotation-context') {
+        const annotation = annotationById(bundle.annotations, spec.annotationId);
+        if (spec.composition === 'committed-page') {
+          const { roi, clipped } = contextRect(
+            annotation.manifest.paintBounds,
+            spec.contextPx,
+            bundle.pageWidth,
+            bundle.pageHeight,
+          );
+          const page = await renderPage(
+            bundle.scene,
+            await screenshots(),
+            bundle.pageWidth,
+            bundle.pageHeight,
+            bundle.pageWidth,
+            bundle.pageHeight,
+          );
+          const bytes = await extractPng(page, roi);
+          addItem(spec.kind, bytes, 'image/png', roi.width, roi.height, { annotationId: spec.annotationId, pageRoi: roi }, clipped ? ['Context is clipped by the page edge.'] : []);
+          continue;
+        }
+        if (annotation.manifest.association.kind !== 'unique') {
+          throw new Error('annotation source context requires one unambiguous screenshot instance');
+        }
+        const screenshot = screenshotById(await screenshots(), annotation.manifest.association.screenshotIds[0]);
+        if (!screenshot.pageToSource) throw new Error('annotation source transform is unavailable');
+        const sourcePoints = annotation.points.map((point) => transform(point, screenshot.pageToSource!));
+        const visible = { x: screenshot.cropX, y: screenshot.cropY, width: screenshot.objectWidth, height: screenshot.objectHeight };
+        if (!sourcePoints.every((point) => pointInBounds(point, visible))) {
+          throw new Error('annotation geometry is clipped by the screenshot source window');
+        }
+        const { roi, clipped } = contextRect(
+          pointsBounds(sourcePoints),
+          spec.contextPx,
+          screenshot.nativeWidth,
+          screenshot.nativeHeight,
+        );
+        const bytes = await extractPng(screenshot.bytes, roi);
+        addItem(spec.kind, bytes, 'image/png', roi.width, roi.height, { annotationId: spec.annotationId, screenshotId: screenshot.id, sourceRoi: roi }, clipped ? ['Context is clipped by the source image edge.'] : []);
+        continue;
+      }
+      if (spec.kind === 'bar-alignment-probe') {
+        const screenshot = screenshotById(await screenshots(), spec.screenshotId);
+        const roi = strictPixelRect(spec.roi, screenshot.nativeWidth, screenshot.nativeHeight, 'bar probe ROI');
+        const resolvedBars = resolveUniformBars(roi, spec.proposal);
+        const proposalHash = createHash('sha256')
+          .update(JSON.stringify({ evidenceRevision: bundle.evidenceRevision, screenshotId: screenshot.id, roi, proposal: spec.proposal, resolvedBars }))
+          .digest('hex');
+        const probeId = randomUUID();
+        const probeAssets = await createProbeAssets(screenshot.bytes, roi, resolvedBars);
+        const assetIds = probeAssets.map((asset) =>
+          addItem(asset.kind, asset.bytes, 'image/png', asset.width, asset.height, { screenshotId: screenshot.id, sourceRoi: asset.roi }),
+        );
+        probes.push({
+          probeId,
+          proposalHash,
+          screenshotId: screenshot.id,
+          roi,
+          proposal: spec.proposal,
+          resolvedBars,
+          assetIds,
+          calibrationExposedFuture: true,
+          warnings: [
+            'This proposal was supplied by an agent or user; Trading Journal did not detect or verify candles.',
+            'Calibration exposes future pixels and cannot itself be treated as a blind replay.',
+          ],
+        });
+        continue;
+      }
+      if (spec.kind === 'bar-reveal') {
+        const accepted = this.findProbe(spec.acceptedProbeId, spec.acceptedProposalHash, input.bundleId, sessionId);
+        if (spec.fromBar > spec.toBar) throw new Error('bar reveal fromBar must not follow toBar');
+        const bars = accepted.probe.resolvedBars.filter((bar) => bar.bar >= spec.fromBar && bar.bar <= spec.toBar);
+        if (bars.length === 0 || bars[0].bar !== spec.fromBar || bars.at(-1)?.bar !== spec.toBar) {
+          throw new Error('bar reveal range must match resolved probe bars');
+        }
+        if (bars.length > MAX_REVEAL_FRAMES) throw new Error('bar reveal exceeds the 240-frame limit');
+        const screenshot = screenshotById(await screenshots(), accepted.probe.screenshotId);
+        const source = await extractPng(screenshot.bytes, accepted.probe.roi);
+        const revealId = randomUUID();
+        const descriptor: AiProgressiveReveal = {
+          revealId,
+          probeId: accepted.probe.probeId,
+          screenshotId: screenshot.id,
+          roi: accepted.probe.roi,
+          fromBar: spec.fromBar,
+          toBar: spec.toBar,
+          frameCount: bars.length,
+          calibrationExposedFuture: true,
+          warnings: [
+            'Progressive reveal masks future pixels in a static screenshot; it is not chart replay.',
+            'Indicators, drawings, labels, or outcome marks already present on revealed pixels may still leak future information.',
+          ],
+        };
+        revealDescriptors.push(descriptor);
+        reveals.set(revealId, { descriptor, bars, source, currentFrame: -1, highestRevealedFrame: -1 });
+      }
+    }
+
+    const itemBytes = [...items.values()].reduce((total, item) => total + item.bytes.byteLength, 0);
+    const revealEstimate = [...reveals.values()].reduce(
+      (total, reveal) => total + reveal.source.byteLength * reveal.descriptor.frameCount,
+      0,
+    );
+    const estimatedByteCount = itemBytes + revealEstimate;
+    const estimatedFileCount = descriptors.length + revealDescriptors.reduce((total, reveal) => total + reveal.frameCount, 0) + 2;
+    if (estimatedFileCount > 512 || estimatedByteCount > MAX_ARTIFACT_EXPORT_BYTES) {
+      throw new Error('visual artifact plan exceeds the export file or byte limit');
+    }
+    const memoryBytes = itemBytes + [...reveals.values()].reduce((total, reveal) => total + reveal.source.byteLength, 0);
+    if (memoryBytes > MAX_ARTIFACT_PLAN_BYTES) throw new Error('visual artifact plan exceeds the in-memory byte limit');
+    const manifest: AiVisualArtifactPlan = {
+      planId,
+      planHash,
+      bundleId: input.bundleId,
+      entryId: bundle.entryId,
+      evidenceRevision: bundle.evidenceRevision,
+      items: descriptors,
+      probes,
+      reveals: revealDescriptors,
+      estimatedFileCount,
+      estimatedByteCount,
+      evidenceTrust: 'untrusted-journal-evidence',
+      warnings: [],
+      expiresAt: new Date(expiresAt).toISOString(),
+    };
+    this.artifactPlans.set(planId, {
+      manifest,
+      sessionId,
+      bundleId: input.bundleId,
+      expiresAt,
+      byteCount: memoryBytes,
+      items,
+      reveals,
+    });
+    this.enforceArtifactPlanLimit();
+    return manifest;
+  }
+
+  async advanceReveal(input: AiProgressiveRevealAdvanceRequest, sessionId: string): Promise<AiProgressiveRevealFrame> {
+    this.prune();
+    const plan = this.requireArtifactPlan(input.planId, sessionId);
+    if (plan.manifest.planHash !== input.planHash) throw new Error('visual artifact plan hash does not match');
+    const reveal = plan.reveals.get(input.revealId);
+    if (!reveal) throw new Error('progressive reveal not found in this plan');
+    if (input.action === 'start') {
+      reveal.currentFrame = 0;
+      reveal.highestRevealedFrame = Math.max(0, reveal.highestRevealedFrame);
+    } else if (input.action === 'next') {
+      if (reveal.currentFrame < 0) throw new Error('start the progressive reveal before advancing it');
+      if (reveal.currentFrame + 1 >= reveal.bars.length) throw new Error('progressive reveal is already at the final frame');
+      reveal.currentFrame += 1;
+      reveal.highestRevealedFrame = Math.max(reveal.highestRevealedFrame, reveal.currentFrame);
+    } else if (input.action === 'previous') {
+      if (reveal.currentFrame <= 0) throw new Error('progressive reveal has no previous frame');
+      reveal.currentFrame -= 1;
+    } else {
+      if (input.frameIndex === undefined) throw new Error('seek requires frameIndex');
+      if (input.frameIndex < 0 || input.frameIndex > reveal.highestRevealedFrame) {
+        throw new Error('seek cannot expose a frame beyond the highest revealed frame');
+      }
+      reveal.currentFrame = input.frameIndex;
+    }
+    const bar = reveal.bars[reveal.currentFrame];
+    const localCutoff = clamp(Math.round(bar.cutoffX - reveal.descriptor.roi.x), 0, reveal.descriptor.roi.width);
+    const bytes = await maskFuturePixels(reveal.source, reveal.descriptor.roi.width, reveal.descriptor.roi.height, localCutoff);
+    const itemId = `${reveal.descriptor.revealId}-F${String(reveal.currentFrame + 1).padStart(3, '0')}`;
+    const uri = this.artifactUri(plan.manifest.planId, itemId);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const item: AiVisualArtifactItem = {
+      id: itemId,
+      kind: 'bar-reveal-frame',
+      uri,
+      mimeType: 'image/png',
+      filename: `bar-reveal-${String(reveal.currentFrame + 1).padStart(3, '0')}-bar-${bar.bar}.png`,
+      width: reveal.descriptor.roi.width,
+      height: reveal.descriptor.roi.height,
+      byteCount: bytes.byteLength,
+      sha256,
+      screenshotId: reveal.descriptor.screenshotId,
+      sourceRoi: reveal.descriptor.roi,
+      derived: true,
+      evidenceTrust: 'untrusted-journal-evidence',
+      warnings: reveal.descriptor.warnings,
+    };
+    const existing = plan.items.get(uri);
+    const nextPlanBytes = plan.byteCount - (existing?.bytes.byteLength ?? 0) + bytes.byteLength;
+    if (nextPlanBytes > MAX_ARTIFACT_PLAN_BYTES) throw new Error('revealed frames exceed the in-memory artifact plan limit');
+    plan.byteCount = nextPlanBytes;
+    plan.items.set(uri, { mimeType: 'image/png', bytes, descriptor: item });
+    return {
+      revealId: reveal.descriptor.revealId,
+      frameIndex: reveal.currentFrame,
+      highestRevealedFrame: reveal.highestRevealedFrame,
+      frameCount: reveal.bars.length,
+      bar: bar.bar,
+      centerX: bar.centerX,
+      cutoffX: bar.cutoffX,
+      width: reveal.descriptor.roi.width,
+      height: reveal.descriptor.roi.height,
+      mimeType: 'image/png',
+      byteCount: bytes.byteLength,
+      sha256,
+      item,
+      blob: bytes.toString('base64'),
+      evidenceTrust: 'untrusted-journal-evidence',
+      warnings: reveal.descriptor.warnings,
+    };
+  }
+
+  readArtifactChunk(input: AiVisualArtifactChunkRequest, sessionId: string): AiVisualArtifactChunk {
+    this.prune();
+    const plan = this.requireArtifactPlan(input.planId, sessionId);
+    if (plan.manifest.planHash !== input.planHash) throw new Error('visual artifact plan hash does not match');
+    const item = [...plan.items.values()].find((candidate) => candidate.descriptor.id === input.itemId);
+    if (!item) throw new Error('visual artifact item not found or not yet revealed');
+    if (!Number.isInteger(input.offset) || input.offset < 0 || input.offset >= item.bytes.byteLength) {
+      throw new Error('visual artifact chunk offset is outside the item');
+    }
+    if (!Number.isInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 786_432) {
+      throw new Error('visual artifact chunk maxBytes must be between 1 and 786432');
+    }
+    const end = Math.min(item.bytes.byteLength, input.offset + input.maxBytes);
+    const bytes = item.bytes.subarray(input.offset, end);
+    return {
+      planId: input.planId,
+      itemId: item.descriptor.id,
+      filename: item.descriptor.filename,
+      mimeType: item.descriptor.mimeType,
+      encoding: 'base64',
+      offset: input.offset,
+      byteCount: bytes.byteLength,
+      totalByteCount: item.bytes.byteLength,
+      ...(end < item.bytes.byteLength ? { nextOffset: end } : {}),
+      sha256: item.descriptor.sha256,
+      data: bytes.toString('base64'),
+    };
+  }
+
   read(uri: string, sessionId: string): AiResourceRead {
     this.prune();
+    const artifactPlanId = artifactPlanIdFromUri(uri);
+    if (artifactPlanId) {
+      const plan = this.requireArtifactPlan(artifactPlanId, sessionId);
+      const item = plan.items.get(uri);
+      if (!item) throw new Error('visual artifact resource not found');
+      return { uri, mimeType: item.mimeType, blob: item.bytes.toString('base64') };
+    }
     const bundleId = bundleIdFromUri(uri);
     const bundle = bundleId ? this.bundles.get(bundleId) : undefined;
     if (!bundleId || !bundle) throw new Error('visual evidence bundle expired or was evicted');
@@ -262,12 +683,71 @@ export class VisualEvidenceService {
 
   clear(): void {
     this.bundles.clear();
+    this.artifactPlans.clear();
   }
 
   clearSession(sessionId: string): void {
     for (const [bundleId, bundle] of this.bundles) {
       if (bundle.sessionId === sessionId) this.bundles.delete(bundleId);
     }
+    for (const [planId, plan] of this.artifactPlans) {
+      if (plan.sessionId === sessionId) this.artifactPlans.delete(planId);
+    }
+  }
+
+  private requireBundle(bundleId: string, sessionId: string): CachedBundle {
+    const bundle = this.bundles.get(bundleId);
+    if (!bundle || bundle.expiresAt <= Date.now()) throw new Error('visual evidence bundle expired or was evicted');
+    if (bundle.sessionId !== sessionId) throw new Error('visual evidence bundle does not belong to this session');
+    const current = this.database.prepare('SELECT updated_at FROM entries WHERE id = ?').get(bundle.entryId) as
+      | { updated_at: number }
+      | undefined;
+    if (!current || current.updated_at !== bundle.updatedAt) {
+      this.bundles.delete(bundleId);
+      for (const [planId, plan] of this.artifactPlans) {
+        if (plan.bundleId === bundleId) this.artifactPlans.delete(planId);
+      }
+      throw new Error('visual evidence bundle expired because the Entry changed');
+    }
+    return bundle;
+  }
+
+  private requireArtifactPlan(planId: string, sessionId: string): CachedArtifactPlan {
+    const plan = this.artifactPlans.get(planId);
+    if (!plan || plan.expiresAt <= Date.now()) throw new Error('visual artifact plan expired or was evicted');
+    if (plan.sessionId !== sessionId) throw new Error('visual artifact plan does not belong to this session');
+    this.requireBundle(plan.bundleId, sessionId);
+    return plan;
+  }
+
+  private async hydrateScreenshots(bundle: CachedBundle): Promise<ScreenshotData[]> {
+    return Promise.all(
+      bundle.screenshots.map(async (screenshot) => {
+        const bytes = readFileSync(join(this.imagesDir, screenshot.hash));
+        const metadata = await sharp(bytes).metadata();
+        if (metadata.width !== screenshot.nativeWidth || metadata.height !== screenshot.nativeHeight) {
+          throw new Error('screenshot bytes no longer match the evidence bundle');
+        }
+        return { ...screenshot, bytes };
+      }),
+    );
+  }
+
+  private findProbe(
+    probeId: string,
+    proposalHash: string,
+    bundleId: string,
+    sessionId: string,
+  ): { probe: AiBarAlignmentProbe; plan: CachedArtifactPlan } {
+    for (const plan of this.artifactPlans.values()) {
+      if (plan.sessionId !== sessionId || plan.bundleId !== bundleId) continue;
+      const probe = plan.manifest.probes.find((candidate) => candidate.probeId === probeId);
+      if (!probe) continue;
+      if (probe.proposalHash !== proposalHash) throw new Error('bar alignment proposal hash does not match');
+      this.requireArtifactPlan(plan.manifest.planId, sessionId);
+      return { probe, plan };
+    }
+    throw new Error('bar alignment probe expired or does not belong to this bundle');
   }
 
   private async loadScreenshots(scene: SceneObject[]): Promise<ScreenshotData[]> {
@@ -447,6 +927,10 @@ export class VisualEvidenceService {
     return `trading-journal://journal/${this.journalInstanceId}/evidence/${bundleId}/${assetId}`;
   }
 
+  private artifactUri(planId: string, itemId: string): string {
+    return `trading-journal://journal/${this.journalInstanceId}/artifacts/${planId}/${itemId}`;
+  }
+
   private entryRow(entryId: string): EntryVisualRow {
     const row = this.database
       .prepare('SELECT id, canvas_json, updated_at FROM entries WHERE id = ?')
@@ -458,6 +942,9 @@ export class VisualEvidenceService {
   private prune(): void {
     const now = Date.now();
     for (const [bundleId, bundle] of this.bundles) if (bundle.expiresAt <= now) this.bundles.delete(bundleId);
+    for (const [planId, plan] of this.artifactPlans) {
+      if (plan.expiresAt <= now || !this.bundles.has(plan.bundleId)) this.artifactPlans.delete(planId);
+    }
   }
 
   private enforceBundleLimit(): void {
@@ -469,6 +956,181 @@ export class VisualEvidenceService {
       this.bundles.delete(oldest);
     }
   }
+
+  private enforceArtifactPlanLimit(): void {
+    const totalBytes = (): number =>
+      [...this.artifactPlans.values()].reduce((total, plan) => total + plan.byteCount, 0);
+    while (this.artifactPlans.size > MAX_ARTIFACT_PLANS || totalBytes() > MAX_CACHE_BYTES) {
+      const oldest = this.artifactPlans.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.artifactPlans.delete(oldest);
+    }
+  }
+}
+
+interface ProbeAssetBuild {
+  kind: Extract<
+    AiVisualArtifactKind,
+    'bar-probe-clean' | 'bar-probe-locator' | 'bar-probe-magnifier-clean' | 'bar-probe-magnifier-locator'
+  >;
+  bytes: Buffer;
+  width: number;
+  height: number;
+  roi: AiPixelRect;
+}
+
+function screenshotById(screenshots: ScreenshotData[], screenshotId: string): ScreenshotData {
+  const screenshot = screenshots.find((candidate) => candidate.id === screenshotId);
+  if (!screenshot) throw new Error('screenshot instance does not belong to this evidence bundle');
+  return screenshot;
+}
+
+function annotationById(annotations: AnnotationData[], annotationId: string): AnnotationData {
+  const annotation = annotations.find((candidate) => candidate.manifest.annotationId === annotationId);
+  if (!annotation) throw new Error('annotation was not selected into this evidence bundle');
+  return annotation;
+}
+
+function strictPixelRect(raw: AiPixelRect, maxWidth: number, maxHeight: number, label: string): AiPixelRect {
+  if (![raw.x, raw.y, raw.width, raw.height].every(Number.isInteger)) throw new Error(`${label} must use integer pixels`);
+  if (raw.x < 0 || raw.y < 0 || raw.width < 1 || raw.height < 1) throw new Error(`${label} is invalid`);
+  if (raw.x + raw.width > maxWidth || raw.y + raw.height > maxHeight) {
+    throw new Error(`${label} must be fully inside its declared pixel space`);
+  }
+  return { ...raw };
+}
+
+function sourceWindowRect(screenshot: ScreenshotData): AiPixelRect {
+  const left = Math.floor(screenshot.cropX);
+  const top = Math.floor(screenshot.cropY);
+  const right = Math.ceil(screenshot.cropX + screenshot.objectWidth);
+  const bottom = Math.ceil(screenshot.cropY + screenshot.objectHeight);
+  return strictPixelRect(
+    { x: left, y: top, width: right - left, height: bottom - top },
+    screenshot.nativeWidth,
+    screenshot.nativeHeight,
+    'screenshot instance source window',
+  );
+}
+
+function contextRect(
+  bounds: Bounds,
+  contextPx: number,
+  maxWidth: number,
+  maxHeight: number,
+): { roi: AiPixelRect; clipped: boolean } {
+  const requested = {
+    left: Math.floor(bounds.x - contextPx),
+    top: Math.floor(bounds.y - contextPx),
+    right: Math.ceil(bounds.x + bounds.width + contextPx),
+    bottom: Math.ceil(bounds.y + bounds.height + contextPx),
+  };
+  const left = clamp(requested.left, 0, maxWidth - 1);
+  const top = clamp(requested.top, 0, maxHeight - 1);
+  const right = clamp(requested.right, left + 1, maxWidth);
+  const bottom = clamp(requested.bottom, top + 1, maxHeight);
+  return {
+    roi: { x: left, y: top, width: right - left, height: bottom - top },
+    clipped: left !== requested.left || top !== requested.top || right !== requested.right || bottom !== requested.bottom,
+  };
+}
+
+async function extractPng(bytes: Buffer, roi: AiPixelRect): Promise<Buffer> {
+  return sharp(bytes).extract({ left: roi.x, top: roi.y, width: roi.width, height: roi.height }).png().toBuffer();
+}
+
+function resolveUniformBars(roi: AiPixelRect, proposal: AiUniformBarAlignment): AiResolvedBar[] {
+  if (proposal.direction !== 'left-to-right') throw new Error('only left-to-right bar alignment is supported');
+  if (!Number.isInteger(proposal.anchorBar) || proposal.anchorBar < 0) throw new Error('anchorBar must be a non-negative integer');
+  if (!Number.isFinite(proposal.anchorCenterX)) throw new Error('anchorCenterX must be finite');
+  if (!Number.isFinite(proposal.spacingPx) || proposal.spacingPx < 2) throw new Error('spacingPx must be at least 2 pixels');
+  const firstOffset = Math.ceil((roi.x - proposal.anchorCenterX) / proposal.spacingPx);
+  const lastOffset = Math.floor((roi.x + roi.width - Number.EPSILON - proposal.anchorCenterX) / proposal.spacingPx);
+  if (proposal.anchorBar + firstOffset < 0) throw new Error('alignment resolves to a negative bar index; increase anchorBar');
+  const bars: AiResolvedBar[] = [];
+  for (let offset = firstOffset; offset <= lastOffset; offset += 1) {
+    const centerX = proposal.anchorCenterX + offset * proposal.spacingPx;
+    const nextCenterX = centerX + proposal.spacingPx;
+    bars.push({
+      bar: proposal.anchorBar + offset,
+      centerX,
+      cutoffX: Math.min(roi.x + roi.width, (centerX + nextCenterX) / 2),
+    });
+  }
+  if (bars.length < 3) throw new Error('bar alignment probe must resolve at least 3 bars inside the ROI');
+  if (bars.length > MAX_REVEAL_FRAMES) throw new Error('bar alignment probe exceeds the 240-bar limit');
+  bars.at(-1)!.cutoffX = roi.x + roi.width;
+  return bars;
+}
+
+async function createProbeAssets(source: Buffer, roi: AiPixelRect, bars: AiResolvedBar[]): Promise<ProbeAssetBuild[]> {
+  const assets: ProbeAssetBuild[] = [];
+  const clean = await extractPng(source, roi);
+  assets.push({ kind: 'bar-probe-clean', bytes: clean, width: roi.width, height: roi.height, roi });
+  const locator = await overlayBarGuides(clean, roi, bars);
+  assets.push({ kind: 'bar-probe-locator', bytes: locator, width: roi.width, height: roi.height, roi });
+  const sampleIndexes = [...new Set([0, Math.floor((bars.length - 1) / 2), bars.length - 1])];
+  for (const sampleIndex of sampleIndexes) {
+    const bar = bars[sampleIndex];
+    const width = Math.min(192, roi.width);
+    const left = clamp(Math.round(bar.centerX - width / 2), roi.x, roi.x + roi.width - width);
+    const sampleRoi = { x: left, y: roi.y, width, height: roi.height };
+    const sampleClean = await extractPng(source, sampleRoi);
+    assets.push({
+      kind: 'bar-probe-magnifier-clean',
+      bytes: sampleClean,
+      width: sampleRoi.width,
+      height: sampleRoi.height,
+      roi: sampleRoi,
+    });
+    const sampleBars = bars.filter((candidate) => candidate.centerX >= sampleRoi.x && candidate.centerX < sampleRoi.x + sampleRoi.width);
+    const sampleLocator = await overlayBarGuides(sampleClean, sampleRoi, sampleBars, bar.bar);
+    assets.push({
+      kind: 'bar-probe-magnifier-locator',
+      bytes: sampleLocator,
+      width: sampleRoi.width,
+      height: sampleRoi.height,
+      roi: sampleRoi,
+    });
+  }
+  return assets;
+}
+
+async function overlayBarGuides(
+  clean: Buffer,
+  roi: AiPixelRect,
+  bars: AiResolvedBar[],
+  emphasizedBar?: number,
+): Promise<Buffer> {
+  const guides = bars
+    .map((bar) => {
+      const x = bar.centerX - roi.x;
+      const emphasized = bar.bar === emphasizedBar;
+      const color = emphasized ? '#dc2626' : '#0891b2';
+      const width = emphasized ? 2 : 1;
+      const label = bars.length <= 40 || emphasized ? `<text x="${x + 3}" y="14" font-size="10" fill="${color}">${bar.bar}</text>` : '';
+      return `<line x1="${x}" y1="0" x2="${x}" y2="${roi.height}" stroke="${color}" stroke-width="${width}"/>${label}`;
+    })
+    .join('');
+  const ruler = `<line x1="0" y1="${Math.max(0, roi.height - 1)}" x2="${roi.width}" y2="${Math.max(0, roi.height - 1)}" stroke="#111827"/><text x="4" y="${Math.max(12, roi.height - 5)}" font-size="10" fill="#111827">source px ${roi.x}..${roi.x + roi.width}</text>`;
+  return sharp(clean)
+    .composite([{ input: Buffer.from(svgDocument(roi.width, roi.height, `${guides}${ruler}`)), left: 0, top: 0 }])
+    .png()
+    .toBuffer();
+}
+
+async function maskFuturePixels(source: Buffer, width: number, height: number, cutoff: number): Promise<Buffer> {
+  if (cutoff >= width) return sharp(source).png().toBuffer();
+  const maskWidth = width - cutoff;
+  const mask = await sharp({ create: { width: maskWidth, height, channels: 4, background: '#e5e7eb' } }).png().toBuffer();
+  return sharp(source).composite([{ input: mask, left: cutoff, top: 0 }]).png().toBuffer();
+}
+
+function mimeExtension(mimeType: AiVisualArtifactItem['mimeType']): string {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/webp') return 'webp';
+  if (mimeType === 'image/gif') return 'gif';
+  return 'png';
 }
 
 function flattenScene(rawObjects: unknown[]): SceneObject[] {
@@ -810,6 +1472,16 @@ function bundleIdFromUri(uri: string): string | undefined {
     const parts = new URL(uri).pathname.split('/').filter(Boolean);
     const evidence = parts.indexOf('evidence');
     return evidence >= 0 ? parts[evidence + 1] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function artifactPlanIdFromUri(uri: string): string | undefined {
+  try {
+    const parts = new URL(uri).pathname.split('/').filter(Boolean);
+    const artifacts = parts.indexOf('artifacts');
+    return artifacts >= 0 ? parts[artifacts + 1] : undefined;
   } catch {
     return undefined;
   }

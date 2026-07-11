@@ -53,7 +53,7 @@ const sampleStudyQuery = z
     'prepare_sample_study requires an explicit annotation or result population',
   );
 
-const visualEvidenceQuery = z.object({ entryId: id, annotationIds: z.array(id).min(1).max(8) }).strict();
+const visualEvidenceQuery = z.object({ entryId: id, annotationIds: z.array(id).max(8) }).strict();
 const visualEvidenceBatch = z
   .object({ requests: z.array(visualEvidenceQuery).min(1).max(4) })
   .strict()
@@ -61,6 +61,87 @@ const visualEvidenceBatch = z
     (value) => value.requests.reduce((total, request) => total + request.annotationIds.length, 0) <= 8,
     'visual evidence batch supports at most 8 annotations total',
   );
+
+const pixelRect = z
+  .object({
+    x: z.number().int().nonnegative(),
+    y: z.number().int().nonnegative(),
+    width: z.number().int().min(1),
+    height: z.number().int().min(1),
+  })
+  .strict();
+
+const uniformBarAlignment = z
+  .object({
+    direction: z.literal('left-to-right'),
+    anchorBar: z.number().int().nonnegative(),
+    anchorCenterX: z.number().finite(),
+    spacingPx: z.number().finite().min(2),
+  })
+  .strict();
+
+const visualArtifactSpec = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('source-original'), screenshotId: id }).strict(),
+  z.object({ kind: z.literal('instance-source-window'), screenshotId: id }).strict(),
+  z.object({ kind: z.literal('source-region'), screenshotId: id, roi: pixelRect }).strict(),
+  z
+    .object({
+      kind: z.literal('page-region'),
+      roi: pixelRect,
+      composition: z.enum(['committed-page', 'clean-underlay']),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('annotation-context'),
+      annotationId: id,
+      contextPx: z.number().int().min(0).max(2_000),
+      composition: z.enum(['committed-page', 'source-clean']),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('bar-alignment-probe'),
+      screenshotId: id,
+      roi: pixelRect,
+      proposal: uniformBarAlignment,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('bar-reveal'),
+      acceptedProbeId: id,
+      acceptedProposalHash: z.string().regex(/^[a-f0-9]{64}$/),
+      fromBar: z.number().int().nonnegative(),
+      toBar: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
+
+const visualArtifactPlan = z
+  .object({ bundleId: id, specs: z.array(visualArtifactSpec).min(1).max(16) })
+  .strict();
+
+const progressiveRevealAdvance = z
+  .object({
+    planId: id,
+    planHash: z.string().regex(/^[a-f0-9]{64}$/),
+    revealId: id,
+    action: z.enum(['start', 'next', 'previous', 'seek']),
+    frameIndex: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .refine((value) => (value.action === 'seek') === (value.frameIndex !== undefined), 'frameIndex is required only for seek');
+
+const visualArtifactChunk = z
+  .object({
+    planId: id,
+    planHash: z.string().regex(/^[a-f0-9]{64}$/),
+    itemId: id,
+    offset: z.number().int().nonnegative(),
+    maxBytes: z.number().int().min(1).max(786_432),
+  })
+  .strict();
 
 export const journalReadRequestSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('overview') }).strict(),
@@ -87,6 +168,9 @@ export const journalReadRequestSchema = z.discriminatedUnion('op', [
     })
     .strict(),
   z.object({ op: z.literal('visual-evidence-batch'), input: visualEvidenceBatch }).strict(),
+  z.object({ op: z.literal('create-visual-artifacts'), input: visualArtifactPlan }).strict(),
+  z.object({ op: z.literal('advance-progressive-reveal'), input: progressiveRevealAdvance }).strict(),
+  z.object({ op: z.literal('read-visual-artifact-chunk'), input: visualArtifactChunk }).strict(),
   z.object({ op: z.literal('read-resource'), input: z.object({ uri: z.string().min(1).max(2048) }).strict() }).strict(),
   z
     .object({

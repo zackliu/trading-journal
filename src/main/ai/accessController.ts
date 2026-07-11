@@ -78,7 +78,7 @@ export class AiAccessController {
     const config = readConfig();
     return {
       guide: config.aiAccess?.guide ?? DEFAULT_AGENT_GUIDE,
-      prompts: clonePrompts(config.aiAccess?.prompts ?? DEFAULT_AI_PROMPTS),
+      prompts: withCurrentBuiltIns(config.aiAccess?.prompts),
     };
   }
 
@@ -136,7 +136,8 @@ export class AiAccessController {
   }
 
   async saveSettings(settings: AiAccessSettings): Promise<AiAccessSettings> {
-    validateSettings(settings);
+    const normalized = { ...settings, prompts: withCurrentBuiltIns(settings.prompts) };
+    validateSettings(normalized);
     const wasOn = this.state === 'on';
     if (wasOn) await this.stop();
     const config = readConfig();
@@ -144,8 +145,8 @@ export class AiAccessController {
       ...config,
       aiAccess: {
         ...config.aiAccess,
-        guide: settings.guide,
-        prompts: clonePrompts(settings.prompts),
+        guide: normalized.guide,
+        prompts: clonePrompts(normalized.prompts),
       },
     });
     if (wasOn) await this.start(true);
@@ -181,6 +182,12 @@ export class AiAccessController {
 
 function clonePrompts(prompts: AiPromptTemplate[]): AiPromptTemplate[] {
   return prompts.map((prompt) => ({ ...prompt, arguments: prompt.arguments.map((argument) => ({ ...argument })) }));
+}
+
+function withCurrentBuiltIns(configured: AiPromptTemplate[] | undefined): AiPromptTemplate[] {
+  if (!configured) return clonePrompts(DEFAULT_AI_PROMPTS);
+  const ids = new Set(configured.map((prompt) => prompt.id));
+  return clonePrompts([...configured, ...DEFAULT_AI_PROMPTS.filter((prompt) => !ids.has(prompt.id))]);
 }
 
 function validateSettings(settings: AiAccessSettings): void {

@@ -335,6 +335,178 @@ export interface AiVisualEvidenceBatch {
   manifests: AiVisualEvidenceManifest[];
 }
 
+export interface AiPixelRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface AiUniformBarAlignment {
+  direction: 'left-to-right';
+  anchorBar: number;
+  anchorCenterX: number;
+  spacingPx: number;
+}
+
+export type AiVisualArtifactSpec =
+  | { kind: 'source-original'; screenshotId: string }
+  | { kind: 'instance-source-window'; screenshotId: string }
+  | { kind: 'source-region'; screenshotId: string; roi: AiPixelRect }
+  | { kind: 'page-region'; roi: AiPixelRect; composition: 'committed-page' | 'clean-underlay' }
+  | {
+      kind: 'annotation-context';
+      annotationId: string;
+      contextPx: number;
+      composition: 'committed-page' | 'source-clean';
+    }
+  | {
+      kind: 'bar-alignment-probe';
+      screenshotId: string;
+      roi: AiPixelRect;
+      proposal: AiUniformBarAlignment;
+    }
+  | {
+      kind: 'bar-reveal';
+      acceptedProbeId: string;
+      acceptedProposalHash: string;
+      fromBar: number;
+      toBar: number;
+    };
+
+export interface AiVisualArtifactPlanRequest {
+  bundleId: string;
+  specs: AiVisualArtifactSpec[];
+}
+
+export type AiVisualArtifactKind =
+  | 'source-original'
+  | 'instance-source-window'
+  | 'source-region'
+  | 'page-region'
+  | 'annotation-context'
+  | 'bar-probe-clean'
+  | 'bar-probe-locator'
+  | 'bar-probe-magnifier-clean'
+  | 'bar-probe-magnifier-locator'
+  | 'bar-reveal-frame';
+
+export interface AiVisualArtifactItem {
+  id: string;
+  kind: AiVisualArtifactKind;
+  uri: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+  filename: string;
+  width: number;
+  height: number;
+  byteCount: number;
+  sha256: string;
+  screenshotId?: string;
+  annotationId?: string;
+  sourceRoi?: AiPixelRect;
+  pageRoi?: AiPixelRect;
+  derived: boolean;
+  evidenceTrust: AiEvidenceTrust;
+  warnings: string[];
+}
+
+export interface AiResolvedBar {
+  bar: number;
+  centerX: number;
+  cutoffX: number;
+}
+
+export interface AiBarAlignmentProbe {
+  probeId: string;
+  proposalHash: string;
+  screenshotId: string;
+  roi: AiPixelRect;
+  proposal: AiUniformBarAlignment;
+  resolvedBars: AiResolvedBar[];
+  assetIds: string[];
+  calibrationExposedFuture: true;
+  warnings: string[];
+}
+
+export interface AiProgressiveReveal {
+  revealId: string;
+  probeId: string;
+  screenshotId: string;
+  roi: AiPixelRect;
+  fromBar: number;
+  toBar: number;
+  frameCount: number;
+  calibrationExposedFuture: true;
+  warnings: string[];
+}
+
+export interface AiVisualArtifactPlan {
+  planId: string;
+  planHash: string;
+  bundleId: string;
+  entryId: string;
+  evidenceRevision: string;
+  items: AiVisualArtifactItem[];
+  probes: AiBarAlignmentProbe[];
+  reveals: AiProgressiveReveal[];
+  estimatedFileCount: number;
+  estimatedByteCount: number;
+  inlineItemIds?: string[];
+  omittedInlineItemIds?: string[];
+  evidenceTrust: AiEvidenceTrust;
+  warnings: string[];
+  expiresAt: string;
+}
+
+export interface AiProgressiveRevealAdvanceRequest {
+  planId: string;
+  planHash: string;
+  revealId: string;
+  action: 'start' | 'next' | 'previous' | 'seek';
+  frameIndex?: number;
+}
+
+export interface AiProgressiveRevealFrame {
+  revealId: string;
+  frameIndex: number;
+  highestRevealedFrame: number;
+  frameCount: number;
+  bar: number;
+  centerX: number;
+  cutoffX: number;
+  width: number;
+  height: number;
+  mimeType: 'image/png';
+  byteCount: number;
+  sha256: string;
+  item: AiVisualArtifactItem;
+  blob: string;
+  evidenceTrust: AiEvidenceTrust;
+  warnings: string[];
+}
+
+export interface AiVisualArtifactChunkRequest {
+  planId: string;
+  planHash: string;
+  itemId: string;
+  offset: number;
+  maxBytes: number;
+}
+
+export interface AiVisualArtifactChunk {
+  planId: string;
+  itemId: string;
+  filename: string;
+  mimeType: AiVisualArtifactItem['mimeType'];
+  encoding: 'base64';
+  offset: number;
+  byteCount: number;
+  totalByteCount: number;
+  nextOffset?: number;
+  sha256: string;
+  data: string;
+}
+
 export interface AiResourceRead {
   uri: string;
   mimeType: string;
@@ -378,6 +550,9 @@ export type JournalReadRequest =
   | { op: 'linked-context'; input: AiLinkedContextQuery }
   | { op: 'visual-evidence'; input: AiVisualEvidenceQuery }
   | { op: 'visual-evidence-batch'; input: AiVisualEvidenceBatchRequest }
+  | { op: 'create-visual-artifacts'; input: AiVisualArtifactPlanRequest }
+  | { op: 'advance-progressive-reveal'; input: AiProgressiveRevealAdvanceRequest }
+  | { op: 'read-visual-artifact-chunk'; input: AiVisualArtifactChunkRequest }
   | { op: 'read-resource'; input: { uri: string } }
   | { op: 'read-resources'; input: { uris: string[] } };
 
@@ -391,5 +566,8 @@ export type JournalReadResponse =
   | { op: 'linked-context'; value: AiLinkedContext }
   | { op: 'visual-evidence'; value: AiVisualEvidenceManifest }
   | { op: 'visual-evidence-batch'; value: AiVisualEvidenceBatch }
+  | { op: 'create-visual-artifacts'; value: AiVisualArtifactPlan }
+  | { op: 'advance-progressive-reveal'; value: AiProgressiveRevealFrame }
+  | { op: 'read-visual-artifact-chunk'; value: AiVisualArtifactChunk }
   | { op: 'read-resource'; value: AiResourceRead }
   | { op: 'read-resources'; value: AiResourceBatchRead };

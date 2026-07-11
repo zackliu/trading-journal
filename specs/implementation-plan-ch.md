@@ -931,10 +931,12 @@ type JournalReadRequest =
   | { op: 'entry-context'; input: EntryContextQuery }
   | { op: 'linked-context'; input: LinkedContextQuery }
   | { op: 'visual-evidence'; input: VisualEvidenceQuery }
+  | { op: 'create-visual-artifacts'; input: VisualArtifactPlanRequest }
+  | { op: 'advance-progressive-reveal'; input: ProgressiveRevealAdvanceRequest }
   | { op: 'read-resource'; input: { uri: string } };
 ```
 
-`JournalReadRequest` 是封闭联合；其中不存在 mutation、raw SQL、raw canvas JSON、filesystem path 或 generic method 字段。每个 input 都有 runtime validation；MCP tool 返回 typed `structuredContent`（另带兼容 text JSON）。
+`JournalReadRequest` 是唯一封闭联合；其中不存在 journal mutation、raw SQL、raw canvas JSON、filesystem path、filesystem write 或 generic method 字段。visual artifact plan、逐帧 reveal 与 artifact byte chunks 都是只读派生。每个 input 都有 runtime validation；MCP tool 返回 typed `structuredContent`（另带兼容 text JSON）。
 
 ### MCP Tools（少而强、组合使用）
 
@@ -947,10 +949,14 @@ type JournalReadRequest =
 | `prepare_sample_study` | 显式 annotation/result population、可选 date、result dimensions、明细 / nearby-text 上限 | 一次返回 exact sample / Entry 分母、recorded / missing、string counts / number summary、按 Entry 聚合的命中样本与邻近文字、可直接传给 batch visual 的分包计划 |
 | `get_entry_context` | 单个 `entryId` | Entry tags、indexed annotations、results、links、受限 title / text objects 与 media resource links；不返回 raw JSON |
 | `get_linked_context` | 起始 `annotationId`、depth（默认 1、最大 2） | 有界 link graph；处理循环、broken link，节点 / 边数硬上限 |
-| `get_visual_evidence` | 单个 `entryId` + 1..8 个属于该 Entry 的 `annotationIds` | 创建 revision-bound `VisualEvidenceBundle`；返回 manifest、核心 image content 与延迟 resource links，不接受任意 image id / path / bbox |
+| `get_visual_evidence` | 单个 `entryId` + 0..8 个属于该 Entry 的 `annotationIds` | 创建 revision-bound `VisualEvidenceBundle`；无 annotation 时用于安全列出 screenshot instances，有 annotation 时另返回 locator / focus / source pair；不接受任意 image id / path / bbox |
 | `get_visual_evidence_batch` | `prepare_sample_study.visualBatches[n].requests`；最多 4 Entries / 8 annotations | 一次返回跨 Entry manifests 与有效图片；所有图片共享 inline byte budget，source locator / clean pair 原子纳入或省略 |
+| `create_visual_artifacts` | `bundleId` + 1..16 个 typed specs；source spec 另选 bundle 内 `screenshotId` | 创建 immutable、revision-bound artifact plan；可产出原始存储 bytes、instance source window、source/page ROI、annotation context、bar alignment probe 或已接受 proposal 的 progressive reveal |
+| `advance_progressive_reveal` | `planId + planHash + revealId + action = start / next / previous / seek` | 每次只返回当前一帧与进度；同一调用不暴露后续 frame resource link，避免分析 agent 一次看到未来序列 |
+| `read_visual_artifact_chunk` | `planId + planHash + itemId + offset + maxBytes` | 按最多 768 KiB raw bytes 返回 base64 chunk、next offset、总长度、checksum 与建议文件名；让具备 repo / terminal 工具的外部 agent 自己保存，不接收路径 |
 
 - 不提供通用 `get_media` tool。`get_visual_evidence` 只编排一个有界证据包；inline image content、resource read 与后端缓存全部复用同一 VisualEvidenceService、ownership check 与 bundle revision，不形成第二条媒体权限路径。
+- 不提供通用 image command 或 filesystem tool。原图、所有 crop、probe 与 reveal frame 必须走同一 VisualArtifactService；每个 source selector 都是当前 session 的 `bundleId + screenshotId`，不能用 image hash 或磁盘路径创建旁路。
 - Companion 对一份 single / batch visual result 只发一次内部 `read-resources` RPC 读取全部图片，不再每张图单独跨进程往返。Agent 应优先使用 study / batch 工具，只有追查单张异常时才回退到 search / context / single visual 原语。
 - 不提供任意全文搜索、embedding 或视觉相似度 API。Agent 可以先用结构化 tag / result 缩小候选，再读取少量图片自行比较；不能为了“相似案例”扫描全库 canvas JSON 或建立隐形向量库。
 - `search_samples` 保持 Slice 7 的同一 annotation 共现语义。Slice 8 未实现时 `tools/list` 中明确没有 statistics / data-gaps；未来若接入，只能直接复用 Slice 8 contract，AI extension 不拥有另一套 query / stats engine。
@@ -969,7 +975,7 @@ type JournalReadRequest =
 
 #### Bundle 生命周期与交付
 
-- `VisualEvidenceQuery` 必须给出一个 `entryId` 和 1..8 个属于该 Entry 的 `annotationIds`。超出上限由 agent 分批请求；服务不接受调用方自造 bbox、image hash、文件路径或全库图片扫描。
+- `VisualEvidenceQuery` 必须给出一个 `entryId` 和 0..8 个属于该 Entry 的 `annotationIds`。空数组只生成 overview 与 screenshot-instance manifest，供原图 / crop 计划安全选 source；有 annotation 时生成既有 grounding 资产。超出上限由 agent 分批请求；服务不接受调用方自造 image hash、文件路径或全库图片扫描。
 - bundle 绑定 `accessEpoch + sessionId + journalInstanceId + entryId + evidenceRevision`。`evidenceRevision` 由已提交 `canvas_json` digest、Entry `updatedAt` 与所有引用 image hashes 派生；Stop、workspace switch、session teardown、TTL 到期、整包 LRU 淘汰或 Entry revision 改变后全部 links 以区分原因的 expired / evicted error 明确失效，不回退到新内容。
 - tool result 用 `structuredContent` 返回 manifest；`content` 按「asset id 文本标签 → ImageContent」相邻排列，并为所有资产返回 `ResourceLink`。为兼容已实测不会自动把 ResourceLink 图片交给模型的 Copilot host，`overview / locator / focus / source locator+clean` 在 20 MiB inline 预算内都直接进入同一次 tool result；source pair 原子纳入或原子省略。超限资产列入 `omittedInlineAssetIds`，仍保留可读 link，不能静默省略或只给半对。
 - MCP Resource 可被 client 读取，不代表图片一定会被送入模型。支持矩阵必须分别验证「client 能读 resource」与「多模态模型实际收到 ImageContent」；text-only 或未转发图片的 client 只能使用 manifest，必须明确说明没有进行盘面视觉分析。
@@ -1010,6 +1016,60 @@ type JournalReadRequest =
 - 单 Entry text / media-ref 解析使用结构化 JSON parser，设输入字节、对象深度、对象数、总字符数上限；只提取 title、text object、`tjId` 映射、geometry 所需对象字段和 image refs。分类 / 搜索 / 统计仍只读 Annotation-Tag Index，绝不扫描 canvas JSON。
 - renderer 无 `CanvasController`、事件监听或 contextBridge store API；限制输出尺寸、总像素、PNG bytes、并发与 timeout。所有 tool inline / resource read 共用相同 bundle cache 和 ownership check，缓存不写磁盘。
 - image bytes 先 sniff MIME 并验证为受支持图片；resource 返回 MCP binary / image content，不返回磁盘路径。每个资源标注 `audience: ['assistant','user']`、revision / lastModified、asset kind 和 `untrusted evidence`。
+
+### Visual artifacts、Agent-owned export 与 Progressive Reveal
+
+#### 用户与 agent 的完整动作闭环
+
+1. Agent 先用结构化 query 找到 Entry，再调用 `get_visual_evidence(entryId, [])`；manifest 用 `S1 / S2 …` 展示每个 screenshot instance 的 native dimensions、instance source window、page quad 与 transform。即使两个对象引用相同 hash，agent 仍必须按实例选择，不能按 hash 猜图。
+2. 普通研究图片走 `create_visual_artifacts`：agent 可预览原始文件、截图实例 source window、任意整数 source ROI、page ROI 或 annotation context。tool 返回 plan manifest、少量 inline previews 与其余 session-bound resources；计划不写盘。
+3. 需要降低 hindsight bias 时，agent 先为一块 source-native chart ROI 创建 `bar-alignment-probe`。probe 把当前 `anchorCenterX + spacingPx` 提案画在整块 ROI locator 上，并为开头、中部、结尾各生成 1:1 native locator / clean magnifier pair、像素尺、候选 center 序号和可直接调整的 `anchorDeltaPx / spacingDeltaPx`。Agent 可反复新建 probe；应用内同一校准面也允许用户拖 ROI、anchor 与 spacing guides 并 Approve。
+4. `bar-reveal` 只能引用当前 session 内一个显式接受的 `probeId + proposalHash`，不能重新提交另一套 centers。`advance_progressive_reveal` 在 `start` 后每次只交付一张当前帧；`next` 前进一步，`previous / seek` 只在已揭示范围内移动，绝不返回未来 frame URI、总图 contact sheet 或可枚举资源模板。
+5. 用户要把图片长期放进自己的 repo / 研究目录时，agent 对 plan item 或已经揭示的当前 frame 调 `read_visual_artifact_chunk`，按 `nextOffset` 读完并用 checksum 校验，再使用 **agent 自身已有的** workspace / terminal 文件工具写入用户指定目录。MCP 不接收、不猜测、不创建该目录；文件冲突策略也由用户与 agent 决定。
+6. Stop / 切 workspace / Entry revision 改变会让 bundle、plan、probe、已揭示 frame items 与 byte chunks 全部失效。已经由 agent 写入其 repo 的文件不归 Trading Journal 管理，MCP 也没有 list/read/delete/rename 用户 repo 文件的能力。
+
+#### Typed artifact specs
+
+```ts
+type VisualArtifactSpec =
+  | { kind: 'source-original'; screenshotId: string }
+  | { kind: 'instance-source-window'; screenshotId: string }
+  | { kind: 'source-region'; screenshotId: string; roi: PixelRect }
+  | { kind: 'page-region'; roi: PixelRect; composition: 'committed-page' | 'clean-underlay' }
+  | { kind: 'annotation-context'; annotationId: string; contextPx: number; composition: 'committed-page' | 'source-clean' }
+  | { kind: 'bar-alignment-probe'; screenshotId: string; roi: PixelRect; proposal: UniformBarAlignment }
+  | { kind: 'bar-reveal'; acceptedProbeId: string; acceptedProposalHash: string; fromBar: number; toBar: number };
+
+interface UniformBarAlignment {
+  direction: 'left-to-right';
+  anchorBar: number;
+  anchorCenterX: number;
+  spacingPx: number;
+}
+
+interface VisualArtifactChunkRequest {
+  planId: string;
+  planHash: string;
+  itemId: string;
+  offset: number;
+  maxBytes: number; // 1..786432
+}
+```
+
+- `PixelRect` 使用整数 sourcePx / pagePx，`x/y >= 0`、`width/height >= 1`，必须完整位于其声明空间；服务不静默 clamp。`instance-source-window` 是 Fabric image object 的 source window，不冒充经 page clipping / z-order 后的“实际可见区域”。
+- `source-original` 返回 ingest 时保存文件的逐 byte 原件与原 MIME/checksum；所有 crop、probe、reveal frame 与 page render 都确定性编码为无损 PNG。首版不生成 animated GIF/WebP，因为许多 MCP client / 模型只读取第一帧；逐帧 PNG 才是可寻址、可校验的事实载体。
+- `UniformBarAlignment` 是 agent / 用户确认的像素提案，不是 candle detector 输出。首版只支持同一 ROI 内均匀间距；遇到缺口、非线性压缩或多个 panel spacing 不一致时，拆成多个 ROI / plan，不引入一个让 agent 手工提交任意长 `centersX[]` 的脆弱接口。
+- probe 解析出完整 `centersX[]` 与相邻中线 `cutoffsX[]` 并写入 manifest。proposal hash 覆盖 bundle revision、screenshot instance、ROI、alignment 与 resolved arrays；接受只表示调用方显式选用该提案，不声称模型真正看过或系统已验证 candle。
+- reveal frame 固定为同一个 ROI 尺寸，cutoff 左侧逐像素保留 source-clean 原图，右侧全部替换为完全不透明的中性遮罩；cutoff 位于当前 bar 与下一 bar center 的中线。它不平移 / 缩放历史像素，也不带 journal annotations / AI locator。manifest 逐帧记录 bar index、centerX、cutoffX 与 source checksum。
+- 静态原图本身可能已有指标、趋势线、文字、入场 / 出场或结果标记；遮住右侧像素不能删除左侧已经编码的未来信息。校准 agent 若看过完整 ROI 或全部 magnifier，也不再是盲测 agent。应用把“校准”和“逐帧分析”作为两个可分离步骤，并在 manifest 标记 `calibrationExposedFuture: true`；产品只称 progressive reveal / 降低 hindsight bias，不称 replay 或 no-hindsight。
+
+#### Plan、resource 与只读 bytes 安全
+
+- plan 绑定 `accessEpoch + sessionId + journalInstanceId + entryId + evidenceRevision + canonical spec hash`，TTL 10 分钟；最多 16 specs、240 reveal frames、512 items、512 MiB 预估编码 bytes。超限在生成前返回 estimate 与收窄建议。
+- 普通 artifact resource 为 `trading-journal://journal/{instance}/artifacts/{planId}/{itemId}`；逐帧分析不使用可枚举 URI，而由 `advance_progressive_reveal` 逐次 inline 当前 PNG。plan cache 与 bundle 一样只在有界内存 LRU，原图与 frame 可按 item 惰性生成。
+- `read_visual_artifact_chunk` 只能读取当前 session / revision / plan 中已经存在的 item；不能传 URI、hash 或 path。`offset` 必须落在 item 内，response 返回 raw byte offset / length、独立 base64 chunk、`nextOffset`、完整 item byte count / SHA-256 / suggested filename；chunk 边界不改变 item checksum。
+- progressive reveal 每生成一张当前帧，就把该帧注册成一个**已揭示 item**并在响应中返回 `itemId + suggestedFilename`；chunk reader 可读取这些已揭示帧，但未来 frame 尚无 item id，不能枚举或越权下载。
+- `create_visual_artifacts`、`advance_progressive_reveal` 与 `read_visual_artifact_chunk` 全部标 `readOnlyHint: true`。companion 及 main 不导入任何研究目录 writer，不新增 HTTP download route，不返回 access key / 磁盘路径；agent 的 repo 写入不属于 Trading Journal activity。
 
 ### 可编辑 Agent Guide 与 MCP Prompt Library
 
@@ -1058,12 +1118,14 @@ interface AiPromptTemplate {
 - 内置模板不是硬编码不可改的“系统提示词”；它们只是可用起点：
   - `understand_my_journal`：先读 Agent Guide、词表与 result dimensions，复述 agent 将如何理解这些约定并指出仍不清楚之处；
   - `inspect_entry_visual`：按 `entry_id` 与选中 annotation 创建 visual evidence bundle，依次读 guide → manifest → overview / locator → focus / chart-only；用 `A-mark + annotationId` 引证，并区分 observed / inferred / uncertain，不从截图编造精确价格或伪精确 bar count；
+  - `review_entry_progressively`：围绕一个用户给定或 guide 可确认的入场 annotation 选择 source-native 局部 panel / ROI；先用远距离累计编号或多个相邻 candle centers 估 spacing，以头 / 中 / 尾 magnifier 的 residual 快速区分 phase 偏移和 spacing 累计漂移，通常一轮估计 + 一轮修正后接受 proposal；用 plan-local bars 把 `fromBar / toBar` 放在入场前后有限窗口，而不是截图首尾，再按 `start → 逐帧记录 → next` 复盘；
   - `review_recent_period`：先 overview / stats，再取少量代表、反例与 missing examples，引用 Entry date / id；
   - `compare_classifications`：用同一 denominator 比较 cohorts，明确 overlap / sample size，再看盘面；
   - `inspect_outliers`：按 number result 找离群样本，读取 visual evidence bundle，区分数据事实、视觉观察与假设；
   - `find_counterexamples`：在相同结构化条件下找相反 result，禁止把少数图直接推成规律；
   - `audit_data_quality`：在明确 eligible population 下查缺 result / tag、broken links 与 coverage。
 - 用户可编辑 built-in 的 title / description / body / arguments、启停、Duplicate、Reset to default；可 Add custom prompt，并删除 custom prompt。修改只写 machine-local AI config；不改变 journal。
+- 新版本增加 built-in 时按稳定 id 合并到既有 machine config：已存在的 prompt 完整保留用户编辑与 enabled 状态，custom prompt 原样保留，只追加此前不存在的 built-in；不能用新默认覆盖用户正文。
 - body 中 `{{argument_name}}` 必须对应 arguments 中声明的字段；保存时验证 snake_case、重复名、必填参数、长度与未知 placeholder。`prompts/get` 对 arguments 做长度 / 类型验证后纯文本替换；不执行代码、URL、SQL 或 template expression。
 - MCP 声明 `prompts: { listChanged: true }`。`prompts/list` 只列 enabled prompts（分页）；`prompts/get` 返回当前 guide + 已解析 workflow messages。用户在应用中保存 / 启停 / 新增 / 删除 prompt 后，所有在线 sessions 收到 `notifications/prompts/list_changed`。
 - Prompt 可以指导 agent 调用 tools 与读取 resources，但 server 本身不自动执行 prompt、不调用 sampling / LLM。Prompt arguments 与返回内容不能绕过 JournalReadApi、resource ownership、分页和只读边界。
@@ -1077,17 +1139,18 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 - 不显示 Connections、agent name、权限矩阵、token、Origin、LAN 或 remote 设置。所有连接共享同一完整只读范围。Advanced 只有 `Reset access key`，用于一次性让所有旧配置与 session 失效；用户无需日常管理。
 - `Agent Guide` 是一个有 starter headings 的大文本编辑区，Save / Reset starter / Preview compiled guide；长内容区封顶滚动。
 - `Prompt Library` 是限高可滚列表：enabled、title、description、Edit、Duplicate；built-in 有 Reset，custom 有 Delete；顶部 Add prompt。编辑 modal 包含 title、stable id（新建时自动 slug）、description、arguments 与 Markdown body，并实时预览 `prompts/get` 将返回的 messages。
+- `Bar reveal calibration` 从具体 Entry / screenshot instance 打开一个有界校准 modal：原生 1:1 ROI、可拖的左右边界、anchor guide、第二条 spacing guide，以及开头 / 中部 / 结尾三个同步放大窗；用户调整后点 Approve 生成与 agent probe 相同的 proposal hash。它不自动识别 candle，也不显示“AI 已验证”。
 - `Recent activity` 只显示最近 20 次时间、MCP clientInfo（若提供，仅作显示、不作为身份）、tool / resource / prompt、row / byte count、成功 / 拒绝；只在内存。请求进行时状态栏显示低干扰 AI read 指示。
 - Stop 后 guide / prompts / stable endpoint 配置仍在 machine-local config，但无 listener。切 workspace 时服务先 Stop；再次 Start 才把新 workspace 完整授权给同一 access key。
 
-### 无 write 的可证明性
+### 端到端只读与 journal non-mutation 的可证明性
 
-1. MCP `tools/list` / resources / prompts 中没有 create、update、delete、tag、result、note、save、export-all、execute、SQL 或 filesystem tool。
-2. `JournalReadRequest` 是封闭 allowlist；未知 tool、大小写 / 前缀 / 同义 write 名、额外 HTTP route 与不支持 method 全部拒绝。
+1. MCP `tools/list` / resources / prompts 中没有 create、update、delete、tag、result、note、save、execute、SQL、任意 path、filesystem write 或通用 filesystem tool；图片 export 仍是 read-only bytes。
+2. `JournalReadRequest` 是唯一封闭 allowlist；artifact chunk request 只有 `planId + planHash + itemId + offset + maxBytes`。未知 tool、大小写 / 前缀 / 同义 write 名、额外 HTTP route 与不支持 method 全部拒绝。
 3. companion 不获得 DB path；main read service 使用 readonly SQLite + `query_only`，测试中直接尝试 INSERT / UPDATE / DELETE / PRAGMA write 必须失败。
-4. extension package dependency rule 禁止导入 store writers、preload `IpcApi`、`fs` journal paths；VisualEvidence renderer 无 write preload。
+4. extension package dependency rule 禁止导入 store writers、preload `IpcApi` 与任何 fs writer；VisualEvidence renderer 无 write preload。chunk reader 只对内存 Buffer 做 `subarray` / base64，不打开目标文件。
 5. non-mutation audit 在一轮完整调用前后比较 canonical journal domain digest：排序后的 Entries（含原始 canvas_json）、tags、annotations、results、views、stamp library、image 文件名 + bytes hash 全部不变。不能只比较物理 `app.sqlite` hash，因为 WAL / checkpoint / `schema_meta` provenance 可变化而不代表用户数据变化。
-6. extension 不创建 schema / migration，不向 journal 写 session、cursor、cache、log、prompt 或 AI report；machine-local stable port、access-key reference、Agent Guide 与 Prompt Library 是唯一配置写入，且 MCP 无修改这些配置的能力。
+6. extension 不创建 schema / migration，不向 journal 或 machine config 写 session、cursor、cache、log、导出记录或 AI report；machine-local stable port、access-key reference、Agent Guide 与 Prompt Library 仍只能由 Trading Journal UI 修改。Agent 若把 bytes 写入自己的 repo，那是外部工具行为，不成为 Trading Journal 数据或配置。
 
 ### 实现分解
 
@@ -1108,6 +1171,18 @@ machine-local AI config 至少保存：stable port、access-key credential refer
   - bounded 单 Entry text / image-ref parser；`get_visual_evidence`、bundle-bound resource templates、ImageContent / ResourceLink 交付；
   - linked context、Agent Guide resource、built-in/custom Prompt Library、prompts/list/get/list_changed；
   - visual ownership、oversize / malformed / prompt-injection-as-data、prompt template validation、renderer non-write、multi-image composition 与真实 multimodal client handoff tests。
+5. **Slice 9D1 — Unified visual artifact contract**
+  - `get_visual_evidence` 支持 0 annotation；冻结 screenshot-instance selector、typed ROI / artifact specs、plan / item manifest、original-byte 与 deterministic PNG contract；
+  - VisualEvidenceService 拆出共享 source ownership / revision snapshot，原图、instance window、source/page/annotation crop 全部复用该 snapshot；
+  - 接 MCP resource / bounded inline preview；无永久写盘、无 schema / canvas migration。
+6. **Slice 9D2 — Agent/user bar calibration + progressive analysis**
+  - uniform alignment proposal、整 ROI overlay、三段 native magnifier locator / clean pairs、proposal hash / acceptance；
+  - session-bound reveal cursor 与 `start / next / previous / seek-within-revealed`，每次只 inline 当前 PNG；
+  - Settings / Entry 的人类 calibration modal 与真实多模态 agent 调参测试；不做自动 candle detection 或动画格式。
+7. **Slice 9D3 — Read-only byte export for agent-owned repos**
+  - 为普通 plan items 与已揭示 frames 建统一 item registry；冻结 chunk request / response、offset、max bytes、checksum 与 suggested filename；
+  - MCP `read_visual_artifact_chunk` 只读取 session/revision-bound item Buffer，不接受路径、不写文件、不新增 HTTP route；
+  - 真实 coding agent 用自身 terminal / workspace tool 把多 chunk 合并到临时 repo 并校验 SHA-256；没有文件工具的 client 明确只能查看，不能声称已保存。
 
 ### Scenario-based tests
 
@@ -1151,6 +1226,26 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 - forged / cross-entry source、path traversal、未知 annotation、伪造 / 过期 bundle、超 annotation / pixel / byte 请求被拒；响应无磁盘 path。offscreen renderer 不调用 store write，cache 只在内存并随 revision / Stop 失效。
 - 至少一个真实 multimodal MCP client 证明 tool 的 ImageContent 与 resource image 最终都到达模型，并在同一次模型调用中同时交付 source locator / clean pair；不支持图像转发的 client 明确降级。已知 synthetic candlestick fixture 用于人工兼容评估 mark ↔ annotation 与 bar-count 表现，模型随机输出不作为 CI 硬门。
 
+`scenario: one screenshot instance produces exact, bounded visual artifacts`
+
+- 无 annotation 的 bundle 仍列出 S1 / S2；同一 hash 的两个 cropped / transformed instances 必须按 screenshotId 得到各自 source window，伪造 / 跨 Entry / 跨 session id、过期 revision 与直接 hash 全部拒绝。
+- `source-original` bytes / MIME / SHA-256 与 ingest 文件完全相同；source ROI 的 PNG decoded pixels 与原图对应整数区域逐像素一致；page ROI 在 rotation / scale / crop 下与 committed composition 对应，`clean-underlay` 明列 removed annotation ids。
+- plan hash 对 canonical specs 与 revision 确定；resources、inline preview 与最终 materialization 使用同一 item checksum，没有 preview 一套、导出另一套的漂移。
+
+`scenario: agent and user can calibrate a progressive bar reveal without pretending it is replay`
+
+- synthetic fixture 的已知 `anchorCenterX / spacingPx` 在开头 / 中部 / 结尾 probe 中得到相同候选 centers；微调 phase / spacing 后 proposal hash 改变，final reveal 拒绝未知、过期或 hash 不符的 probe。
+- 每帧尺寸恒定；cutoff 历史侧 decoded pixels 与 source ROI 完全相同，未来侧每个 pixel 都是不透明遮罩；相邻帧只多揭示下一 cutoff 区间，无 annotation / locator 混入 clean frame。
+- `start` 只给首帧，`next` 只给下一帧；resource list / template / manifest 不泄露未来帧 URI，`seek` 不能越过 highestRevealedFrame。完整 sequence / contact sheet 只允许在分析完成后的 materialization 中生成。
+- 真实多模态 client 完成一次「读取三个局部 probe pair → 调整 spacing / phase → 接受 proposal → 连续 next」；CI 只硬断言协议、像素和上下文没有未来 frame，不断言随机模型一定数对 candle。
+- manifest 明示静态截图、指标 / 标记泄露与 `calibrationExposedFuture`；同一 agent 看过完整 ROI 后不能把该次分析标成 strict blind，UI / tool description 均不出现真实 replay / no-hindsight 保证。
+
+`scenario: a coding agent saves exact artifact bytes into its own repo without MCP write access`
+
+- chunk request 对普通 artifact 与当前已揭示 frame 返回连续、无重叠 / 缺口的 raw-byte ranges；逐块 base64 decode + append 后的总 bytes、MIME 与 SHA-256 与 resource item 完全相同。
+- offset 越界、maxBytes 超限、伪造 plan/item/hash、另一 session、过期 revision 与尚未揭示的未来 frame 都拒绝；response 没有 absolute / relative path、access key、journal hash 或任意写命令。
+- 真实 coding agent 可用自己的 workspace / terminal tool 保存 suggested filename 到用户指定 repo；同一个 MCP client 若没有文件工具必须明确说明只能读取，不能声称 Trading Journal 已替它落盘。完整流程前后 journal canonical digest、image bytes 与 machine config 完全不变。
+
 `scenario: the editable Agent Guide teaches compatible agents how to read this user's charts`
 
 - 用户在 UI 写入颜色 / 形状 / stamp / 入场点 / 不可推断事项后，`agent-guide` resource 与每个 `prompts/get` 的首段都返回同一 revision；空 guide 不补系统猜测。
@@ -1171,10 +1266,11 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 ### 明确不做
 
 - 任何 journal write tool / resource：不自动打 tag、改 result、写 note、建 SavedView、删 Entry、保存 AI 总结或执行“确认后写入”。**本 slice 不留 future write hook。**
-- 任意 SQL、数据库文件下载、任意文件路径、全库 raw canvas_json / image dump、通用 filesystem resource。
+- 任意 SQL、数据库文件下载、任意文件路径、全库 raw canvas_json / image dump、通用 filesystem resource 或任何 server-side 文件写入；artifact chunk 只能读取当前 session 的 validated plan item。
 - 内置聊天 UI、模型选择、API key 管理、模型调用、sampling、agent 编排、第三方 extension runtime / marketplace。
 - embeddings、vector DB、全库全文索引、自动视觉相似度模型；结构化筛选后由外部 agent 按需看图。
-- OCR / candle detector、截图转 OHLC、价格 / 时间轴绑定或精确 bar-count service；视觉 bundle 只提高 grounding，不把静态截图升级为行情数据。
+- OCR / candle detector、截图转 OHLC、价格 / 时间轴绑定或精确 bar-count service；bar spacing 由 agent / 用户校准，视觉 bundle 与 progressive reveal 都不把静态截图升级为行情数据。
+- 真实 replay、动态坐标轴 / 指标重算、从原图移除既有未来标记、strict no-hindsight 保证，以及首版 animated GIF/WebP；分析以逐次 PNG frame 为唯一机制。
 - LAN / remote server、后台常驻 daemon、app 关闭后继续服务；远程 OAuth 属独立未来设计，不复用本地 token。
 - 实时行情、预测、下单、回测、自动排名或把 AI 输出当作事实。AI 只能读取用户已记录的证据并在外部对话中提出分析。
 
@@ -1186,10 +1282,13 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 
 **实现状态（已落地，Slice 8 按要求跳过）**
 
-- 已实现 9 个真实只读 tools：overview、vocabulary、Entry search、sample search、sample study、Entry context、linked context、single visual、batch visual；`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力。
+- 已实现 12 个真实只读 tools：既有 overview、vocabulary、Entry search、sample search、sample study、Entry context、linked context、single visual、batch visual，加 `create_visual_artifacts`、`advance_progressive_reveal` 与 `read_visual_artifact_chunk`。`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力；所谓 export 只是返回 bytes，保存到 repo 由外部 agent 自己的工具完成。
 - 高效研究路径已落地：`list_vocabulary → prepare_sample_study → get_visual_evidence_batch`。Vocabulary 同时返回 Entry-level usage、annotation sample count 与 annotation distinct-Entry count；study 从完整 population 计算分母，明细截断不改变统计，并附最近文字与视觉批次。稳定错误 code / hint 取代模糊的 `Journal read request failed`。
 - 已实现 Streamable HTTP companion、loopback / Host / bearer / Origin 防护、session 与 rate / concurrency / cursor / image byte 上限、DPAPI 加密 access key、Start / Stop / Reset，以及 Home → App settings 独立 AI 页内的 Copilot 配置步骤、Agent Guide 与 Prompt Library。
 - AI Supervisor、readonly repository、Fabric 与 Sharp 只在用户点 Start 后动态加载；AI Access Off 的正常 main bundle 保持轻量，不让可选 extension 拖慢每次应用启动。packaged `TradingJournal.exe` 已验证可加载 lazy chunk、Sharp / libvips 与 companion。
 - visual evidence 已覆盖 exact Rect / line / arrowhead / polyline / MeasuredMove / text / group bounds、unsupported Path 拒绝 source pair、重复 hash screenshot instance、crop / transform、session / revision ownership，以及同 ROI source locator / clean pair。
+- visual artifacts 已覆盖空 annotation bundle 的 screenshot-instance discovery、原文件逐 byte 输出、instance source window、source/page/annotation crop、probe locator / clean / 头中尾 magnifier、已接受 proposal 的 progressive reveal，以及普通 item / 已揭示 frame 的 checksum-bound chunk 读取。未来 frame 在 `next` 前没有 item id，不能经 resource 或 chunk 提前读取。
+- Prompt Library 已内置 `review_entry_progressively`：参数只包含 Entry、可选入场 annotation、入场前后 bars 与研究问题；workflow 用远距离编号 / 多 candle center 得到首版 spacing，再按头 / 中 / 尾 residual 区分 phase 偏移与累计 spacing 漂移，并以 plan-local bars 从入场附近的有限窗口开始 reveal，不默认从截图第一根开始。MCP `prompts/get` e2e 验证参数替换、校准公式、逐帧纪律及不含任何真实测试图参数。既有 machine config 按 prompt id 只补新增 built-in，保留用户对旧 built-in 的编辑 / enabled 状态和全部 custom prompts。
+- 一张真实多 panel TradingView 截图已通过实际 Entry → MCP 路径验证：第一版 spacing 在长距离后出现累计漂移；按头 / 中 / 尾 residual 修正后，三段同时对齐图内累计 bar 编号。局部主图 ROI 创建完整 reveal definition 后只实际推进前三帧；三个 frame 的历史侧与 source-clean 均为 0 mismatch pixels，未来侧均为 0 non-mask pixels。测试图片只存在隔离临时 journal 与 ignored `test-results`，具体尺寸 / ROI / spacing 未写入 prompt、fixture 或正式 repo 资产。
 - 真实 GitHub Copilot CLI integration 已通过：Copilot 实际调用 overview → search → context → visual evidence，在同一上下文收到 5 张图片，正确返回 `A1 → count-zone`、可见累计编号 `3, 6, …, 30`，并按 center-in-rectangle 口径数出 8 根 candle；随机模型输出不作为 CI 硬门，协议 / 像素行为由 deterministic e2e 固定。
-- 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；完整 Playwright + Electron suite **107 / 107** 全绿（list reporter、workers=1、测试窗口不抢焦点）。
+- 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；新增 progressive prompt 后 AI Access 专项 **5 / 5**、完整 Playwright + Electron suite **107 / 107** 再次全绿（list reporter、workers=1、测试窗口不抢焦点）。

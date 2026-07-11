@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,7 +6,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { expect, test } from '@playwright/test';
 import sharp from 'sharp';
-import type { AiAccessStatus, AiSampleStudy, AiVisualEvidenceManifest } from '../../src/shared/aiAccess';
+import type {
+  AiAccessStatus,
+  AiSampleStudy,
+  AiVisualArtifactPlan,
+  AiVisualEvidenceManifest,
+} from '../../src/shared/aiAccess';
 import type { IpcApi } from '../../src/shared/ipc';
 import { launchApp, store } from './electronApp';
 
@@ -126,8 +132,11 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
     'get_linked_context',
     'get_visual_evidence',
     'get_visual_evidence_batch',
+    'create_visual_artifacts',
+    'advance_progressive_reveal',
+    'read_visual_artifact_chunk',
   ]);
-  expect(tools.tools.map((tool) => tool.name).join(' ')).not.toMatch(/create|update|delete|save|sql|statistics/i);
+  expect(tools.tools.map((tool) => tool.name).join(' ')).not.toMatch(/update|delete|save|sql|statistics|tag|result|note/i);
 
   const overview = await client.callTool({ name: 'get_journal_overview', arguments: {} });
   expect(overview.structuredContent).toMatchObject({ entryCount: 1, annotationCount: 2 });
@@ -288,6 +297,185 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
     'Visual evidence asset A1-source-clean (source-clean); paired with A1-source-locator',
   ]);
 
+  const sourceBundleResult = await client.callTool({
+    name: 'get_visual_evidence',
+    arguments: { entryId: entry.id, annotationIds: [] },
+  });
+  const sourceBundle = sourceBundleResult.structuredContent as unknown as AiVisualEvidenceManifest;
+  expect(sourceBundle).toMatchObject({
+    entryId: entry.id,
+    annotations: [],
+    screenshots: [expect.objectContaining({ id: 'S1', nativeWidth: 900, nativeHeight: 500 })],
+  });
+
+  const artifactResult = await client.callTool({
+    name: 'create_visual_artifacts',
+    arguments: {
+      bundleId: sourceBundle.bundleId,
+      specs: [
+        { kind: 'source-original', screenshotId: 'S1' },
+        { kind: 'source-region', screenshotId: 'S1', roi: { x: 0, y: 0, width: 100, height: 50 } },
+        {
+          kind: 'bar-alignment-probe',
+          screenshotId: 'S1',
+          roi: { x: 20, y: 0, width: 850, height: 500 },
+          proposal: { direction: 'left-to-right', anchorBar: 0, anchorCenterX: 36, spacingPx: 27 },
+        },
+      ],
+    },
+  });
+  const artifactPlan = artifactResult.structuredContent as unknown as AiVisualArtifactPlan;
+  expect(artifactPlan).toMatchObject({
+    bundleId: sourceBundle.bundleId,
+    probes: [
+      expect.objectContaining({
+        screenshotId: 'S1',
+        calibrationExposedFuture: true,
+        resolvedBars: expect.arrayContaining([
+          { bar: 0, centerX: 36, cutoffX: 49.5 },
+          { bar: 1, centerX: 63, cutoffX: 76.5 },
+        ]),
+      }),
+    ],
+  });
+  expect(artifactPlan.items.map((item) => item.kind)).toEqual([
+    'source-original',
+    'source-region',
+    'bar-probe-clean',
+    'bar-probe-locator',
+    'bar-probe-magnifier-clean',
+    'bar-probe-magnifier-locator',
+    'bar-probe-magnifier-clean',
+    'bar-probe-magnifier-locator',
+    'bar-probe-magnifier-clean',
+    'bar-probe-magnifier-locator',
+  ]);
+  const originalItem = artifactPlan.items.find((item) => item.kind === 'source-original')!;
+  const originalResource = await client.readResource({ uri: originalItem.uri });
+  const originalBytes = Buffer.from('blob' in originalResource.contents[0] ? originalResource.contents[0].blob : '', 'base64');
+  expect(originalBytes.equals(chart)).toBe(true);
+  const chunkedOriginal = await readArtifactByChunks(client, artifactPlan, originalItem.id, 4_096);
+  expect(chunkedOriginal.bytes.equals(chart)).toBe(true);
+  expect(chunkedOriginal.filename).toBe(originalItem.filename);
+  expect(chunkedOriginal.sha256).toBe(createHash('sha256').update(chart).digest('hex'));
+  expect(chunkedOriginal.rawResponseKeys).not.toEqual(expect.arrayContaining(['path', 'directory', 'root']));
+
+  const contextArtifactResult = await client.callTool({
+    name: 'create_visual_artifacts',
+    arguments: {
+      bundleId: manifest.bundleId,
+      specs: [
+        { kind: 'page-region', roi: { x: 250, y: 80, width: 300, height: 300 }, composition: 'committed-page' },
+        { kind: 'page-region', roi: { x: 250, y: 80, width: 300, height: 300 }, composition: 'clean-underlay' },
+        { kind: 'annotation-context', annotationId: 'ann-1', contextPx: 20, composition: 'committed-page' },
+        { kind: 'annotation-context', annotationId: 'ann-1', contextPx: 20, composition: 'source-clean' },
+      ],
+    },
+  });
+  const contextPlan = contextArtifactResult.structuredContent as unknown as AiVisualArtifactPlan;
+  expect(contextPlan.items.map((item) => item.kind)).toEqual([
+    'page-region',
+    'page-region',
+    'annotation-context',
+    'annotation-context',
+  ]);
+  expect(contextPlan.items[1].warnings).toEqual([
+    'Derived page underlay with journal annotations removed; do not treat it as the user-visible composition.',
+  ]);
+  const [committedPageCrop, cleanPageCrop, committedAnnotationCrop, sourceAnnotationCrop] = await Promise.all(
+    contextPlan.items.map(async (item) => {
+      const resource = await client.readResource({ uri: item.uri });
+      return Buffer.from('blob' in resource.contents[0] ? resource.contents[0].blob : '', 'base64');
+    }),
+  );
+  expect(committedPageCrop.equals(cleanPageCrop)).toBe(false);
+  expect(committedAnnotationCrop.equals(sourceAnnotationCrop)).toBe(false);
+
+  const probe = artifactPlan.probes[0];
+  const revealPlanResult = await client.callTool({
+    name: 'create_visual_artifacts',
+    arguments: {
+      bundleId: sourceBundle.bundleId,
+      specs: [
+        {
+          kind: 'bar-reveal',
+          acceptedProbeId: probe.probeId,
+          acceptedProposalHash: probe.proposalHash,
+          fromBar: 0,
+          toBar: 2,
+        },
+      ],
+    },
+  });
+  const revealPlan = revealPlanResult.structuredContent as unknown as AiVisualArtifactPlan;
+  expect(revealPlan).toMatchObject({
+    items: [],
+    reveals: [expect.objectContaining({ frameCount: 3, fromBar: 0, toBar: 2, calibrationExposedFuture: true })],
+  });
+  const reveal = revealPlan.reveals[0];
+  const firstFrameResult = await client.callTool({
+    name: 'advance_progressive_reveal',
+    arguments: {
+      planId: revealPlan.planId,
+      planHash: revealPlan.planHash,
+      revealId: reveal.revealId,
+      action: 'start',
+    },
+  });
+  const firstFrame = firstFrameResult.structuredContent as unknown as {
+    item: { id: string; filename: string; sha256: string };
+  };
+  const futureFrameAttempt = await client.callTool({
+    name: 'read_visual_artifact_chunk',
+    arguments: {
+      planId: revealPlan.planId,
+      planHash: revealPlan.planHash,
+      itemId: `${reveal.revealId}-F002`,
+      offset: 0,
+      maxBytes: 1024,
+    },
+  });
+  expect(futureFrameAttempt).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: { code: 'NOT_FOUND', hint: expect.stringContaining('Advance the reveal'), retryable: false },
+    },
+  });
+  const secondFrameResult = await client.callTool({
+    name: 'advance_progressive_reveal',
+    arguments: {
+      planId: revealPlan.planId,
+      planHash: revealPlan.planHash,
+      revealId: reveal.revealId,
+      action: 'next',
+    },
+  });
+  expect(firstFrameResult.structuredContent).toMatchObject({ frameIndex: 0, highestRevealedFrame: 0, cutoffX: 49.5 });
+  expect(secondFrameResult.structuredContent).toMatchObject({ frameIndex: 1, highestRevealedFrame: 1, cutoffX: 76.5 });
+  expect(firstFrameResult.structuredContent).not.toHaveProperty('blob');
+  const firstContent = (firstFrameResult as { content?: Array<{ type: string; data?: string }> }).content ?? [];
+  const secondContent = (secondFrameResult as { content?: Array<{ type: string; data?: string }> }).content ?? [];
+  expect(firstContent.filter((item) => item.type === 'image')).toHaveLength(1);
+  expect(firstContent.filter((item) => item.type === 'resource_link')).toHaveLength(0);
+  const firstFrameBytes = Buffer.from(firstContent.find((item) => item.type === 'image')?.data ?? '', 'base64');
+  const secondFrameBytes = Buffer.from(secondContent.find((item) => item.type === 'image')?.data ?? '', 'base64');
+  const chunkedFirstFrame = await readArtifactByChunks(client, revealPlan, firstFrame.item.id, 2_048);
+  expect(chunkedFirstFrame.bytes.equals(firstFrameBytes)).toBe(true);
+  expect(chunkedFirstFrame.filename).toBe('bar-reveal-001-bar-0.png');
+  expect(chunkedFirstFrame.sha256).toBe(firstFrame.item.sha256);
+  const probeCleanItem = artifactPlan.items.find((item) => item.kind === 'bar-probe-clean')!;
+  const probeCleanResource = await client.readResource({ uri: probeCleanItem.uri });
+  const probeCleanBytes = Buffer.from('blob' in probeCleanResource.contents[0] ? probeCleanResource.contents[0].blob : '', 'base64');
+  const [sourcePixels, firstPixels, secondPixels] = await Promise.all([
+    decodedRgb(probeCleanBytes),
+    decodedRgb(firstFrameBytes),
+    decodedRgb(secondFrameBytes),
+  ]);
+  expect(rgbAt(firstPixels, 15, 250)).toEqual(rgbAt(sourcePixels, 15, 250));
+  expect(rgbAt(firstPixels, 40, 250)).toEqual([229, 231, 235]);
+  expect(rgbAt(secondPixels, 40, 250)).toEqual(rgbAt(sourcePixels, 40, 250));
+  expect(rgbAt(secondPixels, 70, 250)).toEqual([229, 231, 235]);
+
   const sourceLocator = manifest.assets.find((asset) => asset.kind === 'source-locator')!;
   const sourceClean = manifest.assets.find((asset) => asset.kind === 'source-clean')!;
   expect(sourceLocator.pairedAssetId).toBe(sourceClean.id);
@@ -332,6 +520,26 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
   expect('text' in guide.contents[0] ? guide.contents[0].text : '').toContain('每 3 根显示一次编号');
   const prompts = await client.listPrompts();
   expect(prompts.prompts.map((prompt) => prompt.name)).toContain('inspect_entry_visual');
+  expect(prompts.prompts.map((prompt) => prompt.name)).toContain('review_entry_progressively');
+  const progressivePrompt = await client.getPrompt({
+    name: 'review_entry_progressively',
+    arguments: {
+      entry_id: entry.id,
+      entry_annotation_id: 'ann-1',
+      bars_before_entry: '18',
+      bars_after_entry: '12',
+      review_question: '当时是否有足够证据入场？',
+    },
+  });
+  const progressiveWorkflow = progressivePrompt.messages
+    .map((message) => (message.content.type === 'text' ? message.content.text : ''))
+    .join('\n');
+  expect(progressiveWorkflow).toContain(`围绕 Entry ${entry.id} 的入场点`);
+  expect(progressiveWorkflow).toContain('local bar 0 是本次局部回访窗口的起点，而不是原截图第一根');
+  expect(progressiveWorkflow).toContain('spacingNew = spacingOld + (rEnd-rStart)/(barEnd-barStart)');
+  expect(progressiveWorkflow).toContain('不得先读取 source-original、完整 clean ROI、未来 frame');
+  expect(progressiveWorkflow).not.toMatch(/11\.7|12\.292|2000.?1006|569\.7|be1c045f/i);
+  expect(progressiveWorkflow).not.toContain('{{entry_id}}');
 
   expect(await store.getEntry(page, entry.id)).toEqual(before);
   await client.close();
@@ -453,6 +661,34 @@ test('visual evidence preserves duplicate cropped screenshot instances and refus
     { kind: 'unique', screenshotIds: ['S1'] },
     { kind: 'unique', screenshotIds: ['S2'] },
   ]);
+  const sourceBundleResult = await client.callTool({
+    name: 'get_visual_evidence',
+    arguments: { entryId: entry.id, annotationIds: [] },
+  });
+  const sourceBundle = sourceBundleResult.structuredContent as unknown as AiVisualEvidenceManifest;
+  const windowResult = await client.callTool({
+    name: 'create_visual_artifacts',
+    arguments: {
+      bundleId: sourceBundle.bundleId,
+      specs: [
+        { kind: 'instance-source-window', screenshotId: 'S1' },
+        { kind: 'instance-source-window', screenshotId: 'S2' },
+      ],
+    },
+  });
+  const windowPlan = windowResult.structuredContent as unknown as AiVisualArtifactPlan;
+  expect(windowPlan.items.map((item) => item.sourceRoi)).toEqual([
+    { x: 0, y: 0, width: 50, height: 50 },
+    { x: 50, y: 0, width: 50, height: 50 },
+  ]);
+  const windowResources = await Promise.all(windowPlan.items.map((item) => client.readResource({ uri: item.uri })));
+  const windowPixels = await Promise.all(
+    windowResources.map((resource) =>
+      decodedRgb(Buffer.from('blob' in resource.contents[0] ? resource.contents[0].blob : '', 'base64')),
+    ),
+  );
+  expect(rgbAt(windowPixels[0], 25, 25)).toEqual([239, 68, 68]);
+  expect(rgbAt(windowPixels[1], 25, 25)).toEqual([37, 99, 235]);
   const overview = manifest.assets.find((asset) => asset.kind === 'overview')!;
   const overviewResource = await client.readResource({ uri: overview.uri });
   const overviewBytes = Buffer.from('blob' in overviewResource.contents[0] ? overviewResource.contents[0].blob : '', 'base64');
@@ -552,6 +788,27 @@ test('AI access key persists encrypted and reset invalidates every copied config
 test('App settings has a dedicated AI page with MCP setup and editable prompts', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tj-ai-settings-'));
   const { app, page } = await launchApp(join(root, 'journal'), join(root, 'user-data'));
+  const mergedPrompts = await page.evaluate(async () => {
+    const api = (globalThis as unknown as WindowWithApi).api;
+    const settings = await api.getAiAccessSettings();
+    await api.saveAiAccessSettings({
+      ...settings,
+      prompts: settings.prompts
+        .filter((prompt) => prompt.id !== 'review_entry_progressively')
+        .map((prompt) =>
+          prompt.id === 'inspect_entry_visual'
+            ? { ...prompt, title: 'My edited visual prompt', enabled: false }
+            : prompt,
+        ),
+    });
+    return (await api.getAiAccessSettings()).prompts;
+  });
+  expect(mergedPrompts).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: 'review_entry_progressively', source: 'built-in', enabled: true }),
+      expect.objectContaining({ id: 'inspect_entry_visual', title: 'My edited visual prompt', enabled: false }),
+    ]),
+  );
   await page.getByTestId('ribbon-general').click();
   await expect(page.getByTestId('settings-page-general')).toBeVisible();
   await expect(page.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
@@ -568,6 +825,7 @@ test('App settings has a dedicated AI page with MCP setup and editable prompts',
   await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/每 3 根显示一次编号/);
   await expect(page.getByTestId('ai-agent-guide')).toHaveValue(/纯白背景通常表示 RTH 时段/);
   await expect(page.getByTestId('ai-prompt-inspect_entry_visual')).toBeVisible();
+  await expect(page.getByTestId('ai-prompt-review_entry_progressively')).toBeVisible();
   await page.getByTestId('ai-agent-guide').fill('Unsaved guide draft');
   await page.getByTestId('settings-tab-general').click();
   await expect(page.getByTestId('general-path')).toBeVisible();
@@ -645,4 +903,62 @@ function annotationRect(id: string, left: number): Record<string, unknown> {
 
 function annotationIndex(id: string, x: number): import('../../src/shared/domain').Annotation {
   return { id, bounds: { x, y: 10, width: 20, height: 20 }, tags: [], links: [] };
+}
+
+interface DecodedRgb {
+  data: Buffer;
+  width: number;
+  channels: number;
+}
+
+async function decodedRgb(bytes: Buffer): Promise<DecodedRgb> {
+  const { data, info } = await sharp(bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, channels: info.channels };
+}
+
+function rgbAt(image: DecodedRgb, x: number, y: number): number[] {
+  const offset = (y * image.width + x) * image.channels;
+  return [...image.data.subarray(offset, offset + 3)];
+}
+
+async function readArtifactByChunks(
+  client: Client,
+  plan: Pick<AiVisualArtifactPlan, 'planId' | 'planHash'>,
+  itemId: string,
+  maxBytes: number,
+): Promise<{ bytes: Buffer; filename: string; sha256: string; rawResponseKeys: string[] }> {
+  const chunks: Buffer[] = [];
+  let offset = 0;
+  let filename = '';
+  let sha256 = '';
+  let rawResponseKeys: string[] = [];
+  while (true) {
+    const result = await client.callTool({
+      name: 'read_visual_artifact_chunk',
+      arguments: { planId: plan.planId, planHash: plan.planHash, itemId, offset, maxBytes },
+    });
+    const chunk = result.structuredContent as unknown as {
+      filename: string;
+      sha256: string;
+      offset: number;
+      byteCount: number;
+      totalByteCount: number;
+      nextOffset?: number;
+      data: string;
+    };
+    rawResponseKeys = Object.keys(chunk);
+    expect(chunk.offset).toBe(offset);
+    const bytes = Buffer.from(chunk.data, 'base64');
+    expect(bytes.byteLength).toBe(chunk.byteCount);
+    chunks.push(bytes);
+    filename = chunk.filename;
+    sha256 = chunk.sha256;
+    if (chunk.nextOffset === undefined) {
+      expect(Buffer.concat(chunks).byteLength).toBe(chunk.totalByteCount);
+      break;
+    }
+    expect(chunk.nextOffset).toBe(offset + chunk.byteCount);
+    offset = chunk.nextOffset;
+  }
+  return { bytes: Buffer.concat(chunks), filename, sha256, rawResponseKeys };
 }

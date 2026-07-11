@@ -85,6 +85,12 @@ export class JournalReadService {
             ),
           },
         };
+      case 'create-visual-artifacts':
+        return { op: request.op, value: await this.visualEvidence.createArtifacts(request.input, context.sessionId) };
+      case 'advance-progressive-reveal':
+        return { op: request.op, value: await this.visualEvidence.advanceReveal(request.input, context.sessionId) };
+      case 'read-visual-artifact-chunk':
+        return { op: request.op, value: this.visualEvidence.readArtifactChunk(request.input, context.sessionId) };
       case 'read-resource':
         return { op: request.op, value: this.visualEvidence.read(request.input.uri, context.sessionId) };
       case 'read-resources':
