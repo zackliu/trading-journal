@@ -49,7 +49,7 @@ async function dragScene(page: Page, box: Box, from: Scene, to: Scene): Promise<
 }
 
 async function drawRect(page: Page, box: Box, from: Scene, to: Scene): Promise<void> {
-  await page.getByTestId('tab-draw').click(); // finishing a shape selects it (→ Annotation tab); re-show the tools
+  await page.getByTestId('tab-draw').click();
   await page.getByTestId('tool-rect').click();
   await page.locator(CANVAS).hover({ position: pos(box, from[0], from[1]), force: true });
   await page.mouse.down();
@@ -60,7 +60,7 @@ async function drawRect(page: Page, box: Box, from: Scene, to: Scene): Promise<v
 /** Tag the drawing at scene point `at` via the contextual Annotation tab's quick-pick (vocab pre-declared). */
 async function tagAt(page: Page, box: Box, at: Scene, group: string, value: string): Promise<void> {
   await page.locator(CANVAS).click({ position: pos(box, at[0], at[1]), force: true }); // select the drawing
-  await page.getByTestId('tab-annotation').click(); // open the contextual tab
+  await expect(page.getByTestId('tab-annotation')).toHaveClass(/is-active/);
   await page.getByTestId(`qtag-${group}-${value}`).click();
   await page.getByTestId('tab-draw').click(); // restore Draw for subsequent tools / palette lock
 }
@@ -179,6 +179,7 @@ test('unlocking the palette lets a page drawing be moved in as a global stamp', 
   await drawRect(page, box, [300, 260], [640, 460]);
   await tagAt(page, box, [470, 360], 'setup', 'alpha');
   await dragScene(page, box, [470, 360], [3170, 900]);
+  await expect(page.getByTestId('tab-draw')).toHaveClass(/is-active/);
 
   // Refused: the strip is still empty and the drawing still belongs to the review.
   expect(stampCount((await store.getStampLibrary(page)).canvasJson)).toBe(0);
@@ -186,8 +187,10 @@ test('unlocking the palette lets a page drawing be moved in as a global stamp', 
 
   // Unlock, then draw + tag a second drawing and drag THAT one into the strip — now it transfers.
   await page.getByTestId('stamp-lock').click();
+  await expect(page.getByTestId('stamp-lock')).toContainText('Unlocked');
   await drawRect(page, box, [300, 900], [640, 1100]);
   await tagAt(page, box, [470, 1000], 'setup', 'beta');
+  await expect.poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'beta' })).length).toBe(1);
   await dragScene(page, box, [470, 1000], [3170, 1000]);
 
   // The drawing left the review and became a global stamp carrying its tag.

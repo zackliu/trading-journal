@@ -10,6 +10,11 @@ import type {
   ResultDimension,
   ResultDimensionView,
   SavedView,
+  StatsExamplesEntry,
+  StatsExamplesQuery,
+  StatsQuery,
+  StatsReport,
+  StatsScope,
   Tag,
   TagGroup,
   TagGroupView,
@@ -85,6 +90,9 @@ export interface IpcApi {
   queryEntriesByView(query: ViewQuery): Promise<EntrySummary[]>;
   countGroupValuesUnderView(query: ViewQuery, groupId: string): Promise<Array<{ value: string; count: number }>>;
   distinctResultValues(dimensionId: string): Promise<string[]>;
+  runStats(query: StatsQuery): Promise<StatsReport>;
+  queryStatsExamples(query: StatsExamplesQuery): Promise<StatsExamplesEntry[]>;
+  queryStatsScopeEntries(scope: StatsScope): Promise<EntrySummary[]>;
   createSavedView(name: string, query: ViewQuery): Promise<SavedView>;
   listSavedViews(): Promise<SavedView[]>;
   getSavedView(id: string): Promise<SavedView | null>;
@@ -148,6 +156,9 @@ export const IpcChannel = {
   queryEntriesByView: 'view:query-entries',
   countGroupValuesUnderView: 'view:count-group-values',
   distinctResultValues: 'view:result-values',
+  runStats: 'stats:run',
+  queryStatsExamples: 'stats:examples',
+  queryStatsScopeEntries: 'stats:scope-entries',
   createSavedView: 'view:create-saved',
   listSavedViews: 'view:list-saved',
   getSavedView: 'view:get-saved',

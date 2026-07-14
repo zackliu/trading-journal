@@ -15,7 +15,7 @@ The tests drive the **built** Electron app (`playwright.config.ts` → `_electro
    ```
 2. **Cheap gates first** (fast feedback before the slow suite):
    ```pwsh
-   npm run typecheck; npm run lint
+   npm run typecheck; npm run lint; npm run test:unit
    ```
 3. **Iterate on one spec** while working a change:
    ```pwsh
@@ -27,7 +27,7 @@ The tests drive the **built** Electron app (`playwright.config.ts` → `_electro
    ```pwsh
    npx playwright test
    ```
-   `npm test` also works — it is `npm run build && playwright test` (build + full suite in one step). Use bare `npx playwright test` when the build is already current to skip the rebuild.
+   `npm test` is the default complete gate — `npm run test:unit && npm run build && playwright test`. Use bare `npx playwright test` when the build is already current to skip the unit suite and rebuild during focused iteration.
 
 Run every command in the **integrated terminal in sync mode** and watch the output — do not background it. The list reporter prints one numbered line per test as it finishes (`✓ 12 …title… (2.5s)`), and because `workers: 1` runs them serially you can see exactly which test (N of total) is in flight. Poll the terminal output to follow along; the final line is `N passed (M.Ss)`.
 

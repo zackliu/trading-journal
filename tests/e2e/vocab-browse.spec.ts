@@ -267,7 +267,7 @@ test('an overflowing group collapses into a searchable drawer that tags from the
 
 // ---- Annotation contextual tab (UI) ----
 
-test('selecting an annotation reveals the contextual Annotation tab and tags the annotation', async () => {
+test('clicking an annotation activates the contextual Annotation tab and tags the annotation', async () => {
   const { app, page } = await launchApp(tempDataDir());
   await store.defineGroup(page, { id: 'setup', label: 'Setup', pinned: true });
   await store.defineValue(page, { groupId: 'setup', value: 'h2' });
@@ -282,8 +282,10 @@ test('selecting an annotation reveals the contextual Annotation tab and tags the
   await page.getByTestId('tool-rect').click();
   await drag(page, box, 40, 40, 240, 160); // finishing the shape selects it
   await expect(page.getByTestId('tab-annotation')).toBeVisible();
+  await expect(page.getByTestId('tab-draw')).toHaveClass(/is-active/);
 
-  await page.getByTestId('tab-annotation').click(); // the contextual tab appears; click it to tag
+  await page.mouse.click(box.x + 140, box.y + 100);
+  await expect(page.getByTestId('tab-annotation')).toHaveClass(/is-active/);
   await page.getByTestId('qtag-setup-h2').click();
   await expect.poll(async () => (await store.queryByTag(page, { group: 'setup', value: 'h2' })).length).toBe(1);
   expect((await store.queryByTag(page, { group: 'setup', value: 'h2' }))[0]?.entryId).toBe(id);

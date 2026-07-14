@@ -58,7 +58,7 @@ Expect：
 - **Slice 0 (walking skeleton) implemented.** Runnable Electron shell: boots to a status screen, opens a portable data folder (`app.sqlite` + `images/`), and a typed `app:ping` IPC round-trips main↔renderer. Layout: `src/main` (Electron main, data folder, SQLite open + ordered migration runner), `src/preload` (contextBridge `window.api`), `src/renderer` (React shell: `main.tsx` + `App.tsx`), `src/shared/` (typed IPC + domain contracts), `tests/e2e/boot.spec.ts` (Playwright + Electron boot smoke test).
 - Toolchain: **electron-vite** (separate main/preload/renderer builds) + **Vite** + **TypeScript**; renderer UI = **React** (`@vitejs/plugin-react`; a strict CSP is injected into the production build only, so dev keeps HMR/react-refresh); IPC payloads validated at the main-process boundary with **zod**; native `better-sqlite3` rebuilt for Electron's ABI via `electron-builder install-app-deps` (runs on `postinstall`); packaging via **electron-builder** (`--dir`); e2e via **@playwright/test** `_electron` (drives the real app, no browser download).
 - Decided tech: renderer UI = **React** (Vite-bundled, canvas kept imperative outside React); canvas = **Fabric.js** v6 (MIT; imperative, mounted outside React); shell = **Electron** (JS/TS, no Rust); storage = local **SQLite** (better-sqlite3) for entries/annotations/tags/results/views/stats + an `images/` folder for screenshots (referenced by hash, not base64-embedded), all under one portable data folder. Migration (reproduce the user's PPT annotations — boxes, text, arrows — as native editable annotations, not flat screenshots; high-difficulty) remains deferred research in the brief. Group/result vocabulary (which groups/tags/result dimensions exist) is user-defined at runtime, not a project decision. Do not assume other tech until it is chosen and recorded in this note.
-- Verified commands (Windows, Node 22.22, npm 10.9): bootstrap `npm install` (postinstall rebuilds better-sqlite3 for Electron); build `npm run build`; typecheck `npm run typecheck`; lint `npm run lint`; run `npm run dev`; e2e `npm test` (build + Playwright suite: boot + store + ingest + editor scenarios), or `npm run test:e2e` after a prior `npm run build`; package `npm run package` (→ `dist/win-unpacked/TradingJournal.exe`).
+- Verified commands (Windows, Node 22.22, npm 10.9): bootstrap `npm install` (postinstall rebuilds better-sqlite3 for Electron); build `npm run build`; typecheck `npm run typecheck`; lint `npm run lint`; run `npm run dev`; default gate `npm test` (Vitest pure logic → build → full Playwright + Electron suite), unit-only `npm run test:unit`, or e2e-only `npm run test:e2e` after a prior `npm run build`; package `npm run package` (→ `dist/win-unpacked/TradingJournal.exe`).
 
 ## 4. Slice 1：Durable Entry & Annotation-Tag Store
 
@@ -401,7 +401,7 @@ Expect：
 
 目标：把「给复盘 / 标注打分类标签」与「按分类浏览复盘」一次做成一个闭环——用户先在一个**词表注册表**里声明自己的 group 与 tag 值，然后在 Ribbon 上一键给**整张复盘**（`Review` 页）或**选中的标注**（`Annotation` 上下文页）打这些 tag，最后在左栏**任选一个 group 维度**把整个库分桶浏览、点开大图时带该 tag 的标注短暂高亮。一份 Entry 在任意 group / tag 下浏览，零复制。（原 Entry Tags 与 Browse 合并：二者是同一件事的写侧与读侧，拆开各自没有可演示的回报。）
 
-**用户动作流程与直觉逻辑**：用户脑子里是「这张复盘的 day structure 是 X、品种是 NQ」——这些是**关于整张图的属性**，跟贴在某个框上的 tag 分得很清。他先在 `Home → Settings`（独立窗口）把词汇建好：group「day-structure」下若干值、group「symbol」下若干值……（系统不预置任何目录）。回到某张复盘，`Review` 页上就摆着他钉上来的几个 group 的快捷选择，点一下就打上，非常省事。当他点中画布上某个标注时，Ribbon **像 Office 一样冒出一个 `Annotation` 上下文页**（正如选中图片才出现 Shape Format），里面**同一套** group & tag 快捷选择，只是这次打给这个标注。浏览时，左栏顶部是一个**看起来就可点**的维度选择器（默认「All reviews」）：点开像下拉一样列出他建的所有 group，选一个（比如 symbol），左栏立刻按这个维度分成一段段可折叠的桶（NQ、ES……），每段里是命中的复盘缩略图；点一张在中间看大图，**带这个 tag 的标注亮 ~1.5s**——他一眼就知道「这张为什么归到 NQ」。选「All reviews」则是所有复盘按**年-月**自动分段（隐性时间结构，不是他建的 group、也不出现在 Settings 或打标签选项里），保证每张复盘一定有处可现。同一张图出现在好几个桶里时，他清楚**还是那一张、没有副本**。
+**用户动作流程与直觉逻辑**：用户脑子里是「这张复盘的 day structure 是 X、品种是 NQ」——这些是**关于整张图的属性**，跟贴在某个框上的 tag 分得很清。他先在 `Home → Settings`（独立窗口）把词汇建好：group「day-structure」下若干值、group「symbol」下若干值……（系统不预置任何目录）。回到某张复盘，`Review` 页上就摆着他钉上来的几个 group 的快捷选择，点一下就打上，非常省事。当他用选择工具点中画布上某个标注时，Ribbon **像 Office 一样出现并自动进入 `Annotation` 上下文页**（正如点中图片后进入 Shape Format），里面**同一套** group & tag 快捷选择，只是这次打给这个标注；刚画完标注产生的自动选中仍停在 `Draw`，不会打断连续绘图。浏览时，左栏顶部是一个**看起来就可点**的维度选择器（默认「All reviews」）：点开像下拉一样列出他建的所有 group，选一个（比如 symbol），左栏立刻按这个维度分成一段段可折叠的桶（NQ、ES……），每段里是命中的复盘缩略图；点一张在中间看大图，**带这个 tag 的标注亮 ~1.5s**——他一眼就知道「这张为什么归到 NQ」。选「All reviews」则是所有复盘按**年-月**自动分段（隐性时间结构，不是他建的 group、也不出现在 Settings 或打标签选项里），保证每张复盘一定有处可现。同一张图出现在好几个桶里时，他清楚**还是那一张、没有副本**。
 
 实现范围：
 
@@ -423,7 +423,7 @@ Expect：
 **C. Review 页与 Annotation 上下文页（同一套快捷标签控件）**
 
 - **`Review` 页**（原 `Tags` 页改名）：展示并编辑**这张复盘的 entry 级 tag**——每个 pinned group 是一个**固定宽度块**（组间一条很淡的细线分隔，谁也不推谁），块内值 chip 按 Settings 顺序、**已选(applied)浮到最前**始终可见；**长名 chip 省略号 + 悬停显示全名**；**放不下的收成 `+N` 展开钮**，点开一个**每组一个、限高可滚、带搜索框**的伸缩板（覆盖画布、点外/Esc 收），列全部值(applied 置顶)、点即打 tag。**只选不建**（新建走 Settings）。
-- **`Annotation` 上下文页**：**仅在选中某个 annotation 时出现**（Office contextual tab：出现即可点击，但**不抢占 `Draw`**——保持连续绘图；点该页即可给选中标注打 tag；取消选中即隐藏、Ribbon 回 `Draw`），承载**与 `Review` 页完全相同**的一套 group & tag 快捷选择，作用于选中的 annotation。二者共用同一个快捷标签控件（target = 整张 Entry 或选中 annotation），不写两套。
+- **`Annotation` 上下文页**：**仅在选中某个 annotation 时出现**。用户用选择工具直接点击 annotation 时，Ribbon 自动进入该上下文页，可立即打 tag 或登记 result；刚完成绘制、Stats 证据定位等程序化自动选中只让该页出现，仍保留当前页签，避免打断连续动作。取消选中即隐藏，Ribbon 回 `Draw`。该页承载**与 `Review` 页完全相同**的一套 group & tag 快捷选择，作用于选中的 annotation；二者共用同一个快捷标签控件（target = 整张 Entry 或选中 annotation），不写两套。
 - **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；`Annotation` 页在 tag 快捷选择之外还**并排承载结果登记**（result 维度：`choices` 预设值单选 chips / `number` 数字框，与 tag 一个手感）；Slice 4 的右键浮窗**收敛为「Links…」**（跨图链接是标注独有、较低频，留在贴着对象的浮窗）。**结果类型（result 维度与其预设值）在 Home 的「Settings → Result」注册表里声明**，镜像 group & tags 的注册表设计（migration 006 加 `result_dimension_values`）。
 
 **D. entry-tag 写入路径**
@@ -478,7 +478,7 @@ Given：
 
 Expect：
 
-- Ribbon 出现 `Annotation` 上下文页（不抢占 `Draw`，点该页即可编辑）；取消选中即隐藏。
+- 用户点击矩形后，Ribbon 出现并自动进入 `Annotation` 上下文页；刚完成绘制的自动选中仍停在 `Draw`；取消选中即隐藏。
 - 在其中点 `setup:h2` → 该 tag 随 canvas 保存投影进 `annotation_tags`，`queryAnnotationsByTag` 命中该标注。
 - 该控件与 `Review` 页是同一套（同机制，无特殊标注类型）。
 
@@ -532,7 +532,7 @@ Expect：
 
 - **Slice 6（Entry Tags、词表注册表与 Browse）已落地。** 词表注册表成为一等公民：migration `004`（`user_version` → 4）建 `tag_groups` / `tag_values`；`store/vocabulary.ts` 做 group/value 声明 / 删除 / pin 与 `listGroups`（每值带 distinct-entry 计数）；`store/tagQuery.ts` 的 `entryIdsForTag` / `countEntriesForTag` 以 `entry_tags UNION annotation_tags` 求**并集去重**。`date` 不进注册表，仍是结构性系统 entry tag。
 - **写入 / 读取契约**：`entryStore.setEntryTags`（替换用户级 tag、**过滤并保留结构性 `date`**）、`entryStore.queryEntriesByTag`（并集去重的 `EntrySummary`）。新增 typed IPC `store:set-entry-tags` / `store:query-entries-by-tag` / `vocab:*`（list/define/delete group、define/delete value、set-pinned），全部 zod 边界校验、preload 白名单桥接，renderer 不开 SQLite。id 校验放宽为 unicode slug（`^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$`），配合 renderer 的 `shell/slug.ts`——用户键入 `TRD` / `上升日`，存为 slug id + 原文 label。
-- **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（出现但**不抢占 `Draw`**），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.15s 柔和琥珀光晕**（device-space 分层 shadow-blur，短促 bloom 后向外溢出淡出；无硬描边、不覆盖对象内部；派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Links**（result 编辑迁至 `Annotation` 页）。
+- **渲染层**：Ribbon `Tags` 页改为 **`Review` 页** + 选中标注才出现的 **`Annotation` 上下文页**（用户点击 annotation 时默认进入；绘制完成或 Stats 定位造成的自动选中不抢当前页），二者共用 `shell/QuickTag.tsx`：每个 pinned group 是**固定宽度块**（组间细线分隔、applied 浮到最前、长名省略号 + 悬停、放不下收成 **`+N` → 每组一个限高可滚带搜索的伸缩板**，浮层盖画布、点外即收；**只选不建**）；`Home` 的 **Settings** 开 `shell/SettingsDialog.tsx` 独立模态窗做词表增删 + pin + **拖排序**（`shell/SortableList.tsx` 手写指针拖拽、兄弟项平滑让位；group 与值都带 ☰ 拖柄；`sort` 落库 migration `005`；**新建值只在此**）；左栏 `shell/GroupBrowser.tsx` pivot 浏览（维度下拉 + 值桶 / 年-月手风琴 + 折叠 / 全部展开）；`canvasController.flashTagHighlight` 在 `after:render` 画 **~1.15s 柔和琥珀光晕**（device-space 分层 shadow-blur，短促 bloom 后向外溢出淡出；无硬描边、不覆盖对象内部；派生、`capturing` 挡缩略图、不落库 / 不入 history）；Slice 4 右键浮窗收敛为 **Links**（result 编辑迁至 `Annotation` 页）。
 - **Ribbon 双行版式**：band 固定高（92px）、**跨所有页等高**（`tests/e2e/ribbon.spec.ts` 断言）；`Draw` 页刻意排成**双行簇**（Tools 4+3、Stroke / Fill&opacity / Text / Edit / Arrange 皆两行；组名作**底部小标题**），为将来扩容留量；`Review` / `Annotation` 的 QuickTag 直接渲染，chip **两行环绕**、组名同样落到**底部小标题**，长 chip 不半截裁切；`BrowserWindow` 设 `minWidth: 980`（band 内容 966px），保证缩窗时 `Draw` **永不横向溢出**。
 - **测试**：`tests/e2e/vocab-browse.spec.ts`（11 项：注册表声明 / 删除、entry tag 存查且 `date` 不被覆盖、并集去重 + 计数 + 零复制、`Review` 一键打 tag → 进桶、Settings 自然文本 → slug id + label、**排序落库并跨重启持久**、**溢出组收成搜索伸缩板并从全表打 tag**、`Annotation` 上下文页选中即现 + 打 tag、All reviews 年-月且 `date` 不入 Settings/pivot、折叠 / 全部展开、高亮派生不落库）；`annotation-popover` 与 `stamp-library` 改为经 Ribbon 快捷控件打 tag（浮窗只留 result / link）；`tests/e2e/ribbon.spec.ts` 断言 band 跨五页**等高不变量**。**47/47 e2e 全绿**。
 - **词表演化基线已并入本 slice**：migration `007` 给 group / value / result dimension / result value 注册表增加 `archived`；重命名只改 label、稳定 id 不变；删除改为软归档并可 Restore，使用引用与计数不动；有使用的项先二次确认；归档 tag 可永久清除注册行但绝不级联 `entry_tags` / `annotation_tags`，result dimension 因类型与 FK 契约不提供硬删。`listGroups` / `listResultVocabulary` 返回 distinct-entry 使用计数。未实现的合并 / 改 id 不再列为后续路线。
@@ -852,9 +852,18 @@ interface StatsExamplesEntry {
 - 两个以上 compare groups、多维 pivot、相关性矩阵、自动排名、显著性检验、AI 交易建议。
 - 把 result 变成 tag、browse bucket 或 highlight；把 annotation 特判成 TradeMarker；复制 Entry 来保存报表或 examples。
 
+**实现状态（Slice 8A / 8B / 8C 已落地）**
+
+- **统计 contract 与查询边界已落地。** `shared/domain.ts` 定义 `StatsScope / StatsQuery / StatsReport / StatsExamplesQuery`；main 侧 `store/statistics.ts` 只读 annotation-tag index、entry tags、result registry 与 `entries.created_at`，同一份 population rows 同时驱动 report、exact examples 和 date-scoped Scope Entries。typed IPC 全部经 zod 校验；不读 `canvas_json`。
+- **纯聚合已落地。** `store/statsAggregate.ts` 负责 mean、奇偶 median、number threshold、string distribution、coverage、overlap 与 exact segment membership；零分母统一返回 `null`。Vitest 2 覆盖 5 条纯数学 contract，默认 `npm test` 已把 unit gate 纳入全套。
+- **Overall workspace 与 evidence loop 已落地。** Stats 首次复制当前 View 的 Entry / annotation 分类条件并剥离 result predicates；Ribbon 提供 Sample、All / 30D / 90D / Custom、单一 Measure、number condition 与一个 Compare group。全宽 workspace 显示 scope Entries、population samples、contributing Entries、recorded / missing 与明确分母；默认 `active-result-bearing` 全程使用 result-bearing 限定文案，不冒充 eligible coverage。
+- **单组 Compare 已落地。** Entry / annotation level 明选；cohort 按词表顺序，保留实际使用的 archived / unregistered values 与 `No value`；多值样本允许进入多行并显示 overlap，Overall 始终按 unique annotation 计算。string 颜色跨 Overall / cohort 保持同值同色，number / string 的 cohort 指标都能回看精确证据。
+- **证据与数据安全已落地。** 任一 Overall / cohort / recorded / missing / string segment / threshold 可回既有 rail + canvas；同 Entry 多样本用 Previous / Next 普通 selection，不触发 result highlight。evidence session 绑定 dispatch-time query + revision，Entry 删除或 result 编辑会重算；进入 / 返回 Stats 必须先完成当前 canvas save，失败时留在编辑器并显示保存错误。Stats 配置、report 与命中 id 全为 session state，不建 SavedView、不复制 Entry、不落库。
+- **持久化契约未变化。** 无 SQLite migration、无 `canvas_json` 变化、无第二份 artifact / report store。专项为 5 / 5 Vitest + 11 / 11 Statistics Playwright；最终 `npm run typecheck`、`npm run lint`、`npm test` 全绿，完整 Playwright + Electron suite **118 / 118**。
+
 ## 12. Slice 9：Read-only AI Access Extension（post-MVP）
 
-目标：用户可以让**自己选择、自己信任的兼容 agent**读取当前 Trading Journal 中的结构化复盘与视觉证据，帮助完成近期复盘、分类对比、反例 / 离群样本检查、相似案例回看、跨图 link 追踪与数据完整性审计。Trading Journal 只提供本机、按需、可撤销的只读 MCP 数据能力；它不内置模型、不绑定供应商、不替用户保存 AI 结论，并且**永远不向 agent 暴露任何 journal write 能力**。本 slice 按用户要求先于 Slice 8 落地；Slice 8 未实现期间不暴露 statistics / data-gaps 空壳 tool。
+目标：用户可以让**自己选择、自己信任的兼容 agent**读取当前 Trading Journal 中的结构化复盘与视觉证据，帮助完成近期复盘、分类对比、反例 / 离群样本检查、相似案例回看、跨图 link 追踪与数据完整性审计。Trading Journal 只提供本机、按需、可撤销的只读 MCP 数据能力；它不内置模型、不绑定供应商、不替用户保存 AI 结论，并且**永远不向 agent 暴露任何 journal write 能力**。当前 MCP tool surface 不提供通用 statistics / data-gaps tool；后续若增加，必须直接委托 Slice 8 contract，不能在 AI layer 另做一套统计。
 
 这里的 extension 是一个**第一方可选 companion package / process**，不是通用第三方插件平台。用户可以使用任何通过支持矩阵验证、能连接本 extension Streamable HTTP MCP 能力的 agent；不承诺所有 agent 都支持 Authorization header、Resources 或 image content。
 
@@ -869,7 +878,7 @@ interface StatsExamplesEntry {
   - 「找出 R 倍数离群的样本，逐张看入场 annotation 周围的图。」
   - 「哪些明确属于这个 setup 的样本还没填 result？」
   - 「沿着这些 annotation links 回顾我当时如何修正判断。」
-5. Agent 先调用有界结构化查询，再为少量候选 annotation 请求视觉证据包。包同时提供已提交页面、编号 locator、局部 focus、可用时的原始截图 native crop，以及 annotation geometry ↔ screenshot instance 的结构化映射；不会先把整个 journal 和全部图片一次性塞进上下文。回答引用 `A1 + annotationId + Entry date / id`，并把结构化事实、视觉观察与推断分开。Slice 8 将来落地后可再增加直接委托其统计 contract 的 tool，但不由 AI layer 预做另一套统计。
+5. Agent 先调用有界结构化查询，再为少量候选 annotation 请求视觉证据包。包同时提供已提交页面、编号 locator、局部 focus、可用时的原始截图 native crop，以及 annotation geometry ↔ screenshot instance 的结构化映射；不会先把整个 journal 和全部图片一次性塞进上下文。回答引用 `A1 + annotationId + Entry date / id`，并把结构化事实、视觉观察与推断分开。若后续增加通用 statistics tool，它直接委托已落地的 Slice 8 contract，不由 AI layer 预做另一套统计。
 6. 应用状态栏与 AI Access 页面只显示当前连接数、正在调用的 tool / resource / prompt 与最近 20 次读取摘要。日志仅保存在内存，Stop / 重启即清空，不写 journal。
 7. 用户点 `Stop`、关闭应用或切换 workspace，就立即终止所有 sessions，并令 cursor 与 resource link 失效。若复制的配置曾被不该持有的人拿到，`Reset access key` 一次使所有旧 HTTP 配置失效；它放在 Advanced，不成为日常流程。
 
@@ -959,7 +968,7 @@ type JournalReadRequest =
 - 不提供通用 image command 或 filesystem tool。原图、所有 crop、probe 与 reveal frame 必须走同一 VisualArtifactService；每个 source selector 都是当前 session 的 `bundleId + screenshotId`，不能用 image hash 或磁盘路径创建旁路。
 - Companion 对一份 single / batch visual result 只发一次内部 `read-resources` RPC 读取全部图片，不再每张图单独跨进程往返。Agent 应优先使用 study / batch 工具，只有追查单张异常时才回退到 search / context / single visual 原语。
 - 不提供任意全文搜索、embedding 或视觉相似度 API。Agent 可以先用结构化 tag / result 缩小候选，再读取少量图片自行比较；不能为了“相似案例”扫描全库 canvas JSON 或建立隐形向量库。
-- `search_samples` 保持 Slice 7 的同一 annotation 共现语义。Slice 8 未实现时 `tools/list` 中明确没有 statistics / data-gaps；未来若接入，只能直接复用 Slice 8 contract，AI extension 不拥有另一套 query / stats engine。
+- `search_samples` 保持 Slice 7 的同一 annotation 共现语义。当前 `tools/list` 明确没有通用 statistics / data-gaps；后续若接入，只能直接复用 Slice 8 contract，AI extension 不拥有另一套 query / stats engine。
 - 所有 tool-level 领域 / validation 失败返回稳定 `{ code, message, hint, field?, retryable }`。错误隐藏 SQL、路径与 stack，但不得隐藏可操作原因；例如错误 population 提示使用 `query.annotation`，未知 result dimension 提示 `list_vocabulary(kind='results')`，过期 evidence 提示重建 bundle。
 
 ### 分页、快照与有界读取
@@ -1276,11 +1285,11 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 
 ### 依赖与完成定义
 
-- Slice 9 当前只依赖 Slice 6 / 7 的词表与 query semantics，以及 image / canvas data contract；按用户要求不等待 Slice 8。Slice 8 将来落地后，statistics 接入是直接委托其 contract 的后续扩展，不改变当前 read boundary。
+- Slice 9 当前实现只依赖 Slice 6 / 7 的词表与 query semantics，以及 image / canvas data contract。Slice 8 已落地；AI statistics 接入仍是直接委托其 contract 的后续扩展，不改变当前 read boundary。
 - Slice 9 完成 = 9A / 9B / 9C1 / 9C2 scenario tests 全绿 + Streamable HTTP client 与 GitHub Copilot 真实多模态 handoff 可用 + security / non-mutation audit 通过 + golden-DB 保持绿色。
 - 未引入 schema / canvas_json migration；AI connection、token、session、cursor、cache、log 和 report 都不进入 journal data folder。
 
-**实现状态（已落地，Slice 8 按要求跳过）**
+**实现状态（已落地；当前 tool surface 不含通用 Statistics）**
 
 - 已实现 12 个真实只读 tools：既有 overview、vocabulary、Entry search、sample search、sample study、Entry context、linked context、single visual、batch visual，加 `create_visual_artifacts`、`advance_progressive_reveal` 与 `read_visual_artifact_chunk`。`tools/list` 不含 statistics / data-gaps，也没有任何 write / SQL / filesystem 能力；所谓 export 只是返回 bytes，保存到 repo 由外部 agent 自己的工具完成。
 - 高效研究路径已落地：`list_vocabulary → prepare_sample_study → get_visual_evidence_batch`。Vocabulary 同时返回 Entry-level usage、annotation sample count 与 annotation distinct-Entry count；study 从完整 population 计算分母，明细截断不改变统计，并附最近文字与视觉批次。稳定错误 code / hint 取代模糊的 `Journal read request failed`。
@@ -1291,4 +1300,4 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 - Prompt Library 已内置 `review_entry_progressively`：参数只包含 Entry、可选入场 annotation、入场前后 bars 与研究问题；workflow 用远距离编号 / 多 candle center 得到首版 spacing，再按头 / 中 / 尾 residual 区分 phase 偏移与累计 spacing 漂移，并以 plan-local bars 从入场附近的有限窗口开始 reveal，不默认从截图第一根开始。MCP `prompts/get` e2e 验证参数替换、校准公式、逐帧纪律及不含任何真实测试图参数。既有 machine config 按 prompt id 只补新增 built-in，保留用户对旧 built-in 的编辑 / enabled 状态和全部 custom prompts。
 - 一张真实多 panel TradingView 截图已通过实际 Entry → MCP 路径验证：第一版 spacing 在长距离后出现累计漂移；按头 / 中 / 尾 residual 修正后，三段同时对齐图内累计 bar 编号。局部主图 ROI 创建完整 reveal definition 后只实际推进前三帧；三个 frame 的历史侧与 source-clean 均为 0 mismatch pixels，未来侧均为 0 non-mask pixels。测试图片只存在隔离临时 journal 与 ignored `test-results`，具体尺寸 / ROI / spacing 未写入 prompt、fixture 或正式 repo 资产。
 - 真实 GitHub Copilot CLI integration 已通过：Copilot 实际调用 overview → search → context → visual evidence，在同一上下文收到 5 张图片，正确返回 `A1 → count-zone`、可见累计编号 `3, 6, …, 30`，并按 center-in-rectangle 口径数出 8 根 candle；随机模型输出不作为 CI 硬门，协议 / 像素行为由 deterministic e2e 固定。
-- 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；新增 progressive prompt 后 AI Access 专项 **5 / 5**、完整 Playwright + Electron suite **107 / 107** 再次全绿（list reporter、workers=1、测试窗口不抢焦点）。
+- 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；AI Access 专项 **5 / 5**。Slice 8 合入后默认 `npm test` 再次全绿：Vitest **5 / 5**、完整 Playwright + Electron suite **118 / 118**（list reporter、workers=1、测试窗口不抢焦点）。

@@ -10,6 +10,11 @@ import type {
   ResultDimension,
   ResultDimensionView,
   SavedView,
+  StatsExamplesEntry,
+  StatsExamplesQuery,
+  StatsQuery,
+  StatsReport,
+  StatsScope,
   Tag,
   TagGroup,
   TagGroupView,
@@ -240,6 +245,15 @@ export const store = {
 
   distinctResultValues: (page: Page, dimensionId: string): Promise<string[]> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.distinctResultValues(x), dimensionId),
+
+  runStats: (page: Page, query: StatsQuery): Promise<StatsReport> =>
+    page.evaluate((q) => (globalThis as unknown as WindowWithApi).api.runStats(q), query),
+
+  queryStatsExamples: (page: Page, query: StatsExamplesQuery): Promise<StatsExamplesEntry[]> =>
+    page.evaluate((q) => (globalThis as unknown as WindowWithApi).api.queryStatsExamples(q), query),
+
+  queryStatsScopeEntries: (page: Page, scope: StatsScope): Promise<EntrySummary[]> =>
+    page.evaluate((s) => (globalThis as unknown as WindowWithApi).api.queryStatsScopeEntries(s), scope),
 
   createSavedView: (page: Page, name: string, query: ViewQuery): Promise<SavedView> =>
     page.evaluate((a) => (globalThis as unknown as WindowWithApi).api.createSavedView(a.name, a.query), { name, query }),

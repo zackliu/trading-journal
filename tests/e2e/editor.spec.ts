@@ -294,7 +294,7 @@ test('pasting into an open review adds an image object referenced by hash', asyn
   await app.close();
 });
 
-test('finishing a shape returns to the select tool', async () => {
+test('finishing a shape stays in Draw, then clicking it opens the Annotation ribbon', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);
 
@@ -316,6 +316,10 @@ test('finishing a shape returns to the select tool', async () => {
 
   // PPT-style: the tool auto-returns to select so any object is movable on hover.
   await expect(page.getByTestId('tool-select')).toHaveClass(/is-active/);
+  await expect(page.getByTestId('tab-draw')).toHaveClass(/is-active/);
+
+  await page.mouse.click(box.x + 125, box.y + 105);
+  await expect(page.getByTestId('tab-annotation')).toHaveClass(/is-active/);
 
   await app.close();
 });
@@ -978,6 +982,8 @@ test('the ribbon reads back the selected object style (format follows selection)
 
   // Re-select A: the swatch must read A's own blue, not the current green default.
   await page.mouse.click(box.x + 110, box.y + 100);
+  await expect(page.getByTestId('tab-annotation')).toHaveClass(/is-active/);
+  await page.getByTestId('tab-draw').click();
   await expect(page.getByTestId('stroke-color')).toHaveValue('#0000ff');
 
   await app.close();

@@ -177,6 +177,109 @@ export interface ViewMatch {
   annotationIds: string[];
 }
 
+export interface StatsDateRange {
+  from: string;
+  to: string;
+}
+
+export type StatsPopulation =
+  | { kind: 'matching-annotations'; predicates: TagPredicate[] }
+  | { kind: 'active-result-bearing' };
+
+export interface StatsScope {
+  entry: TagPredicate[];
+  population: StatsPopulation;
+  dateRange?: StatsDateRange;
+}
+
+export interface StatsThreshold {
+  op: 'gte' | 'lte';
+  value: number;
+}
+
+export interface StatsCompareBy {
+  level: 'entry' | 'annotation';
+  group: string;
+}
+
+export interface StatsQuery {
+  scope: StatsScope;
+  dimension: string;
+  threshold?: StatsThreshold;
+  compareBy?: StatsCompareBy;
+}
+
+export interface StatsSampleCounts {
+  contributingEntryCount: number;
+  populationCount: number;
+  recordedCount: number;
+  missingCount: number;
+  coverage: number | null;
+}
+
+export interface NumberAggregate {
+  kind: 'number';
+  mean: number | null;
+  median: number | null;
+  threshold?: StatsThreshold & {
+    matchCount: number;
+    rate: number | null;
+  };
+}
+
+export interface StringSegment {
+  value: string;
+  label?: string;
+  archivedOrUnregistered: boolean;
+  count: number;
+  rate: number | null;
+}
+
+export interface StringAggregate {
+  kind: 'string';
+  segments: StringSegment[];
+}
+
+export type StatsAggregate = NumberAggregate | StringAggregate;
+
+export interface StatsCohort extends StatsSampleCounts {
+  value: string | null;
+  label: string;
+  archivedOrUnregistered: boolean;
+  aggregate: StatsAggregate;
+}
+
+export interface StatsReport {
+  measure: ResultDimension;
+  scopeEntryCount: number;
+  counts: StatsSampleCounts;
+  overall: StatsAggregate;
+  cohorts?: StatsCohort[];
+  overlap?: {
+    multiAssignedPopulationCount: number;
+    unassignedPopulationCount: number;
+  };
+}
+
+export type StatsExamplesSegment =
+  | { kind: 'all' }
+  | { kind: 'recorded' }
+  | { kind: 'missing' }
+  | { kind: 'string-value'; value: string }
+  | { kind: 'threshold-match' }
+  | { kind: 'threshold-miss' };
+
+export interface StatsExamplesQuery {
+  stats: StatsQuery;
+  cohortValue?: string | null;
+  segment: StatsExamplesSegment;
+}
+
+export interface StatsExamplesEntry {
+  entryId: string;
+  annotationIds: string[];
+}
+
 /**
  * A user-declared classification group in the vocabulary registry. Groups (and their
  * values) exist independently of whether any review uses them — this registry feeds the

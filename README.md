@@ -45,8 +45,17 @@
 
 结果**不是标签**，而是记在标注上、可选、可多维、带类型的数据——比如 `盈亏`（赢/输/保本，选择型）、`R`（-1.2，数字型）。它专门用于筛选和统计，不会混进你的分类标签里。
 
-- **怎么用**：选中标注 → **Annotation** 页，选择型维度点一下选值、数字型维度直接填数字；维度和它的可选值在 **Home → Result** 里定义。
-- **场景**：给入场框记 `盈亏:亏损`、`R:-1.2`，之后在 **View** 里筛"所有 R 小于 -1 的复盘"，或按形态看输赢分布（分组 × 结果的统计 **Stats** 页开发中）。
+- **怎么用**：用选择工具点击标注会自动进入 **Annotation** 页；选择型维度点一下选值、数字型维度直接填数字。维度和它的可选值在 **Home → Result** 里定义。
+- **场景**：给入场框记 `盈亏:亏损`、`R:-1.2`，之后在 **View** 里筛"所有 R 小于 -1 的复盘"，或进入 **Stats** 看某类形态的结果分布。
+
+### 统计（Stats）：从数字回到原图证据
+
+**Stats** 以 annotation 为结果样本，不把一张 Entry 自动当成一笔交易。它会明确显示 population、来自多少条复盘、recorded / missing 和分母；缺失结果不会被当成 0。
+
+- **怎么用**：先在 **View** 圈定整图和 annotation 的分类范围，再打开 **Stats**；结果筛选会被主动忽略，避免只统计预先挑过的输赢。选择 All / 30D / 90D / Custom、一个 result measure，以及可选的一个 Entry 级或 annotation 级 group 做 Compare。
+- **数字结果**：显示 mean、median，以及自己设定的 `≥ / ≤` condition match；系统不会擅自把某个阈值叫作胜率。
+- **选择结果**：显示每个值的精确 count / recorded 占比；Compare 行允许多值重叠，并明确提示不能把各行相加。
+- **回看证据**：Overall、cohort、recorded / missing、字符串分段和 threshold 都可点 **Review examples** 回到原复盘；同一 Entry 有多个样本时用 Previous / Next 逐个普通选中，返回后 Stats 配置和滚动位置仍在。
 
 ### 图章库（Palette）：把常用标注存起来，随手拖出来复用
 
@@ -174,7 +183,8 @@ electron-builder.yml      打包 / 安装包配置
 | `npm run preview` | 预览生产构建 |
 | `npm run typecheck` | 三个 tsconfig 全量类型检查 |
 | `npm run lint` | ESLint 检查 |
-| `npm test` | 先 `build` 再跑 Playwright 端到端测试 |
+| `npm run test:unit` | 跑 Vitest 纯逻辑单测 |
+| `npm test` | 依次跑 Vitest、`build` 和 Playwright + Electron 全套测试 |
 | `npm run test:e2e` | 仅跑 Playwright（复用现有 `out/` 构建） |
 | `npm run package` | 生成**免安装可执行文件夹**（见下） |
 | `npm run dist` | 生成 **Windows 安装包**（NSIS，见下） |

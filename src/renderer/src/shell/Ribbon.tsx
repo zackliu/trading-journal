@@ -1,13 +1,23 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import type { AnnotationSelection, DashStyle, DrawStyle, Tool } from '../editor/canvasController';
-import type { ResultDimensionView, SavedView, Tag, TagGroupView } from '../../../shared/domain';
+import type {
+  ResultDimensionView,
+  SavedView,
+  StatsCompareBy,
+  StatsDateRange,
+  StatsScope,
+  StatsThreshold,
+  Tag,
+  TagGroupView,
+} from '../../../shared/domain';
 import { Icon, type IconName } from './icons';
 import { QuickTag } from './QuickTag';
 import { ResultQuickPick } from './ResultQuickPick';
 
 interface RibbonProps {
+  activeTab: RibbonTab;
+  onActiveTabChange: (tab: RibbonTab) => void;
   entryOpen: boolean;
-  entryId: string | null;
   hasSelection: boolean;
   tool: Tool;
   style: DrawStyle;
@@ -46,9 +56,26 @@ interface RibbonProps {
   onEditFilter: () => void;
   onClearFilter: () => void;
   onLoadView: (id: string) => void;
+  statsScope: StatsScope | null;
+  statsPeriod: StatsPeriod;
+  statsCustomRange: StatsDateRange;
+  statsDimension: string | null;
+  statsThreshold?: StatsThreshold;
+  statsCompareBy?: StatsCompareBy;
+  statsControlsDisabled: boolean;
+  onStatsEditSample: () => void;
+  onStatsUseCurrentView: () => void;
+  onStatsPeriod: (period: StatsPeriod) => void;
+  onStatsCustomRange: (range: StatsDateRange) => void;
+  onStatsDimension: (dimension: string) => void;
+  onStatsThreshold: (threshold?: StatsThreshold) => void;
+  onStatsCompareBy: (compareBy?: StatsCompareBy) => void;
 }
 
-const BASE_TABS = ['Home', 'Draw', 'Review', 'View', 'Stats'];
+export type RibbonTab = 'Home' | 'Draw' | 'Review' | 'View' | 'Stats' | 'Annotation';
+export type StatsPeriod = 'all' | '30d' | '90d' | 'custom';
+
+const BASE_TABS: RibbonTab[] = ['Home', 'Draw', 'Review', 'View', 'Stats'];
 
 const TOOLS: Array<{ id: Tool; icon: IconName; label: string }> = [
   { id: 'select', icon: 'select', label: 'Select' },
@@ -96,23 +123,25 @@ function IconButton(props: {
   );
 }
 
-function Placeholder({ text }: { text: string }): JSX.Element {
-  return <div className="rplaceholder">{text} · coming soon</div>;
-}
-
 export function Ribbon(props: RibbonProps): JSX.Element {
-  const { entryOpen, entryId, hasSelection, style, selectedAnnotation } = props;
-  const [active, setActive] = useState<string>('Home');
+  const { entryOpen, hasSelection, style, selectedAnnotation, onActiveTabChange } = props;
+  const active = props.activeTab;
   const annId = selectedAnnotation?.id ?? null;
   const tabs = annId ? [...BASE_TABS, 'Annotation'] : BASE_TABS;
+  const selectedMeasure = props.resultDimensions.find((dimension) => dimension.id === props.statsDimension);
+  const statsSample = props.statsScope
+    ? `${props.statsScope.entry.length === 0 ? 'All entries' : `${props.statsScope.entry.length} entry condition${props.statsScope.entry.length === 1 ? '' : 's'}`} · ${
+        props.statsScope.population.kind === 'active-result-bearing'
+          ? 'result-bearing samples'
+          : `${props.statsScope.population.predicates.length} annotation condition${props.statsScope.population.predicates.length === 1 ? '' : 's'}`
+      }`
+    : 'Not loaded';
 
-  // Opening (or switching to) a review reveals the drawing tools; closing it returns to Home.
-  useEffect(() => setActive(entryOpen ? 'Draw' : 'Home'), [entryOpen, entryId]);
-  // Selecting an annotation reveals its contextual tab (like Office's Shape Format) but does NOT
-  // steal focus from Draw — so drawing stays fluid; click the tab to tag. Deselecting hides it.
+  // Pointer selection activates the contextual tab; creation/programmatic selection only reveals it.
+  // Deselecting hides the tab and returns the ribbon to Draw.
   useEffect(() => {
-    if (!annId) setActive((a) => (a === 'Annotation' ? 'Draw' : a));
-  }, [annId]);
+    if (!annId && active === 'Annotation') onActiveTabChange('Draw');
+  }, [active, annId, onActiveTabChange]);
 
   return (
     <div className="ribbon" data-testid="ribbon">
@@ -126,7 +155,7 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             key={tab}
             className={`ribbon__tab${tab === active ? ' is-active' : ''}${tab === 'Annotation' ? ' ribbon__tab--ctx' : ''}`}
             data-testid={`tab-${tab.toLowerCase()}`}
-            onClick={() => setActive(tab)}
+            onClick={() => props.onActiveTabChange(tab)}
           >
             {tab}
           </button>
@@ -466,7 +495,128 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             </Group>
           </>
         ) : null}
-        {active === 'Stats' ? <Placeholder text="Group × result statistics (Slice 8)" /> : null}
+        {active === 'Stats' ? (
+          <>
+            <Group label="Sample">
+              <button type="button" className="rtext" data-testid="stats-edit-sample" disabled={props.statsControlsDisabled} onClick={props.onStatsEditSample}>
+                <Icon name="tag" /> Edit sample…
+              </button>
+              <button type="button" className="rtext" data-testid="stats-use-view" disabled={props.statsControlsDisabled} onClick={props.onStatsUseCurrentView}>
+                <Icon name="view" /> Use current View
+              </button>
+              <span className="rhint stats-ribbon__summary" data-testid="stats-sample-summary">{statsSample}</span>
+            </Group>
+            <Group label="Period">
+              <div className="stats-ribbon__period">
+                <div className="rseg" data-testid="stats-period">
+                  {(['all', '30d', '90d', 'custom'] as const).map((period) => (
+                    <button
+                      type="button"
+                      key={period}
+                      className={`rseg__btn${props.statsPeriod === period ? ' is-active' : ''}`}
+                      data-testid={`stats-period-${period}`}
+                      disabled={props.statsControlsDisabled}
+                      onClick={() => props.onStatsPeriod(period)}
+                    >
+                      {period === 'all' ? 'All' : period === 'custom' ? 'Custom' : period.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                {props.statsPeriod === 'custom' ? (
+                  <div className="stats-ribbon__dates">
+                    <input
+                      type="date"
+                      data-testid="stats-date-from"
+                      value={props.statsCustomRange.from}
+                      disabled={props.statsControlsDisabled}
+                      onChange={(event) => props.onStatsCustomRange({ ...props.statsCustomRange, from: event.target.value })}
+                    />
+                    <span>–</span>
+                    <input
+                      type="date"
+                      data-testid="stats-date-to"
+                      value={props.statsCustomRange.to}
+                      disabled={props.statsControlsDisabled}
+                      onChange={(event) => props.onStatsCustomRange({ ...props.statsCustomRange, to: event.target.value })}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </Group>
+            <Group label="Measure">
+              <div className="stats-ribbon__measure">
+                <select
+                  className="rselect"
+                  data-testid="stats-measure"
+                  value={props.statsDimension ?? ''}
+                  disabled={props.statsControlsDisabled || props.resultDimensions.length === 0}
+                  onChange={(event) => props.onStatsDimension(event.target.value)}
+                >
+                  {props.resultDimensions.length === 0 ? <option value="">No results defined</option> : null}
+                  {props.resultDimensions.map((dimension) => (
+                    <option key={dimension.id} value={dimension.id}>{dimension.label}</option>
+                  ))}
+                </select>
+                {selectedMeasure?.type === 'number' ? (
+                  <div className="stats-ribbon__threshold">
+                    <select
+                      className="rselect"
+                      data-testid="stats-threshold-op"
+                      disabled={props.statsControlsDisabled}
+                      value={props.statsThreshold?.op ?? ''}
+                      onChange={(event) => {
+                        const op = event.target.value;
+                        props.onStatsThreshold(
+                          op === '' ? undefined : { op: op as StatsThreshold['op'], value: props.statsThreshold?.value ?? 0 },
+                        );
+                      }}
+                    >
+                      <option value="">No condition</option>
+                      <option value="gte">≥</option>
+                      <option value="lte">≤</option>
+                    </select>
+                    <input
+                      type="number"
+                      className="rquick__input"
+                      data-testid="stats-threshold-value"
+                      value={props.statsThreshold?.value ?? ''}
+                      disabled={props.statsControlsDisabled || !props.statsThreshold}
+                      onChange={(event) => {
+                        if (props.statsThreshold && event.target.value !== '') {
+                          props.onStatsThreshold({ ...props.statsThreshold, value: Number(event.target.value) });
+                        }
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </Group>
+            <Group label="Compare">
+              <select
+                className="rselect stats-ribbon__compare"
+                data-testid="stats-compare-picker"
+                disabled={props.statsControlsDisabled}
+                value={props.statsCompareBy ? `${props.statsCompareBy.level}:${props.statsCompareBy.group}` : ''}
+                onChange={(event) => {
+                  if (!event.target.value) {
+                    props.onStatsCompareBy(undefined);
+                    return;
+                  }
+                  const [level, group] = event.target.value.split(':');
+                  props.onStatsCompareBy({ level: level as StatsCompareBy['level'], group });
+                }}
+              >
+                <option value="">None</option>
+                <optgroup label="Review tags">
+                  {props.groups.map((group) => <option key={`entry-${group.id}`} value={`entry:${group.id}`}>Review tag · {group.label}</option>)}
+                </optgroup>
+                <optgroup label="Sample tags">
+                  {props.groups.map((group) => <option key={`annotation-${group.id}`} value={`annotation:${group.id}`}>Sample tag · {group.label}</option>)}
+                </optgroup>
+              </select>
+            </Group>
+          </>
+        ) : null}
       </div>
     </div>
   );

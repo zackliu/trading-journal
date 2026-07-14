@@ -188,7 +188,8 @@ export class CanvasController {
   private newTextBox: TextBoxAnnotation | null = null;
   // Set while a press on a non-selectable object suppressed group-selection; restored on mouse:up.
   private selectionSuppressed = false;
-  private selectionCb: ((sel: AnnotationSelection | null) => void) | null = null;
+  private pointerSelectionTarget: FabricObject | null = null;
+  private selectionCb: ((sel: AnnotationSelection | null, source: 'sync' | 'pointer') => void) | null = null;
   private selectionStyleCb: ((s: DrawStyle | null) => void) | null = null;
   // A frozen character range for the current text-style gesture: captured on a ribbon control's
   // pointer-down (before the blur collapses the live selection), consumed by applyTextRun, invalidated
@@ -303,8 +304,8 @@ export class CanvasController {
     this.contentChangedCb = cb;
   }
 
-  /** Fired when the selection changes: the one selected taggable annotation, or null. Drives the contextual Annotation ribbon tab. */
-  onAnnotationSelection(cb: (sel: AnnotationSelection | null) => void): void {
+  /** Fired for the one selected taggable annotation, or null. Pointer selection is identified so the shell can open its contextual tab. */
+  onAnnotationSelection(cb: (sel: AnnotationSelection | null, source: 'sync' | 'pointer') => void): void {
     this.selectionCb = cb;
     this.emitSelection();
   }
@@ -1039,6 +1040,7 @@ export class CanvasController {
       this.onRightClick(opt, e);
       return;
     }
+    this.pointerSelectionTarget = null;
     if (this.tool === 'select') {
       const t = opt.target ?? null;
       this.didMove = false;
@@ -1059,6 +1061,7 @@ export class CanvasController {
         t && !isChrome(t) && !isLocked(t)
           ? { obj: t, left: t.left ?? 0, top: t.top ?? 0, region: this.regionOf(t) }
           : null;
+      this.pointerSelectionTarget = t && !isLocked(t) && isAnnotation(t) ? t : null;
       return;
     }
     if (this.tool === 'draw') return;
@@ -1176,6 +1179,8 @@ export class CanvasController {
   }
 
   private onUp(): void {
+    const clickedAnnotation = !this.didMove ? this.pointerSelectionTarget : null;
+    this.pointerSelectionTarget = null;
     if (this.selectionSuppressed) {
       this.selectionSuppressed = false;
       this.canvas.selection = this.tool === 'select';
@@ -1188,6 +1193,10 @@ export class CanvasController {
       this.handleDrop();
       this.dragHome = null;
       this.didMove = false;
+    }
+    if (clickedAnnotation) {
+      const active = this.canvas.getActiveObjects();
+      if (active.length === 1 && active[0] === clickedAnnotation) this.emitSelection('pointer');
     }
     if (!this.drawing) return;
     this.drawing = false;
@@ -1637,11 +1646,11 @@ export class CanvasController {
     this.emitSelectionStyle();
   }
 
-  private emitSelection(): void {
+  private emitSelection(source: 'sync' | 'pointer' = 'sync'): void {
     if (!this.selectionCb) return;
     const active = this.canvas.getActiveObjects();
     const only = active.length === 1 ? active[0] : null;
-    this.selectionCb(only && isAnnotation(only) ? this.readAnnotation(only) : null);
+    this.selectionCb(only && isAnnotation(only) ? this.readAnnotation(only) : null, source);
   }
 }
 

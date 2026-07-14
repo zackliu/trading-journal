@@ -63,6 +63,9 @@ const api: IpcApi = {
   countGroupValuesUnderView: (query, groupId) =>
     ipcRenderer.invoke(IpcChannel.countGroupValuesUnderView, query, groupId),
   distinctResultValues: (dimensionId) => ipcRenderer.invoke(IpcChannel.distinctResultValues, dimensionId),
+  runStats: (query) => ipcRenderer.invoke(IpcChannel.runStats, query),
+  queryStatsExamples: (query) => ipcRenderer.invoke(IpcChannel.queryStatsExamples, query),
+  queryStatsScopeEntries: (scope) => ipcRenderer.invoke(IpcChannel.queryStatsScopeEntries, scope),
   createSavedView: (name, query) => ipcRenderer.invoke(IpcChannel.createSavedView, name, query),
   listSavedViews: () => ipcRenderer.invoke(IpcChannel.listSavedViews),
   getSavedView: (id) => ipcRenderer.invoke(IpcChannel.getSavedView, id),

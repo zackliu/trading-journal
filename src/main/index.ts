@@ -10,6 +10,7 @@ import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorder
 import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
 import { getStampLibrary, saveStampLibrary } from './store/stampStore';
 import { countGroupValuesUnderView, queryEntriesByView, runViewQuery } from './store/viewQuery';
+import { queryStatsExamples, queryStatsScopeEntries, runStatsQuery } from './store/statistics';
 import { createSavedView, deleteSavedView, getSavedView, listSavedViews } from './store/savedViewStore';
 import {
   annotationsSchema,
@@ -26,6 +27,9 @@ import {
   resultValueSchema,
   resultValueTextSchema,
   savedViewNameSchema,
+  statsExamplesQuerySchema,
+  statsQuerySchema,
+  statsScopeSchema,
   tagGroupSchema,
   tagSchema,
   tagValueSchema,
@@ -314,6 +318,15 @@ function registerIpc(): void {
   );
   ipcMain.handle(IpcChannel.distinctResultValues, (_event, id: unknown) =>
     distinctResultValues(requireDb(), kebabSchema.parse(id)),
+  );
+  ipcMain.handle(IpcChannel.runStats, (_event, raw: unknown) =>
+    runStatsQuery(requireDb(), statsQuerySchema.parse(raw)),
+  );
+  ipcMain.handle(IpcChannel.queryStatsExamples, (_event, raw: unknown) =>
+    queryStatsExamples(requireDb(), statsExamplesQuerySchema.parse(raw)),
+  );
+  ipcMain.handle(IpcChannel.queryStatsScopeEntries, (_event, raw: unknown) =>
+    queryStatsScopeEntries(requireDb(), statsScopeSchema.parse(raw)),
   );
   ipcMain.handle(IpcChannel.createSavedView, (_event, name: unknown, raw: unknown) =>
     createSavedView(requireDb(), savedViewNameSchema.parse(name), JSON.stringify(viewQuerySchema.parse(raw))),

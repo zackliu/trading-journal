@@ -7,6 +7,15 @@ import type {
   ResultDimension,
   ResultDimensionView,
   SavedView,
+  StatsCompareBy,
+  StatsDateRange,
+  StatsExamplesEntry,
+  StatsExamplesQuery,
+  StatsExamplesSegment,
+  StatsQuery,
+  StatsReport,
+  StatsScope,
+  StatsThreshold,
   Tag,
   TagGroup,
   TagGroupView,
@@ -26,14 +35,17 @@ import {
   type GroupBrowserHandle,
 } from './shell/GroupBrowser';
 import { Icon } from './shell/icons';
-import { Ribbon } from './shell/Ribbon';
+import { Ribbon, type RibbonTab, type StatsPeriod } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
 import { ResultSettingsDialog } from './shell/ResultSettingsDialog';
 import { GeneralSettingsDialog } from './shell/GeneralSettingsDialog';
 import { SetupGate } from './shell/SetupGate';
 import { ViewBuilder } from './shell/ViewBuilder';
 import { StatusBar } from './shell/StatusBar';
+import { StatsPanel } from './shell/StatsPanel';
+import { StatsSampleDialog } from './shell/StatsSampleDialog';
 import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
+import { Thumbnails } from './shell/Thumbnails';
 
 type Health = 'ok' | 'pending' | 'error';
 type Menu = { x: number; y: number; items: MenuItem[] };
@@ -73,6 +85,24 @@ interface PendingFlash {
   contextKey: string;
   requestId: number;
   req: FlashReq;
+}
+
+interface StatsConfig {
+  scope: StatsScope;
+  dimension: string | null;
+  threshold?: StatsThreshold;
+  compareBy?: StatsCompareBy;
+}
+
+interface StatsExamplesSession {
+  kind: 'samples' | 'entries';
+  request?: StatsExamplesQuery;
+  queryKey: string;
+  revision: number;
+  label: string;
+  entries: StatsExamplesEntry[];
+  activeEntryId: string;
+  annotationIndex: number;
 }
 
 function sameOccurrence(a: BrowseOccurrence | null, b: BrowseOccurrence | null): boolean {
@@ -145,7 +175,48 @@ function yearMonthBuckets(entries: EntrySummary[], dir: 'asc' | 'desc'): Bucket[
     .map(([ym, list]) => ({ key: ym, label: ym, entries: list }));
 }
 
+function localCalendarDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function datePreset(days: number): StatsDateRange {
+  const to = new Date();
+  const from = new Date(to.getFullYear(), to.getMonth(), to.getDate() - (days - 1));
+  return { from: localCalendarDate(from), to: localCalendarDate(to) };
+}
+
+function copyPredicates(predicates: StatsScope['entry']): StatsScope['entry'] {
+  return predicates.map((predicate) => ({ ...predicate, values: [...predicate.values] }));
+}
+
+function statsExamplesLabel(
+  segment: StatsExamplesSegment,
+  report: StatsReport | null,
+  query: StatsQuery | null,
+  cohortValue?: string | null,
+): string {
+  const cohort =
+    cohortValue === undefined
+      ? null
+      : report?.cohorts?.find((item) => item.value === cohortValue)?.label ?? (cohortValue ?? 'No value');
+  const prefix = cohort ? `${cohort} · ` : '';
+  if (segment.kind === 'all') return `${prefix}all samples`;
+  if (segment.kind === 'recorded') return `${prefix}recorded ${report?.measure.label ?? 'result'}`;
+  if (segment.kind === 'missing') {
+    const measure = report?.measure.label ?? 'result';
+    return query?.scope.population.kind === 'active-result-bearing'
+      ? `${prefix}not recorded for ${measure} / result-bearing samples`
+      : `${prefix}missing ${measure}`;
+  }
+  if (segment.kind === 'string-value') return `${prefix}${segment.value}`;
+  return `${prefix}${segment.kind === 'threshold-match' ? 'condition matched' : 'condition not matched'}`;
+}
+
 export function App(): JSX.Element {
+  const [activeTab, setActiveTab] = useState<RibbonTab>('Home');
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [selectedOccurrence, setSelectedOccurrence] = useState<BrowseOccurrence | null>(null);
@@ -172,6 +243,18 @@ export function App(): JSX.Element {
   const [queryMutationCount, setQueryMutationCount] = useState(0);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [showViewBuilder, setShowViewBuilder] = useState(false);
+  const [showStatsSample, setShowStatsSample] = useState(false);
+  const [statsConfig, setStatsConfig] = useState<StatsConfig | null>(null);
+  const [statsPeriod, setStatsPeriod] = useState<StatsPeriod>('all');
+  const [statsCustomRange, setStatsCustomRange] = useState<StatsDateRange>(() => datePreset(1));
+  const [statsIgnoredResults, setStatsIgnoredResults] = useState(0);
+  const [statsReport, setStatsReport] = useState<StatsReport | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [statsDrillError, setStatsDrillError] = useState<string | null>(null);
+  const [statsRetry, setStatsRetry] = useState(0);
+  const [statsExamples, setStatsExamples] = useState<StatsExamplesSession | null>(null);
+  const [statsExamplesBusy, setStatsExamplesBusy] = useState(false);
   const [showResultSettings, setShowResultSettings] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   // The id of a review awaiting delete confirmation (a destructive, unrecoverable action).
@@ -226,6 +309,12 @@ export function App(): JSX.Element {
   const entryMetadataMutationRef = useRef(0);
   const entryMetadataLoadedIdRef = useRef<string | null>(null);
   const selectedAnnotationRef = useRef(selectedAnnotation);
+  const statsScrollRef = useRef<HTMLDivElement | null>(null);
+  const statsRestoreScrollRef = useRef(0);
+  const tabRequestRef = useRef(0);
+  const statsEvidenceRequestRef = useRef(0);
+  const statsQueryKeyRef = useRef('');
+  const queryRevisionRef = useRef(queryRevision);
 
   const entriesKey = useMemo(
     () => entries.map((entry) => `${entry.id}:${entry.date ?? ''}:${entry.createdAt}`).join('|'),
@@ -289,6 +378,27 @@ export function App(): JSX.Element {
       null
     );
   }, [railOccurrences, selectedEntryId, selectedOccurrence]);
+  const statsQuery: StatsQuery | null =
+    statsConfig?.dimension
+      ? {
+          scope: statsConfig.scope,
+          dimension: statsConfig.dimension,
+          threshold: statsConfig.threshold,
+          compareBy: statsConfig.compareBy,
+        }
+      : null;
+  const statsQueryKey = JSON.stringify(statsQuery);
+  statsQueryKeyRef.current = statsQueryKey;
+  queryRevisionRef.current = queryRevision;
+  const statsWorkspace = activeTab === 'Stats' && statsExamples === null;
+  const currentStatsExample = statsExamples?.entries.find((item) => item.entryId === statsExamples.activeEntryId) ?? null;
+  const statsExampleSummaries = useMemo(() => {
+    if (!statsExamples) return [];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    return statsExamples.entries
+      .map((item) => byId.get(item.entryId))
+      .filter((entry): entry is EntrySummary => entry !== undefined);
+  }, [entries, statsExamples]);
 
   const refresh = useCallback(async () => {
     setEntries(await window.api.listEntries());
@@ -309,6 +419,35 @@ export function App(): JSX.Element {
   const refreshSavedViews = useCallback(async () => {
     setSavedViews(await window.api.listSavedViews());
   }, []);
+
+  const importCurrentViewIntoStats = useCallback(() => {
+    const entry = copyPredicates(filter.entry);
+    const annotation = copyPredicates(filter.annotation);
+    setStatsConfig((current) => {
+      const currentDimension = current?.dimension
+        ? dimensions.find((dimension) => dimension.id === current.dimension)
+        : undefined;
+      const dimension = currentDimension?.id ?? dimensions[0]?.id ?? null;
+      const compareBy =
+        current?.compareBy && groups.some((group) => group.id === current.compareBy?.group)
+          ? current.compareBy
+          : undefined;
+      return {
+        scope: {
+          entry,
+          population:
+            annotation.length > 0
+              ? { kind: 'matching-annotations', predicates: annotation }
+              : { kind: 'active-result-bearing' },
+          dateRange: current?.scope.dateRange,
+        },
+        dimension,
+        threshold: currentDimension?.type === 'number' ? current?.threshold : undefined,
+        compareBy,
+      };
+    });
+    setStatsIgnoredResults(filter.results.length);
+  }, [dimensions, filter, groups]);
 
   const workspaceReady = workspace?.status === 'ready';
 
@@ -340,6 +479,60 @@ export function App(): JSX.Element {
         setStoreLabel('unavailable');
       });
   }, [workspaceReady, refresh, refreshDimensions, refreshGroups, refreshSavedViews]);
+
+  useEffect(() => {
+    setStatsConfig((current) => {
+      if (!current) return current;
+      const selected = current.dimension
+        ? dimensions.find((dimension) => dimension.id === current.dimension)
+        : undefined;
+      if (selected || (current.dimension === null && dimensions.length === 0)) return current;
+      return { ...current, dimension: dimensions[0]?.id ?? null, threshold: undefined };
+    });
+  }, [dimensions]);
+
+  useEffect(() => {
+    setStatsConfig((current) => {
+      if (!current?.compareBy || groups.some((group) => group.id === current.compareBy?.group)) return current;
+      return { ...current, compareBy: undefined };
+    });
+  }, [groups]);
+
+  useEffect(() => {
+    if (activeTab !== 'Stats') return;
+    if (!statsQuery) {
+      setStatsLoading(false);
+      setStatsReport(null);
+      setStatsError(null);
+      return;
+    }
+    let cancelled = false;
+    setStatsLoading(true);
+    setStatsReport(null);
+    setStatsError(null);
+    void window.api
+      .runStats(statsQuery)
+      .then((report) => {
+        if (!cancelled) setStatsReport(report);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setStatsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, queryRevision, statsQueryKey, statsRetry]);
+
+  useEffect(() => {
+    if (!statsWorkspace) return;
+    const frame = requestAnimationFrame(() => {
+      if (statsScrollRef.current) statsScrollRef.current.scrollTop = statsRestoreScrollRef.current;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [statsWorkspace]);
 
   // Pick a data folder (native dialog) and switch to it. On success the whole renderer reloads so it
   // boots cleanly against the new workspace — used by both the setup gate and General settings.
@@ -444,6 +637,86 @@ export function App(): JSX.Element {
     return promise;
   }, []);
 
+  const changeActiveTab = useCallback(
+    (next: RibbonTab) => {
+      const requestId = ++tabRequestRef.current;
+      if (next !== 'Stats') {
+        if (!statsExamples && statsExamplesBusy) {
+          statsEvidenceRequestRef.current += 1;
+          setStatsExamplesBusy(false);
+        }
+        setActiveTab(next);
+        return;
+      }
+      void (async () => {
+        const controller = controllerRef.current;
+        controller?.commitTextEditing();
+        const saveOutcome = controller?.isDirty() ? await saveNow() : 'skipped';
+        if (requestId !== tabRequestRef.current || saveOutcome === 'failed') return;
+        statsEvidenceRequestRef.current += 1;
+        setStatsExamplesBusy(false);
+        if (!statsConfig) importCurrentViewIntoStats();
+        if (statsExamples) setStatsExamples(null);
+        setStatsDrillError(null);
+        setActiveTab('Stats');
+      })();
+    },
+    [importCurrentViewIntoStats, saveNow, statsConfig, statsExamples],
+  );
+
+  const changeStatsPeriod = useCallback(
+    (period: StatsPeriod) => {
+      setStatsPeriod(period);
+      const dateRange =
+        period === 'all'
+          ? undefined
+          : period === '30d'
+            ? datePreset(30)
+            : period === '90d'
+              ? datePreset(90)
+              : statsCustomRange;
+      setStatsConfig((current) =>
+        current ? { ...current, scope: { ...current.scope, dateRange } } : current,
+      );
+    },
+    [statsCustomRange],
+  );
+
+  const changeStatsCustomRange = useCallback(
+    (range: StatsDateRange) => {
+      setStatsCustomRange(range);
+      if (statsPeriod !== 'custom' || !range.from || !range.to || range.from > range.to) return;
+      setStatsConfig((current) =>
+        current ? { ...current, scope: { ...current.scope, dateRange: range } } : current,
+      );
+    },
+    [statsPeriod],
+  );
+
+  const changeStatsDimension = useCallback((dimension: string) => {
+    setStatsConfig((current) => (current ? { ...current, dimension, threshold: undefined } : current));
+  }, []);
+
+  const applyStatsSample = useCallback((entry: StatsScope['entry'], annotation: StatsScope['entry']) => {
+    setStatsConfig((current) =>
+      current
+        ? {
+            ...current,
+            scope: {
+              ...current.scope,
+              entry: copyPredicates(entry),
+              population:
+                annotation.length > 0
+                  ? { kind: 'matching-annotations', predicates: copyPredicates(annotation) }
+                  : { kind: 'active-result-bearing' },
+            },
+          }
+        : current,
+    );
+    setStatsIgnoredResults(0);
+    setShowStatsSample(false);
+  }, []);
+
   useEffect(() => {
     styleRef.current = style;
   }, [style]);
@@ -453,6 +726,7 @@ export function App(): JSX.Element {
   }, [stampLocked]);
   useEffect(() => {
     selectedEntryIdRef.current = selectedEntryId;
+    setActiveTab((current) => (current === 'Stats' ? current : selectedEntryId ? 'Draw' : 'Home'));
     entryMetadataMutationRef.current += 1;
     entryMetadataLoadedIdRef.current = null;
     entryUserTagsRef.current = [];
@@ -608,6 +882,197 @@ export function App(): JSX.Element {
     [saveNow, refresh],
   );
 
+  const focusStatsAnnotation = useCallback(
+    async (entryId: string, annotationId: string): Promise<void> => {
+      if (selectedEntryIdRef.current === entryId && loadedEntryIdRef.current === entryId) {
+        controllerRef.current?.selectAnnotationById(annotationId);
+        return;
+      }
+      pendingSelectRef.current = annotationId;
+      const switched = await switchTo(entryId);
+      if (!switched && pendingSelectRef.current === annotationId) pendingSelectRef.current = null;
+    },
+    [switchTo],
+  );
+
+  const activateStatsExample = useCallback(
+    (entryId: string, annotationIndex = 0) => {
+      const item = statsExamples?.entries.find((entry) => entry.entryId === entryId);
+      if (!item) return;
+      const index =
+        item.annotationIds.length === 0
+          ? 0
+          : Math.max(0, Math.min(annotationIndex, item.annotationIds.length - 1));
+      setStatsExamples((current) =>
+        current ? { ...current, activeEntryId: entryId, annotationIndex: index } : current,
+      );
+      const annotationId = item.annotationIds[index];
+      if (annotationId) void focusStatsAnnotation(entryId, annotationId);
+      else void switchTo(entryId);
+    },
+    [focusStatsAnnotation, statsExamples, switchTo],
+  );
+
+  const openStatsExamples = useCallback(
+    async (segment: StatsExamplesSegment, cohortValue?: string | null) => {
+      if (!statsQuery) return;
+      const request: StatsExamplesQuery = {
+        stats: statsQuery,
+        segment,
+        ...(cohortValue !== undefined ? { cohortValue } : {}),
+      };
+      const requestId = ++statsEvidenceRequestRef.current;
+      const dispatchRevision = queryRevisionRef.current;
+      const dispatchQueryKey = statsQueryKey;
+      statsRestoreScrollRef.current = statsScrollRef.current?.scrollTop ?? 0;
+      setStatsExamplesBusy(true);
+      setStatsDrillError(null);
+      try {
+        const [matched, summaries] = await Promise.all([
+          window.api.queryStatsExamples(request),
+          window.api.listEntries(),
+        ]);
+        if (
+          requestId !== statsEvidenceRequestRef.current ||
+          statsQueryKeyRef.current !== dispatchQueryKey ||
+          queryRevisionRef.current !== dispatchRevision
+        ) {
+          return;
+        }
+        if (matched.length === 0 || matched[0].annotationIds.length === 0) {
+          setStatsDrillError('No examples match this statistic.');
+          return;
+        }
+        setEntries(summaries);
+        const first = matched[0];
+        setStatsExamples({
+          kind: 'samples',
+          request,
+          queryKey: dispatchQueryKey,
+          revision: dispatchRevision,
+          label: statsExamplesLabel(segment, statsReport, statsQuery, cohortValue),
+          entries: matched,
+          activeEntryId: first.entryId,
+          annotationIndex: 0,
+        });
+        await focusStatsAnnotation(first.entryId, first.annotationIds[0]);
+      } catch (err) {
+        if (requestId === statsEvidenceRequestRef.current) {
+          setStatsDrillError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (requestId === statsEvidenceRequestRef.current) setStatsExamplesBusy(false);
+      }
+    },
+    [focusStatsAnnotation, statsQueryKey, statsReport],
+  );
+
+  const reviewStatsScopeEntries = useCallback(async () => {
+    if (!statsConfig) return;
+    const requestId = ++statsEvidenceRequestRef.current;
+    const dispatchRevision = queryRevisionRef.current;
+    const dispatchQueryKey = statsQueryKeyRef.current;
+    statsRestoreScrollRef.current = statsScrollRef.current?.scrollTop ?? 0;
+    setStatsExamplesBusy(true);
+    setStatsDrillError(null);
+    try {
+      const summaries = await window.api.queryStatsScopeEntries(statsConfig.scope);
+      if (
+        requestId !== statsEvidenceRequestRef.current ||
+        queryRevisionRef.current !== dispatchRevision ||
+        statsQueryKeyRef.current !== dispatchQueryKey
+      ) return;
+      if (summaries.length === 0) {
+        setStatsDrillError('No Entries match this date and classification scope.');
+        return;
+      }
+      const entries = summaries.map((entry) => ({ entryId: entry.id, annotationIds: [] }));
+      setEntries(summaries);
+      setStatsExamples({
+        kind: 'entries',
+        queryKey: dispatchQueryKey,
+        revision: dispatchRevision,
+        label: 'matching scope Entries',
+        entries,
+        activeEntryId: entries[0].entryId,
+        annotationIndex: 0,
+      });
+      await switchTo(entries[0].entryId);
+    } catch (err) {
+      if (requestId === statsEvidenceRequestRef.current) {
+        setStatsDrillError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (requestId === statsEvidenceRequestRef.current) setStatsExamplesBusy(false);
+    }
+  }, [statsConfig, switchTo]);
+
+  useEffect(() => {
+    const session = statsExamples;
+    if (
+      !session ||
+      session.kind !== 'samples' ||
+      !session.request ||
+      session.revision === queryRevision
+    ) {
+      return;
+    }
+    if (session.queryKey !== statsQueryKeyRef.current) {
+      statsEvidenceRequestRef.current += 1;
+      setStatsExamples(null);
+      setStatsDrillError('Statistics settings changed. Review examples again from the updated report.');
+      return;
+    }
+
+    const requestId = ++statsEvidenceRequestRef.current;
+    const dispatchRevision = queryRevision;
+    setStatsExamplesBusy(true);
+    setStatsDrillError(null);
+    void Promise.all([window.api.queryStatsExamples(session.request), window.api.listEntries()])
+      .then(([matched, summaries]) => {
+        if (
+          requestId !== statsEvidenceRequestRef.current ||
+          queryRevisionRef.current !== dispatchRevision ||
+          statsQueryKeyRef.current !== session.queryKey
+        ) return;
+        if (matched.length === 0) {
+          setStatsExamples(null);
+          setStatsDrillError('These examples changed after the edit. No samples now match this statistic.');
+          return;
+        }
+        const previous = session.entries.find((entry) => entry.entryId === session.activeEntryId);
+        const previousAnnotationId = previous?.annotationIds[session.annotationIndex];
+        const sameEntry = matched.find((entry) => entry.entryId === session.activeEntryId);
+        const sameIndex = previousAnnotationId ? (sameEntry?.annotationIds.indexOf(previousAnnotationId) ?? -1) : -1;
+        const active = sameEntry && sameIndex >= 0 ? sameEntry : matched[0];
+        const annotationIndex = sameEntry && sameIndex >= 0 ? sameIndex : 0;
+        setEntries(summaries);
+        setStatsExamples({
+          ...session,
+          revision: dispatchRevision,
+          entries: matched,
+          activeEntryId: active.entryId,
+          annotationIndex,
+        });
+        const annotationId = active.annotationIds[annotationIndex];
+        if (active.entryId !== session.activeEntryId || annotationId !== previousAnnotationId) {
+          void focusStatsAnnotation(active.entryId, annotationId);
+        }
+      })
+      .catch((err: unknown) => {
+        if (requestId === statsEvidenceRequestRef.current) {
+          setStatsDrillError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (requestId === statsEvidenceRequestRef.current) setStatsExamplesBusy(false);
+      });
+  }, [focusStatsAnnotation, queryRevision, statsExamples]);
+
+  const focusStatsMeasure = useCallback(() => {
+    document.querySelector<HTMLElement>('[data-testid="stats-measure"]')?.focus();
+  }, []);
+
   const beginNavigationIntent = useCallback((): (() => boolean) => {
     const requestId = ++activationRequestRef.current;
     pendingFlashRef.current = null;
@@ -670,6 +1135,14 @@ export function App(): JSX.Element {
     gesture.lastAt = now;
     gesture.direction = dir;
     if (gesture.navigated) return;
+    if (statsExamples) {
+      const index = statsExamples.entries.findIndex((entry) => entry.entryId === statsExamples.activeEntryId);
+      const target = index + dir;
+      if (index < 0 || target < 0 || target >= statsExamples.entries.length) return;
+      gesture.navigated = true;
+      activateStatsExample(statsExamples.entries[target].entryId);
+      return;
+    }
     const idx = activeOccurrence
       ? railOccurrences.findIndex((occurrence) => sameOccurrence(occurrence, activeOccurrence))
       : -1;
@@ -678,7 +1151,7 @@ export function App(): JSX.Element {
     if (target < 0 || target >= railOccurrences.length) return; // at the ends, stay put
     gesture.navigated = true;
     void activateOccurrence(railOccurrences[target]);
-  }, [activateOccurrence, activeOccurrence, railOccurrences]);
+  }, [activateOccurrence, activateStatsExample, activeOccurrence, railOccurrences, statsExamples]);
 
   const createNew = useCallback(async () => {
     const stillCurrent = beginNavigationIntent();
@@ -752,21 +1225,33 @@ export function App(): JSX.Element {
   const removeEntry = useCallback(
     async (id: string) => {
       setMenu(null);
-      await window.api.deleteEntry(id);
-      if (id === selectedEntryId) {
-        activationRequestRef.current += 1;
-        pendingFlashRef.current = null;
-        controllerRef.current = null;
-        loadedEntryIdRef.current = null;
-        queryProjectionRef.current = null;
-        setSelectedOccurrence(null);
-        setSelectedEntryId(null);
-        setEditorState(EMPTY_EDITOR);
-        setPopover(null);
+      setQueryMutationCount((count) => count + 1);
+      try {
+        await window.api.deleteEntry(id);
+        setQueryRevision((revision) => revision + 1);
+        if (statsExamples?.entries.some((entry) => entry.entryId === id)) {
+          statsEvidenceRequestRef.current += 1;
+          setStatsExamplesBusy(false);
+          setStatsExamples(null);
+          setStatsDrillError('The evidence set changed because a review was deleted. Statistics were recalculated.');
+        }
+        if (id === selectedEntryId) {
+          activationRequestRef.current += 1;
+          pendingFlashRef.current = null;
+          controllerRef.current = null;
+          loadedEntryIdRef.current = null;
+          queryProjectionRef.current = null;
+          setSelectedOccurrence(null);
+          setSelectedEntryId(null);
+          setEditorState(EMPTY_EDITOR);
+          setPopover(null);
+        }
+        await refresh();
+      } finally {
+        setQueryMutationCount((count) => Math.max(0, count - 1));
       }
-      await refresh();
     },
-    [selectedEntryId, refresh],
+    [selectedEntryId, refresh, statsExamples],
   );
 
   useEffect(() => {
@@ -942,8 +1427,10 @@ export function App(): JSX.Element {
     controller.onZoom(setZoom);
     // Every committed edit auto-saves the Entry page + stamp library and mirrors the rail thumbnail.
     controller.onContentChanged(() => void saveNow());
-    // Selecting an annotation surfaces the contextual Annotation ribbon tab (tags target this object).
-    controller.onAnnotationSelection(setSelectedAnnotation);
+    controller.onAnnotationSelection((selection, source) => {
+      setSelectedAnnotation(selection);
+      if (selection && source === 'pointer') setActiveTab('Annotation');
+    });
     controller.setPaletteLocked(stampLockedRef.current);
     controller.setStyle(styleRef.current);
   }, [saveNow]);
@@ -1269,8 +1756,9 @@ export function App(): JSX.Element {
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <Ribbon
+        activeTab={activeTab}
+        onActiveTabChange={changeActiveTab}
         entryOpen={entryOpen}
-        entryId={selectedEntryId}
         hasSelection={editorState.hasSelection}
         tool={tool}
         style={selectionStyle ?? style}
@@ -1311,28 +1799,102 @@ export function App(): JSX.Element {
         onEditFilter={() => setShowViewBuilder(true)}
         onClearFilter={() => setFilter(EMPTY_QUERY)}
         onLoadView={onLoadView}
+        statsScope={statsConfig?.scope ?? null}
+        statsPeriod={statsPeriod}
+        statsCustomRange={statsCustomRange}
+        statsDimension={statsConfig?.dimension ?? null}
+        statsThreshold={statsConfig?.threshold}
+        statsCompareBy={statsConfig?.compareBy}
+        statsControlsDisabled={statsExamples !== null || statsExamplesBusy}
+        onStatsEditSample={() => {
+          if (!statsConfig) importCurrentViewIntoStats();
+          setShowStatsSample(true);
+        }}
+        onStatsUseCurrentView={importCurrentViewIntoStats}
+        onStatsPeriod={changeStatsPeriod}
+        onStatsCustomRange={changeStatsCustomRange}
+        onStatsDimension={changeStatsDimension}
+        onStatsThreshold={(threshold) =>
+          setStatsConfig((current) => (current ? { ...current, threshold } : current))
+        }
+        onStatsCompareBy={(compareBy) =>
+          setStatsConfig((current) => (current ? { ...current, compareBy } : current))
+        }
       />
 
-      <div className="body">
+      <div className="workspace">
+      <div className={`body${statsWorkspace ? ' body--concealed' : ''}${statsExamples ? ' body--stats-examples' : ''}`}>
+        {statsExamples ? (
+          <div className="stats-examples-bar" data-testid="stats-examples-bar">
+            <button type="button" className="ribbon__back" data-testid="stats-back" onClick={() => changeActiveTab('Stats')}>
+              <Icon name="back" /> Back to Statistics
+            </button>
+            <strong>Statistics examples: {statsExamples.label}</strong>
+            <span>
+              {statsExamples.kind === 'entries'
+                ? 'This review is in the exact date and classification scope'
+                : `This review: ${currentStatsExample?.annotationIds.length ?? 0} matching sample${
+                    (currentStatsExample?.annotationIds.length ?? 0) === 1 ? '' : 's'
+                  }`}
+            </span>
+            {statsExamples.kind === 'samples' ? <div className="stats-examples-bar__step">
+              <button
+                type="button"
+                data-testid="stats-example-prev"
+                disabled={!currentStatsExample || statsExamples.annotationIndex <= 0}
+                onClick={() => activateStatsExample(statsExamples.activeEntryId, statsExamples.annotationIndex - 1)}
+              >
+                Previous
+              </button>
+              <span data-testid="stats-example-position">
+                {currentStatsExample ? statsExamples.annotationIndex + 1 : 0} / {currentStatsExample?.annotationIds.length ?? 0}
+              </span>
+              <button
+                type="button"
+                data-testid="stats-example-next"
+                disabled={!currentStatsExample || statsExamples.annotationIndex >= currentStatsExample.annotationIds.length - 1}
+                onClick={() => activateStatsExample(statsExamples.activeEntryId, statsExamples.annotationIndex + 1)}
+              >
+                Next
+              </button>
+            </div> : <span />}
+          </div>
+        ) : null}
         <aside className="rail">
-          <GroupBrowser
-            ref={browserRef}
-            groups={groups}
-            pivot={pivot}
-            onPivot={setPivot}
-            buckets={buckets}
-            totalCount={entries.length}
-            sortDir={sortDir}
-            onToggleSort={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
-            selectedOccurrence={activeOccurrence}
-            filterChips={chips}
-            onClearFilter={() => setFilter(EMPTY_QUERY)}
-            onOpen={(occurrence) => void activateOccurrence(occurrence)}
-            onContextMenu={openThumbMenu}
-            loading={!railReady && !railError}
-            error={railError}
-            onRetry={() => setRailRetry((retry) => retry + 1)}
-          />
+          {statsExamples ? (
+            <div className="browse stats-examples-rail" data-testid="stats-examples-rail">
+              <div className="stats-examples-rail__head">
+                <span>Evidence</span><strong>{statsExamples.entries.length}</strong>
+              </div>
+              <div className="buckets">
+                <Thumbnails
+                  entries={statsExampleSummaries}
+                  selectedId={statsExamples.activeEntryId}
+                  onOpen={(entryId) => activateStatsExample(entryId)}
+                  onContextMenu={openThumbMenu}
+                />
+              </div>
+            </div>
+          ) : (
+            <GroupBrowser
+              ref={browserRef}
+              groups={groups}
+              pivot={pivot}
+              onPivot={setPivot}
+              buckets={buckets}
+              totalCount={entries.length}
+              sortDir={sortDir}
+              onToggleSort={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
+              selectedOccurrence={activeOccurrence}
+              filterChips={chips}
+              onClearFilter={() => setFilter(EMPTY_QUERY)}
+              onOpen={(occurrence) => void activateOccurrence(occurrence)}
+              onContextMenu={openThumbMenu}
+              loading={!railReady && !railError}
+              error={railError}
+              onRetry={() => setRailRetry((retry) => retry + 1)}
+            />
+          )}
         </aside>
 
         <main className="main">
@@ -1398,12 +1960,33 @@ export function App(): JSX.Element {
         </main>
       </div>
 
+      {statsWorkspace ? (
+        <div className="stats-workspace" data-testid="stats-workspace" ref={statsScrollRef}>
+          <StatsPanel
+            query={statsQuery}
+            report={statsReport}
+            loading={statsLoading}
+            error={statsError}
+            drillError={statsDrillError}
+            ignoredResultCount={statsIgnoredResults}
+            drillBusy={statsExamplesBusy}
+            onRetry={() => setStatsRetry((retry) => retry + 1)}
+            onEditSample={() => setShowStatsSample(true)}
+            onOpenResultSettings={() => setShowResultSettings(true)}
+            onFocusMeasure={focusStatsMeasure}
+            onReviewScopeEntries={reviewStatsScopeEntries}
+            onReviewExamples={(segment, cohortValue) => void openStatsExamples(segment, cohortValue)}
+          />
+        </div>
+      ) : null}
+      </div>
+
       <StatusBar
         ipcHealth={ipcHealth}
         storeHealth={storeHealth}
         storeLabel={storeLabel}
-        dirty={entryOpen ? editorState.dirty : undefined}
-        showZoom={entryOpen}
+        dirty={!statsWorkspace && entryOpen ? editorState.dirty : undefined}
+        showZoom={!statsWorkspace && entryOpen}
         zoomPercent={zoom.percent}
         fitMode={zoom.fitMode}
         onZoomIn={() => controllerRef.current?.zoomIn()}
@@ -1457,6 +2040,14 @@ export function App(): JSX.Element {
           onDeleteView={(id) => void onDeleteView(id)}
           onClose={() => setShowViewBuilder(false)}
           fetchResultValues={(id) => window.api.distinctResultValues(id)}
+        />
+      ) : null}
+      {showStatsSample && statsConfig ? (
+        <StatsSampleDialog
+          groups={groups}
+          initial={statsConfig.scope}
+          onApply={applyStatsSample}
+          onClose={() => setShowStatsSample(false)}
         />
       ) : null}
       {showResultSettings ? (

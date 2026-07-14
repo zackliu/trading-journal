@@ -69,6 +69,45 @@ export const viewQuerySchema = z.object({
 });
 export const savedViewNameSchema = z.string().min(1).max(200);
 
+const realCalendarDate = dateValueSchema.refine((value) => {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}, 'must be a real calendar date');
+const statsDateRange = z
+  .object({ from: realCalendarDate, to: realCalendarDate })
+  .refine((range) => range.from <= range.to, 'date range must start on or before it ends');
+const statsThreshold = z.object({ op: z.enum(['gte', 'lte']), value: z.number().finite() });
+const statsCompareBy = z.object({ level: z.enum(['entry', 'annotation']), group: kebab });
+const statsPopulation = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('matching-annotations'), predicates: z.array(tagPredicate).min(1) }),
+  z.object({ kind: z.literal('active-result-bearing') }),
+]);
+export const statsScopeSchema = z.object({
+  entry: z.array(tagPredicate),
+  population: statsPopulation,
+  dateRange: statsDateRange.optional(),
+});
+export const statsQuerySchema = z.object({
+  scope: statsScopeSchema,
+  dimension: kebab,
+  threshold: statsThreshold.optional(),
+  compareBy: statsCompareBy.optional(),
+});
+const statsExamplesSegment = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('all') }),
+  z.object({ kind: z.literal('recorded') }),
+  z.object({ kind: z.literal('missing') }),
+  z.object({ kind: z.literal('string-value'), value: z.string() }),
+  z.object({ kind: z.literal('threshold-match') }),
+  z.object({ kind: z.literal('threshold-miss') }),
+]);
+export const statsExamplesQuerySchema = z.object({
+  stats: statsQuerySchema,
+  cohortValue: kebab.nullable().optional(),
+  segment: statsExamplesSegment,
+});
+
 export const resultDimensionSchema = z.object({
   id: kebab,
   label: z.string().min(1),
