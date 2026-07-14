@@ -220,7 +220,7 @@ npm run package
 npm run dist
 ```
 
-产物是单个安装文件 `dist/TradingJournal-<version>-Setup.exe`（`<version>` 取自 `package.json` 的 `version`，当前 `0.2.0`，即 `TradingJournal-0.2.0-Setup.exe`）。把这个 `Setup.exe` 发给对方即可，双击后：
+产物是单个安装文件 `dist/TradingJournal-<version>-Setup.exe`（`<version>` 取自 `package.json` 的 `version`，当前 `0.3.0`，即 `TradingJournal-0.3.0-Setup.exe`）。把这个 `Setup.exe` 发给对方即可，双击后：
 
 - 可选择安装目录（`allowToChangeInstallationDirectory`）；
 - 按用户安装、**不需要管理员权限**（`perMachine: false`、`oneClick: false`）；
