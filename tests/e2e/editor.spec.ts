@@ -451,6 +451,36 @@ test('lines and arrows are saved as two-point segments, and arrows revive on rel
   await app.close();
 });
 
+test('annotation resize handles keep their directional cursors', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  await page.getByTestId('ribbon-new').click();
+  await expect(page.getByTestId('editor')).toBeVisible();
+  const container = page.locator('.canvas-container');
+  await expect(container).toBeVisible();
+  await page.waitForTimeout(300);
+  const box = await container.boundingBox();
+  if (!box) throw new Error('canvas has no bounding box');
+
+  await page.getByTestId('tool-rect').click();
+  await page.mouse.move(box.x + 100, box.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 260, box.y + 220, { steps: 6 });
+  await page.mouse.up();
+
+  const cursor = (): Promise<string> =>
+    page.locator('.upper-canvas').evaluate((element) => getComputedStyle(element).cursor);
+
+  await page.mouse.move(box.x + 260, box.y + 160);
+  await expect.poll(cursor).toMatch(/resize/);
+
+  await page.mouse.move(box.x + 260, box.y + 220);
+  await expect.poll(cursor).toMatch(/resize/);
+
+  await app.close();
+});
+
 test('Ctrl constrains a line endpoint while EDITING it, exactly as while drawing it (no create-only special case)', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);

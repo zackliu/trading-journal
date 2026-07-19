@@ -1245,7 +1245,9 @@ export class CanvasController {
         target instanceof TextBoxAnnotation &&
         this.textLinkAtPointer(target, opt.e) !== null &&
         (!target.isEditing || event.ctrlKey || event.metaKey);
-      this.canvas.setCursor(linked ? 'pointer' : target instanceof TextBoxAnnotation ? 'text' : 'default');
+      // Fabric has already resolved the active control's directional resize/rotate cursor before this
+      // event reaches us. Override it only for an actual hyperlink; otherwise leave that result intact.
+      if (linked) this.canvas.setCursor('pointer');
     }
     if (this.ghostDrag) {
       const drag = this.ghostDrag;
