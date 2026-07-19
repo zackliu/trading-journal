@@ -139,13 +139,13 @@ test('dragging a stamp onto the page drops a tagged copy while the palette keeps
   await app.close();
 });
 
-test('a dropped stamp copy carries tags but not result or links', async () => {
+test('a dropped stamp copy carries tags but not result', async () => {
   const dataDir = tempDataDir();
   const { app, page } = await launchApp(dataDir);
   await seedStamp(
     page,
     { group: 'pattern', value: 'double-top' },
-    { tjResult: { 'r-multiple': 2 }, tjLinks: ['some-other-annotation'] },
+    { tjResult: { 'r-multiple': 2 } },
   );
   await openReview(page);
   const box = await canvasBox(page);
@@ -158,7 +158,6 @@ test('a dropped stamp copy carries tags but not result or links', async () => {
   const hits = await store.queryByTag(page, { group: 'pattern', value: 'double-top' });
   expect(hits[0]?.tags).toEqual([{ group: 'pattern', value: 'double-top' }]);
   expect(hits[0]?.result).toBeUndefined();
-  expect(hits[0]?.links).toEqual([]);
 
   await app.close();
 });

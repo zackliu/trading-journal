@@ -1,6 +1,10 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { stripLegacyCanvasLinksJson } from './legacyLinksMigration';
+
+export { LegacyLinksMigrationError } from './legacyLinksMigration';
 
 export type Db = Database.Database;
 
@@ -42,6 +46,7 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   migration006ResultValues,
   migration007SoftDelete,
   migration008SchemaMeta,
+  migration009TextLinks,
 ];
 
 /**
@@ -263,4 +268,57 @@ function migration008SchemaMeta(db: Db): void {
       value TEXT NOT NULL
     );
   `);
+}
+
+function retireLegacyLinks(db: Db): void {
+  // The old object-level references have no equivalent display text in the new model. The user chose
+  // to discard only those retired edges; migration backup retains the exact pre-migration database.
+  db.prepare("UPDATE annotations SET links = '[]' WHERE links != '[]'").run();
+
+  const entries = db.prepare('SELECT id, canvas_json FROM entries').all() as Array<{
+    id: string;
+    canvas_json: string;
+  }>;
+  const updateEntry = db.prepare('UPDATE entries SET canvas_json = ? WHERE id = ?');
+  for (const entry of entries) {
+    const stripped = stripLegacyCanvasLinksJson(entry.canvas_json, `Entry ${entry.id}`);
+    if (stripped.removedFieldCount > 0) updateEntry.run(stripped.json, entry.id);
+  }
+
+  const stamps = db.prepare('SELECT id, canvas_json FROM stamp_library').all() as Array<{
+    id: number;
+    canvas_json: string;
+  }>;
+  const updateStamp = db.prepare('UPDATE stamp_library SET canvas_json = ? WHERE id = ?');
+  for (const stamp of stamps) {
+    const stripped = stripLegacyCanvasLinksJson(stamp.canvas_json, 'stamp library');
+    if (stripped.removedFieldCount > 0) updateStamp.run(stripped.json, stamp.id);
+  }
+}
+
+function migration009TextLinks(db: Db): void {
+  retireLegacyLinks(db);
+  db.exec(`
+    CREATE TABLE text_links (
+      source_entry_id  TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+      source_kind      TEXT NOT NULL CHECK (source_kind IN ('entry-title', 'annotation')),
+      source_object_id TEXT NOT NULL,
+      start_grapheme   INTEGER NOT NULL CHECK (start_grapheme >= 0),
+      end_grapheme     INTEGER NOT NULL CHECK (end_grapheme > start_grapheme),
+      target_kind      TEXT NOT NULL CHECK (target_kind IN ('entry', 'annotation')),
+      target_id        TEXT NOT NULL,
+      PRIMARY KEY (source_entry_id, source_kind, source_object_id, start_grapheme)
+    );
+
+    CREATE INDEX idx_text_links_target ON text_links(target_kind, target_id);
+  `);
+  db.prepare('INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)').run('journal_id', randomUUID());
+}
+
+export function getJournalId(db: Db): string {
+  const row = db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('journal_id') as
+    | { value: string }
+    | undefined;
+  if (!row?.value) throw new Error('journal identity is missing');
+  return row.value;
 }

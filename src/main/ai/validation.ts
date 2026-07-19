@@ -158,7 +158,15 @@ export const journalReadRequestSchema = z.discriminatedUnion('op', [
   z
     .object({
       op: z.literal('linked-context'),
-      input: z.object({ annotationId: id, depth: z.union([z.literal(1), z.literal(2)]).optional() }).strict(),
+      input: z
+        .object({
+          target: z.discriminatedUnion('kind', [
+            z.object({ kind: z.literal('entry'), id }).strict(),
+            z.object({ kind: z.literal('annotation'), id }).strict(),
+          ]),
+          depth: z.union([z.literal(1), z.literal(2)]).optional(),
+        })
+        .strict(),
     })
     .strict(),
   z

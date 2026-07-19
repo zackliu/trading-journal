@@ -597,9 +597,15 @@ function createServer(): McpServer {
   server.registerTool(
     'get_linked_context',
     {
-      title: 'Follow annotation links',
-      description: 'Read a bounded depth-1 or depth-2 annotation link graph. Read-only.',
-      inputSchema: { annotationId: z.string().min(1), depth: z.union([z.literal(1), z.literal(2)]).optional() },
+      title: 'Follow text links',
+      description: 'Read authored incoming and outgoing Entry/annotation text links to bounded depth. Read-only.',
+      inputSchema: {
+        target: z.discriminatedUnion('kind', [
+          z.object({ kind: z.literal('entry'), id: z.string().min(1) }),
+          z.object({ kind: z.literal('annotation'), id: z.string().min(1) }),
+        ]),
+        depth: z.union([z.literal(1), z.literal(2)]).optional(),
+      },
       annotations: readOnlyAnnotations,
     },
     async (input, extra) =>

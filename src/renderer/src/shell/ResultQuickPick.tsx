@@ -12,7 +12,7 @@ interface Props {
  * The Annotation tab's result editor — the same one-tap feel as the tag quick-pick, but for the
  * trade's outcome. A `choices` dimension shows its preset values as single-select chips (click the
  * active one to clear); a `number` dimension is a small numeric field. Recording a result never
- * needs the right-click popover anymore.
+ * needs a separate properties surface.
  */
 export function ResultQuickPick({ dimensions, result, onSet, onOpenSettings }: Props): JSX.Element {
   if (dimensions.length === 0) {

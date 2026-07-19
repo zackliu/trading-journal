@@ -11,7 +11,12 @@ import {
   type TPointerEvent,
   type TPointerEventInfo,
 } from 'fabric';
-import type { Annotation, Result, Tag } from '../../../shared/domain';
+import type { Annotation, InternalLinkTarget, Result, Tag, TextLinkSpan } from '../../../shared/domain';
+import {
+  removeTextLinkTarget,
+  setTextLinkTarget,
+  transformTextLinkSpans,
+} from '../../../shared/textLinkSpans';
 import {
   ArrowPoly,
   MM_MIN_WIDTH,
@@ -57,12 +62,11 @@ export interface EditorState {
   hasSelection: boolean;
 }
 
-/** The annotation data the right-click “Tags & result…” popover edits. */
+/** The selected annotation data shown by the contextual ribbon. */
 export interface AnnotationSelection {
   id: string;
   tags: Tag[];
   result: Result;
-  links: string[];
 }
 
 /** A right-click on the canvas, asking the shell to open the canvas context menu. */
@@ -72,8 +76,16 @@ export interface CanvasContextRequest {
   hasSelection: boolean;
   isImage: boolean;
   isLocked: boolean;
-  /** The right-clicked taggable annotation (id/tags/result/links), or null for a screenshot / empty space. */
+  /** The right-clicked taggable annotation, or null for a screenshot / empty space. */
   annotation: AnnotationSelection | null;
+  textLink: TextLinkContext | null;
+}
+
+export interface TextLinkContext {
+  text: string;
+  start: number;
+  end: number;
+  target?: InternalLinkTarget;
 }
 
 type Region = 'page' | 'strip';
@@ -182,9 +194,17 @@ export class CanvasController {
   private stateCb: ((s: EditorState) => void) | null = null;
   private toolCb: ((t: Tool) => void) | null = null;
   private contextCb: ((r: CanvasContextRequest) => void) | null = null;
+  private linkActivateCb: ((target: InternalLinkTarget) => void) | null = null;
   private zoomCb: ((z: { percent: number; fitMode: boolean }) => void) | null = null;
   private contentChangedCb: (() => void) | null = null;
   private contextTarget: FabricObject | null = null;
+  private frozenTextLinkRange: {
+    obj: TextBoxAnnotation;
+    start: number;
+    end: number;
+    textSnapshot: string;
+  } | null = null;
+  private pendingLinkClick: { target: InternalLinkTarget; x: number; y: number } | null = null;
   private newTextBox: TextBoxAnnotation | null = null;
   // Set while a press on a non-selectable object suppressed group-selection; restored on mouse:up.
   private selectionSuppressed = false;
@@ -292,6 +312,10 @@ export class CanvasController {
 
   onContext(cb: (r: CanvasContextRequest) => void): void {
     this.contextCb = cb;
+  }
+
+  onLinkActivate(cb: (target: InternalLinkTarget) => void): void {
+    this.linkActivateCb = cb;
   }
 
   onZoom(cb: (z: { percent: number; fitMode: boolean }) => void): void {
@@ -762,6 +786,64 @@ export class CanvasController {
         : null;
   }
 
+  freezeCurrentTextLinkSelection(): TextLinkContext | null {
+    const obj = this.canvas.getActiveObject();
+    if (!(obj instanceof TextBoxAnnotation) || !obj.isEditing || obj.selectionEnd <= obj.selectionStart) return null;
+    return this.freezeTextLinkRange(obj, obj.selectionStart, obj.selectionEnd);
+  }
+
+  commitFrozenTextEditing(): void {
+    const frozen = this.frozenTextLinkRange;
+    if (frozen?.obj.isEditing) frozen.obj.exitEditing();
+  }
+
+  applyFrozenTextLink(displayText: string, target: InternalLinkTarget): boolean {
+    const frozen = this.frozenTextLinkRange;
+    if (!frozen || !this.canvas.getObjects().includes(frozen.obj) || frozen.obj.text !== frozen.textSnapshot) return false;
+    const obj = frozen.obj;
+    const oldGraphemes = obj.graphemeSplit(obj.text ?? '');
+    const insertedGraphemes = obj.graphemeSplit(displayText);
+    if (insertedGraphemes.length === 0) return false;
+    const transformed = transformTextLinkSpans(obj.tjTextLinks ?? [], oldGraphemes.length, {
+      from: frozen.start,
+      to: frozen.end,
+      insertedGraphemes,
+    });
+    const styleIndex = Math.min(Math.max(0, frozen.start), Math.max(0, oldGraphemes.length - 1));
+    const inheritedStyle = oldGraphemes.length > 0 ? obj.getSelectionStyles(styleIndex, styleIndex + 1, false)[0] : undefined;
+    const styles = inheritedStyle ? insertedGraphemes.map(() => ({ ...inheritedStyle })) : undefined;
+    obj.insertChars(displayText, styles, frozen.start, frozen.end);
+    const nextLength = oldGraphemes.length - (frozen.end - frozen.start) + insertedGraphemes.length;
+    obj.tjTextLinks = setTextLinkTarget(
+      transformed,
+      nextLength,
+      frozen.start,
+      frozen.start + insertedGraphemes.length,
+      target,
+    );
+    obj.set('dirty', true);
+    obj.initDimensions();
+    obj.setCoords();
+    this.frozenTextLinkRange = null;
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+    return true;
+  }
+
+  removeFrozenTextLink(): boolean {
+    const frozen = this.frozenTextLinkRange;
+    if (!frozen || !this.canvas.getObjects().includes(frozen.obj) || frozen.obj.text !== frozen.textSnapshot) return false;
+    const obj = frozen.obj;
+    const textLength = obj.graphemeSplit(obj.text ?? '').length;
+    const next = removeTextLinkTarget(obj.tjTextLinks ?? [], textLength, frozen.start, frozen.end);
+    obj.tjTextLinks = next.length > 0 ? next : undefined;
+    obj.set('dirty', true);
+    this.frozenTextLinkRange = null;
+    this.canvas.requestRenderAll();
+    this.pushHistory();
+    return true;
+  }
+
   setStyle(patch: Partial<DrawStyle>): void {
     this.style = { ...this.style, ...patch };
     const active = this.canvas.getActiveObjects();
@@ -1045,6 +1127,16 @@ export class CanvasController {
       const t = opt.target ?? null;
       this.didMove = false;
       const p = this.canvas.getScenePoint(opt.e);
+      if (t instanceof TextBoxAnnotation) {
+        const hit = this.textLinkAtPointer(t, opt.e);
+        if (hit && (!t.isEditing || e.ctrlKey || e.metaKey)) {
+          this.pendingLinkClick = { target: { ...hit.target }, x: p.x, y: p.y };
+        } else {
+          this.pendingLinkClick = null;
+        }
+      } else {
+        this.pendingLinkClick = null;
+      }
       // Locked palette: pressing a stamp in the strip pulls out a translucent COPY (the original stays
       // put). Resolve the stamp by GEOMETRY — the pointer is over a strip stamp — rather than Fabric's
       // `evented` hit-target, so a transient load/hit glitch can never make the strip feel dead.
@@ -1121,6 +1213,7 @@ export class CanvasController {
   private onRightClick(opt: TPointerEventInfo<TPointerEvent>, e: MouseEvent): void {
     const target = opt.target ?? null;
     this.contextTarget = target;
+    const textLink = target instanceof TextBoxAnnotation ? this.textContextAtPointer(target, opt.e) : null;
     const locked = target ? isLocked(target) : false;
     if (target && !locked) {
       this.canvas.setActiveObject(target);
@@ -1132,11 +1225,28 @@ export class CanvasController {
       hasSelection: target !== null || this.canvas.getActiveObjects().length > 0,
       isImage: target instanceof FabricImage,
       isLocked: locked,
-      annotation: target && isAnnotation(target) ? this.readAnnotation(target) : null,
+      annotation:
+        target && isAnnotation(target) && this.regionOf(target) === 'page' ? this.readAnnotation(target) : null,
+      textLink,
     });
   }
 
   private onMove(opt: TPointerEventInfo<TPointerEvent>): void {
+    if (this.pendingLinkClick) {
+      const p = this.canvas.getScenePoint(opt.e);
+      if (Math.hypot(p.x - this.pendingLinkClick.x, p.y - this.pendingLinkClick.y) >= MIN_DRAG) {
+        this.pendingLinkClick = null;
+      }
+    }
+    if (!this.drawing && !this.ghostDrag && this.tool === 'select') {
+      const target = opt.target;
+      const event = opt.e as MouseEvent;
+      const linked =
+        target instanceof TextBoxAnnotation &&
+        this.textLinkAtPointer(target, opt.e) !== null &&
+        (!target.isEditing || event.ctrlKey || event.metaKey);
+      this.canvas.setCursor(linked ? 'pointer' : target instanceof TextBoxAnnotation ? 'text' : 'default');
+    }
     if (this.ghostDrag) {
       const drag = this.ghostDrag;
       const p = this.canvas.getScenePoint(opt.e);
@@ -1179,6 +1289,8 @@ export class CanvasController {
   }
 
   private onUp(): void {
+    const linkClick = !this.didMove ? this.pendingLinkClick : null;
+    this.pendingLinkClick = null;
     const clickedAnnotation = !this.didMove ? this.pointerSelectionTarget : null;
     this.pointerSelectionTarget = null;
     if (this.selectionSuppressed) {
@@ -1186,7 +1298,9 @@ export class CanvasController {
       this.canvas.selection = this.tool === 'select';
     }
     if (this.ghostDrag) {
+      const activate = linkClick && !this.ghostDrag.moved ? linkClick.target : null;
       this.finishGhostDrag();
+      if (activate) this.linkActivateCb?.(activate);
       return;
     }
     if (this.dragHome && this.didMove) {
@@ -1198,6 +1312,7 @@ export class CanvasController {
       const active = this.canvas.getActiveObjects();
       if (active.length === 1 && active[0] === clickedAnnotation) this.emitSelection('pointer');
     }
+    if (linkClick) this.linkActivateCb?.(linkClick.target);
     if (!this.drawing) return;
     this.drawing = false;
     const draft = this.draft;
@@ -1315,18 +1430,17 @@ export class CanvasController {
     }
   }
 
-  /** Enliven a serialized drawing into a fresh, independent annotation (new id; optionally drop result/links). */
+  /** Enliven a serialized drawing into a fresh, independent annotation (new id; optionally drop result). */
   private async reviveClone(
     serialized: Record<string, unknown>,
-    opts: { dropResultLinks?: boolean } = {},
+    opts: { dropResult?: boolean } = {},
   ): Promise<FabricObject> {
     const [obj] = await util.enlivenObjects<FabricObject>([serialized]);
     reattachControls(obj);
     const a = tjMeta(obj);
     a.tjId = crypto.randomUUID();
-    if (opts.dropResultLinks) {
+    if (opts.dropResult) {
       a.tjResult = undefined;
-      a.tjLinks = undefined;
     }
     return obj;
   }
@@ -1341,10 +1455,10 @@ export class CanvasController {
     this.pushHistory();
   }
 
-  /** Materialise the dragged-out copy as a solid, independent page annotation (new id, no result / links). */
+  /** Materialise the dragged-out copy as a solid, independent page annotation (new id, no result). */
   private async solidifyCopy(source: FabricObject, left: number, top: number, opacity: number): Promise<void> {
     const obj = await this.reviveClone(source.toObject([...TJ_PROPS]) as Record<string, unknown>, {
-      dropResultLinks: true,
+      dropResult: true,
     });
     obj.set({ left, top, opacity, selectable: true, evented: true });
     this.placeNew(obj);
@@ -1408,11 +1522,39 @@ export class CanvasController {
     this.newTextBox = null;
   }
 
+  private freezeTextLinkRange(
+    obj: TextBoxAnnotation,
+    start: number,
+    end: number,
+    target?: InternalLinkTarget,
+  ): TextLinkContext {
+    const graphemes = obj.graphemeSplit(obj.text ?? '');
+    this.frozenTextLinkRange = { obj, start, end, textSnapshot: obj.text ?? '' };
+    return { text: graphemes.slice(start, end).join(''), start, end, target };
+  }
+
+  private textLinkAtPointer(obj: TextBoxAnnotation, event: TPointerEvent): TextLinkSpan | null {
+    const index = obj.getSelectionStartFromPointer(event);
+    return (obj.tjTextLinks ?? []).find((span) => span.start <= index && index < span.end) ?? null;
+  }
+
+  private textContextAtPointer(obj: TextBoxAnnotation, event: TPointerEvent): TextLinkContext | null {
+    const hit = this.textLinkAtPointer(obj, event);
+    if (hit) return this.freezeTextLinkRange(obj, hit.start, hit.end, hit.target);
+    if (obj.isEditing && obj.selectionEnd > obj.selectionStart) {
+      return this.freezeTextLinkRange(obj, obj.selectionStart, obj.selectionEnd);
+    }
+    this.frozenTextLinkRange = null;
+    return null;
+  }
+
   private pushHistory(): void {
     if (this.restoring) return;
+    const snapshot = this.serializeAll();
+    if (this.histIndex >= 0 && this.history[this.histIndex] === snapshot) return;
     this.history = this.history.slice(0, this.histIndex + 1);
     this.historyRevisions = this.historyRevisions.slice(0, this.histIndex + 1);
-    this.history.push(this.serializeAll());
+    this.history.push(snapshot);
     this.historyRevisions.push(++this.nextHistoryRevision);
     this.histIndex = this.history.length - 1;
     this.emit();
@@ -1429,7 +1571,7 @@ export class CanvasController {
     this.emit();
   }
 
-  // ---- Annotation data: any page drawing carries id + tags + result + links. ----
+  // ---- Annotation data: any page drawing carries id + tags + result. ----
 
   /** The review-page annotations, projected for the index (screenshots and stamps are excluded). */
   extractAnnotations(): Annotation[] {
@@ -1447,20 +1589,18 @@ export class CanvasController {
         tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
       };
       if (a.tjResult && Object.keys(a.tjResult).length > 0) ann.result = { ...a.tjResult };
-      if (a.tjLinks && a.tjLinks.length > 0) ann.links = [...a.tjLinks];
       out.push(ann);
     }
     return out;
   }
 
-  /** Read an annotation object's tag / result / link data (a snapshot for the popover). */
+  /** Read an annotation object's tag / result data. */
   private readAnnotation(obj: FabricObject): AnnotationSelection {
     const a = tjMeta(obj);
     return {
       id: a.tjId as string,
       tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
       result: { ...(a.tjResult ?? {}) },
-      links: [...(a.tjLinks ?? [])],
     };
   }
 
@@ -1474,25 +1614,13 @@ export class CanvasController {
     return true;
   }
 
-  /** Commit the popover's edits onto an annotation (whole-value replace), then it can be saved. */
-  applyAnnotationEdits(id: string, tags: Tag[], result: Result, links: string[]): void {
+  /** Replace an annotation's tags and result as one history step. */
+  applyAnnotationEdits(id: string, tags: Tag[], result: Result): void {
     const obj = this.canvas.getObjects().find((o) => tjMeta(o).tjId === id);
     if (!obj) return;
     const a = tjMeta(obj);
     a.tjTags = tags.map((t) => ({ group: t.group, value: t.value }));
     a.tjResult = Object.keys(result).length > 0 ? { ...result } : undefined;
-    a.tjLinks = links.length > 0 ? [...links] : undefined;
-    this.canvas.requestRenderAll();
-    this.pushHistory();
-  }
-
-  /** Update only an annotation's result + links (the right-click popover's scope); tags stay with the ribbon quick-pick. */
-  setAnnotationResultLinks(id: string, result: Result, links: string[]): void {
-    const obj = this.canvas.getObjects().find((o) => tjMeta(o).tjId === id);
-    if (!obj) return;
-    const a = tjMeta(obj);
-    a.tjResult = Object.keys(result).length > 0 ? { ...result } : undefined;
-    a.tjLinks = links.length > 0 ? [...links] : undefined;
     this.canvas.requestRenderAll();
     this.pushHistory();
   }

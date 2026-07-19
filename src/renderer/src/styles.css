@@ -968,207 +968,6 @@ button {
   color: var(--muted);
 }
 
-/* ---- Inspector (annotation tags / result / links) ---- */
-.insp {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.insp__section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.insp__heading {
-  margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.insp__muted {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.insp__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px 2px 8px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  color: var(--accent-text);
-  font-size: 12px;
-  font-family: var(--mono);
-}
-
-.chip__x {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
-  opacity: 0.7;
-}
-
-.chip__x:hover {
-  opacity: 1;
-}
-
-.insp__row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.insp__input {
-  flex: 1;
-  min-width: 60px;
-  padding: 5px 7px;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--panel2);
-  color: var(--fg);
-  font-size: 12.5px;
-}
-
-.insp__input:focus {
-  outline: none;
-  border-color: var(--accent-line2);
-}
-
-.insp__btn {
-  padding: 5px 10px;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--fg);
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.insp__btn:hover:not(:disabled) {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-
-.insp__btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.insp__field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.insp__label {
-  font-size: 12px;
-  color: var(--fg);
-}
-
-.insp__type {
-  color: var(--muted);
-  font-style: normal;
-  font-size: 11px;
-}
-
-.insp__more {
-  margin-top: 2px;
-}
-
-.insp__more > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.insp__error {
-  color: var(--error);
-  font-size: 12px;
-}
-
-.insp__link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.insp__linkgo {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--panel2);
-  color: var(--fg);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: var(--mono);
-}
-
-.insp__linkgo:hover {
-  border-color: var(--accent-line);
-}
-
-/* ---- Tag & result popover (right-click an annotation) ---- */
-.tagpop {
-  position: fixed;
-  z-index: 60;
-  width: 300px;
-  max-width: calc(100vw - 24px);
-  max-height: 72vh;
-  overflow-y: auto;
-  background: var(--panel);
-  border: 1px solid var(--line2);
-  border-radius: 10px;
-  box-shadow: var(--shadow-lg);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-}
-
-.tagpop__foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-
-.tagpop__save {
-  padding: 6px 16px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-
-.tagpop__save:hover {
-  background: #3757b9;
-}
-
 /* ---- Contextual ribbon tab (appears only when an annotation is selected) ---- */
 .ribbon__tab--ctx {
   color: var(--accent-text);
@@ -2071,6 +1870,65 @@ button {
 
 .viewb__btn--danger:hover:not(:disabled) {
   background: rgba(209, 84, 79, 0.2);
+}
+
+/* ---- Hyperlink dialog ---- */
+.link-dialog-scrim {
+  z-index: 130;
+}
+
+.link-dialog {
+  width: 520px;
+  max-width: 92vw;
+  padding: 18px 20px 16px;
+  gap: 14px;
+}
+
+.link-dialog__title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.link-dialog__field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.link-dialog__field input {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--ink);
+  font: 13px var(--sans);
+  padding: 0 9px;
+}
+
+.link-dialog__field input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft2);
+  outline-offset: 0;
+}
+
+.link-dialog__validation {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.link-dialog__validation--error {
+  color: #b23b37;
+}
+
+.link-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ---- View builder (two-dimension filter + saved views) ---- */

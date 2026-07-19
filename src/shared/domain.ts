@@ -99,12 +99,43 @@ export interface ArchivedResults {
 /** An annotation's optional outcome: dimensionId -> typed value. Stats-only. */
 export type Result = Record<string, string | number>;
 
+export type InternalLinkTarget =
+  | { kind: 'entry'; id: string }
+  | { kind: 'annotation'; id: string };
+
+export interface InternalLinkAddress {
+  journalId: string;
+  target: InternalLinkTarget;
+}
+
+export interface InternalLinkResolution {
+  entryId: string;
+  annotationId?: string;
+}
+
+export interface TextLinkSpan {
+  start: number;
+  end: number;
+  target: InternalLinkTarget;
+}
+
+export interface TextEditOperation {
+  from: number;
+  to: number;
+  insertedGraphemes: string[];
+}
+
+export interface TextLinkSourceProjection {
+  source: { kind: 'entry-title' } | { kind: 'annotation'; annotationId: string };
+  text: string;
+  textLinks: TextLinkSpan[];
+}
+
 export interface Annotation {
   id: string;
   bounds: Bounds;
   tags: Tag[];
   result?: Result;
-  links?: string[];
 }
 
 export interface Entry {
@@ -131,7 +162,6 @@ export interface AnnotationHit {
   bounds: Bounds;
   tags: Tag[];
   result?: Result;
-  links: string[];
 }
 
 export interface SavedView {

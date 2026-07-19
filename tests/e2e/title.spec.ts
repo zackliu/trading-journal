@@ -93,3 +93,98 @@ test('an empty title box is kept after entering and leaving edit (not discarded)
 
   await app.close();
 });
+
+test('selected title text becomes a persisted internal hyperlink with Ctrl+K', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+  const targetEntryId = await newReview(page);
+
+  await page.getByTestId('entry-item').first().click({ button: 'right' });
+  await page.getByTestId('context-copy-link').click();
+  await expect(page.getByTestId('action-notice')).toHaveText('Link copied');
+  const copiedAddress = await page.evaluate((id) =>
+    (globalThis as unknown as {
+      api: { copyInternalLink(target: { kind: 'entry'; id: string }): Promise<string> };
+    }).api.copyInternalLink({ kind: 'entry', id }),
+    targetEntryId,
+  );
+  expect(copiedAddress).toContain(`/entry/${encodeURIComponent(targetEntryId)}`);
+
+  await page.getByTestId('tab-home').click();
+  const sourceEntryId = await newReview(page);
+  expect(sourceEntryId).not.toBe(targetEntryId);
+  const box = (await page.locator(CANVAS).boundingBox())!;
+  await page.locator(CANVAS).dblclick({ position: pos(box, 260, 55), force: true });
+  await page.keyboard.type('Review the first setup');
+  await page.keyboard.press('Control+Home');
+  await page.keyboard.down('Shift');
+  for (let index = 0; index < 6; index += 1) await page.keyboard.press('ArrowRight');
+  await page.keyboard.up('Shift');
+  await page.keyboard.press('Control+k');
+
+  await expect(page.getByTestId('link-dialog')).toBeVisible();
+  await expect(page.getByTestId('link-text')).toHaveValue('Review');
+  await page.getByTestId('link-address').fill(copiedAddress);
+  await expect(page.getByTestId('link-save')).toBeEnabled();
+  await page.getByTestId('link-save').click();
+
+  await expect
+    .poll(async () => {
+      const json = (await store.getEntry(page, sourceEntryId))?.canvasJson ?? '{}';
+      const parsed = JSON.parse(json) as {
+        objects?: Array<{
+          tjRole?: string;
+          tjTextLinks?: Array<{ start: number; end: number; target: { kind: string; id: string } }>;
+        }>;
+      };
+      return parsed.objects?.find((object) => object.tjRole === 'title')?.tjTextLinks ?? [];
+    })
+    .toEqual([
+      {
+        start: 0,
+        end: 6,
+        target: { kind: 'entry', id: targetEntryId },
+      },
+    ]);
+
+  await page.locator(CANVAS).dblclick({ position: pos(box, 330, 55), force: true });
+  await page.keyboard.press('Control+Home');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Backspace');
+  await page.locator(CANVAS).click({ position: pos(box, 1200, 900), force: true });
+  await expect
+    .poll(async () => {
+      const json = (await store.getEntry(page, sourceEntryId))?.canvasJson ?? '{}';
+      const parsed = JSON.parse(json) as {
+        objects?: Array<{ tjRole?: string; text?: string; tjTextLinks?: Array<{ start: number; end: number }> }>;
+      };
+      const title = parsed.objects?.find((object) => object.tjRole === 'title');
+      return { text: title?.text, links: title?.tjTextLinks };
+    })
+    .toEqual({ text: 'Reiew the first setup', links: [{ start: 0, end: 5, target: { kind: 'entry', id: targetEntryId } }] });
+
+  await page.keyboard.press('Control+z');
+  await expect
+    .poll(async () => (await store.getEntry(page, sourceEntryId))?.canvasJson ?? '')
+    .toContain('Review the first setup');
+
+  await page.locator(CANVAS).click({ button: 'right', position: pos(box, 105, 55), force: true });
+  await page.getByTestId('menu-remove-link').click();
+  await expect
+    .poll(async () => (await store.getEntry(page, sourceEntryId))?.canvasJson ?? '')
+    .not.toContain('tjTextLinks');
+  expect((await store.getEntry(page, sourceEntryId))?.canvasJson).toContain('Review the first setup');
+
+  await page.keyboard.press('Control+z');
+  await expect
+    .poll(async () => (await store.getEntry(page, sourceEntryId))?.canvasJson ?? '')
+    .toContain('tjTextLinks');
+
+  await page.locator(CANVAS).click({ button: 'right', position: pos(box, 105, 55), force: true });
+  await page.getByTestId('menu-open-link').click();
+  await expect(page.locator(`[data-entry-id="${targetEntryId}"]`)).toHaveClass(/is-active/);
+
+  await app.close();
+});

@@ -23,7 +23,7 @@ test('an older journal migrates forward with every review preserved, and is back
   const ping = await page.evaluate(() =>
     (globalThis as unknown as { api: { ping(): Promise<{ userVersion: number }> } }).api.ping(),
   );
-  expect(ping.userVersion).toBe(8);
+  expect(ping.userVersion).toBe(9);
 
   // The entry and its tags survived.
   const entries = await store.listEntries(page);

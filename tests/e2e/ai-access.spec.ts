@@ -64,7 +64,14 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
           tjId: 'ann-1',
           tjTags: [{ group: 'setup', value: 'breakout' }],
         },
-        { type: 'Textbox', tjId: 'ann-note', text: 'Bull spike, then deep pullback' },
+        {
+          type: 'TextBoxAnnotation',
+          tjId: 'ann-note',
+          text: 'Bull spike, then deep pullback',
+          tjTextLinks: [
+            { start: 0, end: 10, target: { kind: 'annotation', id: 'ann-1' } },
+          ],
+        },
       ],
       tjPage: { width: 2900, height: 1600 },
     }),
@@ -75,13 +82,11 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
         bounds: { x: 280, y: 110, width: 220, height: 220 },
         tags: [{ group: 'setup', value: 'breakout' }],
           result: { outcome: 'Success' },
-        links: [],
       },
       {
         id: 'ann-note',
         bounds: { x: 540, y: 120, width: 260, height: 100 },
         tags: [],
-        links: [],
       },
     ],
   });
@@ -255,8 +260,31 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
         annotationId: 'ann-note',
         text: 'Bull spike, then deep pullback',
         textTrust: 'untrusted-journal-evidence',
+        textLinks: [
+          { start: 0, end: 10, target: { kind: 'annotation', id: 'ann-1' } },
+        ],
       }),
     ]),
+  });
+
+  const linked = await client.callTool({
+    name: 'get_linked_context',
+    arguments: { target: { kind: 'annotation', id: 'ann-1' }, depth: 1 },
+  });
+  expect(linked.structuredContent).toMatchObject({
+    nodes: expect.arrayContaining([
+      expect.objectContaining({ target: { kind: 'annotation', id: 'ann-1' } }),
+      expect.objectContaining({ target: { kind: 'annotation', id: 'ann-note' } }),
+    ]),
+    edges: [
+      expect.objectContaining({
+        source: { kind: 'annotation', id: 'ann-note' },
+        target: { kind: 'annotation', id: 'ann-1' },
+        displayText: 'Bull spike',
+        broken: false,
+      }),
+    ],
+    truncated: false,
   });
 
   const visual = await client.callTool({
@@ -642,7 +670,7 @@ test('visual evidence preserves duplicate cropped screenshot instances and refus
     annotations: [
       annotationIndex('left-rect', 10),
       annotationIndex('right-rect', 110),
-      { id: 'arrow', bounds: { x: 5, y: 34, width: 35, height: 2 }, tags: [], links: [] },
+      { id: 'arrow', bounds: { x: 5, y: 34, width: 35, height: 2 }, tags: [] },
       annotationIndex('freehand', 10),
     ],
   });
@@ -806,9 +834,11 @@ test('App settings has a dedicated AI page with MCP setup and editable prompts',
   expect(mergedPrompts).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ id: 'review_entry_progressively', source: 'built-in', enabled: true }),
+      expect.objectContaining({ id: 'trace_text_links', source: 'built-in', enabled: true }),
       expect.objectContaining({ id: 'inspect_entry_visual', title: 'My edited visual prompt', enabled: false }),
     ]),
   );
+  expect(mergedPrompts.map((prompt) => prompt.id)).not.toContain('trace_annotation_links');
   await page.getByTestId('ribbon-general').click();
   await expect(page.getByTestId('settings-page-general')).toBeVisible();
   await expect(page.getByTestId('settings-tab-general')).toHaveAttribute('aria-selected', 'true');
@@ -902,7 +932,7 @@ function annotationRect(id: string, left: number): Record<string, unknown> {
 }
 
 function annotationIndex(id: string, x: number): import('../../src/shared/domain').Annotation {
-  return { id, bounds: { x, y: 10, width: 20, height: 20 }, tags: [], links: [] };
+  return { id, bounds: { x, y: 10, width: 20, height: 20 }, tags: [] };
 }
 
 interface DecodedRgb {

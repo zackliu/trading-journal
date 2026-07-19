@@ -94,13 +94,11 @@ const seeded = await page.evaluate(
           id: 'count-zone',
           bounds: { x: 280, y: 110, width: 220, height: 220 },
           tags: [{ group: 'setup', value: 'counted-move' }],
-          links: [],
         },
         {
           id: 'count-note',
           bounds: { x: 530, y: 110, width: 300, height: 100 },
           tags: [],
-          links: [],
         },
       ],
     });

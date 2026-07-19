@@ -3,7 +3,7 @@ import { clipboard } from 'electron';
 import type { AiAccessActivity, AiAccessSettings, AiAccessState, AiAccessStatus, AiPromptTemplate } from '../../shared/aiAccess';
 import { readConfig, writeConfig } from '../appConfig';
 import { getOrCreateAccessKey, replaceAccessKey } from './credentialStore';
-import { DEFAULT_AGENT_GUIDE, DEFAULT_AI_PROMPTS } from './defaults';
+import { DEFAULT_AGENT_GUIDE, DEFAULT_AI_PROMPTS, RETIRED_TRACE_ANNOTATION_LINKS_PROMPT } from './defaults';
 import type { AiAccessSupervisor, AiSupervisorCallbacks } from './supervisor';
 
 interface ControllerOptions {
@@ -186,8 +186,33 @@ function clonePrompts(prompts: AiPromptTemplate[]): AiPromptTemplate[] {
 
 function withCurrentBuiltIns(configured: AiPromptTemplate[] | undefined): AiPromptTemplate[] {
   if (!configured) return clonePrompts(DEFAULT_AI_PROMPTS);
-  const ids = new Set(configured.map((prompt) => prompt.id));
-  return clonePrompts([...configured, ...DEFAULT_AI_PROMPTS.filter((prompt) => !ids.has(prompt.id))]);
+  const retained = configured.flatMap((prompt): AiPromptTemplate[] => {
+    if (prompt.id !== RETIRED_TRACE_ANNOTATION_LINKS_PROMPT.id) return [prompt];
+    const content = (value: AiPromptTemplate) => ({
+      id: value.id,
+      title: value.title,
+      description: value.description,
+      arguments: value.arguments,
+      body: value.body,
+    });
+    if (
+      JSON.stringify(content(prompt)) === JSON.stringify(content(RETIRED_TRACE_ANNOTATION_LINKS_PROMPT))
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...prompt,
+        id: 'trace_annotation_links_retired',
+        title: `${prompt.title} (retired)`,
+        description: `${prompt.description} Retired link contract; kept only as user text.`,
+        enabled: false,
+        source: 'custom',
+      },
+    ];
+  });
+  const ids = new Set(retained.map((prompt) => prompt.id));
+  return clonePrompts([...retained, ...DEFAULT_AI_PROMPTS.filter((prompt) => !ids.has(prompt.id))]);
 }
 
 function validateSettings(settings: AiAccessSettings): void {

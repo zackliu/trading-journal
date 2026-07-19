@@ -57,6 +57,17 @@ export const DEFAULT_AGENT_GUIDE = `# 我的交易复盘图解读指南
 - 证据不足时直接提出需要用户确认的问题，不要用常见交易习惯替用户补全规则。
 `;
 
+export const RETIRED_TRACE_ANNOTATION_LINKS_PROMPT: AiPromptTemplate = {
+  id: 'trace_annotation_links',
+  title: 'Trace linked reviews',
+  description: 'Follow the user-authored links around one annotation.',
+  enabled: true,
+  source: 'built-in',
+  arguments: [{ name: 'annotation_id', description: 'Starting annotation id', required: true }],
+  body:
+    'Call get_linked_context for {{annotation_id}} at depth 2. Explain each link as user-authored evidence, report broken or truncated links, and do not infer a link that is not present.',
+};
+
 export const DEFAULT_AI_PROMPTS: AiPromptTemplate[] = [
   {
     id: 'understand_my_journal',
@@ -157,13 +168,16 @@ export const DEFAULT_AI_PROMPTS: AiPromptTemplate[] = [
       'Use search_entries for {{from_date}} through {{to_date}}. State the exact sample size, choose a small set of representative and contradictory reviews, and inspect their source evidence before drawing a pattern. Do not imply statistical significance.',
   },
   {
-    id: 'trace_annotation_links',
-    title: 'Trace linked reviews',
-    description: 'Follow the user-authored links around one annotation.',
+    id: 'trace_text_links',
+    title: 'Trace text links',
+    description: 'Follow authored text links around an Entry or annotation.',
     enabled: true,
     source: 'built-in',
-    arguments: [{ name: 'annotation_id', description: 'Starting annotation id', required: true }],
+    arguments: [
+      { name: 'target_kind', description: 'Starting target kind: entry or annotation', required: true },
+      { name: 'target_id', description: 'Starting Entry or annotation id', required: true },
+    ],
     body:
-      'Call get_linked_context for {{annotation_id}} at depth 2. Explain each link as user-authored evidence, report broken or truncated links, and do not infer a link that is not present.',
+      'Call get_linked_context with target kind {{target_kind}}, id {{target_id}}, and depth 2. Preserve each source → target direction, explain display text as user-authored evidence, report broken or truncated links, and do not infer an edge that is not present.',
   },
 ];

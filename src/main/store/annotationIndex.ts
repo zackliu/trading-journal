@@ -9,7 +9,6 @@ interface AnnotationRow {
   y: number;
   width: number;
   height: number;
-  links: string;
 }
 
 interface TagRow {
@@ -36,7 +35,7 @@ export function projectEntryAnnotations(db: Db, entryId: string, annotations: An
   db.prepare('DELETE FROM annotations WHERE entry_id = ?').run(entryId);
 
   const insAnnotation = db.prepare(
-    'INSERT INTO annotations (id, entry_id, x, y, width, height, links) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO annotations (id, entry_id, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insTag = db.prepare(
     'INSERT OR IGNORE INTO annotation_tags (annotation_id, entry_id, "group", value) VALUES (?, ?, ?, ?)',
@@ -56,7 +55,6 @@ export function projectEntryAnnotations(db: Db, entryId: string, annotations: An
       annotation.bounds.y,
       annotation.bounds.width,
       annotation.bounds.height,
-      JSON.stringify(annotation.links ?? []),
     );
 
     for (const tag of annotation.tags) {
@@ -88,7 +86,7 @@ export function projectEntryAnnotations(db: Db, entryId: string, annotations: An
 export function queryAnnotationsByTag(db: Db, tag: Tag): AnnotationHit[] {
   const rows = db
     .prepare(
-      'SELECT a.id, a.entry_id, a.x, a.y, a.width, a.height, a.links FROM annotations a ' +
+      'SELECT a.id, a.entry_id, a.x, a.y, a.width, a.height FROM annotations a ' +
         'JOIN annotation_tags t ON t.annotation_id = a.id ' +
         'WHERE t."group" = ? AND t.value = ? ORDER BY a.id',
     )
@@ -100,7 +98,6 @@ export function queryAnnotationsByTag(db: Db, tag: Tag): AnnotationHit[] {
     bounds: { x: row.x, y: row.y, width: row.width, height: row.height },
     tags: readAnnotationTags(db, row.id),
     result: readAnnotationResult(db, row.id),
-    links: JSON.parse(row.links) as string[],
   }));
 }
 

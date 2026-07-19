@@ -1,6 +1,5 @@
 import type { Db } from '../db';
 import type {
-  AiAnnotationContext,
   AiEntryContext,
   AiEntrySearchQuery,
   AiEntrySummary,
@@ -16,7 +15,8 @@ import type {
   AiVocabularyItem,
   AiVocabularyQuery,
 } from '../../shared/aiAccess';
-import type { Result, Tag, ViewQuery } from '../../shared/domain';
+import type { InternalLinkTarget, Result, Tag, TextLinkSpan, ViewQuery } from '../../shared/domain';
+import { splitGraphemes } from '../../shared/graphemes';
 import { viewQuerySchema } from '../store/validation';
 import { runViewQuery } from '../store/viewMatcher';
 
@@ -34,7 +34,16 @@ interface AnnotationRow {
   y: number;
   width: number;
   height: number;
-  links: string;
+}
+
+interface TextLinkRow {
+  source_entry_id: string;
+  source_kind: 'entry-title' | 'annotation';
+  source_object_id: string;
+  start_grapheme: number;
+  end_grapheme: number;
+  target_kind: 'entry' | 'annotation';
+  target_id: string;
 }
 
 interface ResultRow {
@@ -129,7 +138,7 @@ export class AiReadRepository {
       .all() as EntryRow[];
     const entries = new Map(entryRows.map((row) => [row.id, row]));
     const rows = this.database
-      .prepare('SELECT id, entry_id, x, y, width, height, links FROM annotations ORDER BY id')
+      .prepare('SELECT id, entry_id, x, y, width, height FROM annotations ORDER BY id')
       .all() as AnnotationRow[];
     const items = rows
       .filter((row) => entryIds.has(row.entry_id) && (!hasAnnotationDimension || annotationIds.has(row.id)))
@@ -158,7 +167,6 @@ export class AiReadRepository {
       bounds: item.bounds,
       tags: item.tags,
       result: item.result,
-      links: item.links,
       contextResource: item.contextResource,
     }));
   }
@@ -250,15 +258,17 @@ export class AiReadRepository {
     }
     const text = extractCanvasText(entry.canvas_json);
     const rows = this.database
-      .prepare('SELECT id, entry_id, x, y, width, height, links FROM annotations WHERE entry_id = ? ORDER BY id')
+      .prepare('SELECT id, entry_id, x, y, width, height FROM annotations WHERE entry_id = ? ORDER BY id')
       .all(entryId) as AnnotationRow[];
     const effectiveDate = this.effectiveDate(entry.id, entry.created_at);
+    const textLinks = this.textLinksForEntry(entryId);
     const annotations = rows.map((row) => {
       const annotationText = text.byAnnotation.get(row.id);
       return {
         ...this.annotationSummary(row, effectiveDate, entry.updated_at),
         text: annotationText,
         textTrust: annotationText === undefined ? undefined : ('untrusted-journal-evidence' as const),
+        textLinks: textLinks.get(`annotation:${row.id}`) ?? [],
       };
     });
     return {
@@ -268,6 +278,7 @@ export class AiReadRepository {
       updatedAt: entry.updated_at,
       entryTags: this.entryTags(entryId),
       title: text.title,
+      titleTextLinks: textLinks.get(`entry-title:${entryId}`) ?? [],
       annotations,
       visualEvidenceTool: 'get_visual_evidence',
       evidenceTrust: 'untrusted-journal-evidence',
@@ -277,37 +288,131 @@ export class AiReadRepository {
   linkedContext(input: AiLinkedContextQuery): AiLinkedContext {
     const maxDepth = input.depth ?? 1;
     const maxNodes = 100;
-    const queue: Array<{ id: string; depth: number }> = [{ id: input.annotationId, depth: 0 }];
+    const maxEdges = 200;
+    const queue: Array<{ target: InternalLinkTarget; depth: number }> = [{ target: input.target, depth: 0 }];
     const visited = new Set<string>();
-    const nodes: AiAnnotationContext[] = [];
+    const nodes: AiLinkedContext['nodes'] = [];
     const edges: AiLinkedContext['edges'] = [];
+    const edgeKeys = new Set<string>();
+    const textCache = new Map<string, ReturnType<typeof extractCanvasText>>();
     let truncated = false;
 
     while (queue.length > 0) {
       const current = queue.shift();
-      if (!current || visited.has(current.id)) continue;
+      if (!current) continue;
+      const currentKey = targetKey(current.target);
+      if (visited.has(currentKey)) continue;
       if (nodes.length >= maxNodes) {
         truncated = true;
         break;
       }
-      const row = this.annotationRow(current.id);
-      if (!row) {
-        if (current.depth === 0) throw new Error(`annotation not found: ${current.id}`);
+      const node = this.linkedNode(current.target);
+      if (!node) {
+        if (current.depth === 0) throw new Error(`${current.target.kind} not found: ${current.target.id}`);
         continue;
       }
-      visited.add(row.id);
-      const entry = this.entryRow(row.entry_id);
-      const text = extractCanvasText(entry.canvas_json).byAnnotation.get(row.id);
-      const node = { ...this.annotationSummary(row, this.effectiveDate(entry.id, entry.created_at), entry.updated_at), text };
+      visited.add(currentKey);
       nodes.push(node);
       if (current.depth >= maxDepth) continue;
-      for (const target of node.links) {
-        const exists = this.annotationRow(target) !== null;
-        edges.push({ from: row.id, to: target, broken: !exists });
-        if (exists && !visited.has(target)) queue.push({ id: target, depth: current.depth + 1 });
+
+      for (const row of this.incidentTextLinks(current.target)) {
+        const source = textLinkSource(row);
+        const target: InternalLinkTarget = { kind: row.target_kind, id: row.target_id };
+        const edgeKey = [
+          targetKey(source),
+          row.start_grapheme,
+          row.end_grapheme,
+          targetKey(target),
+        ].join('|');
+        if (!edgeKeys.has(edgeKey)) {
+          if (edges.length >= maxEdges) {
+            truncated = true;
+            continue;
+          }
+          edgeKeys.add(edgeKey);
+          edges.push({
+            source,
+            target,
+            start: row.start_grapheme,
+            end: row.end_grapheme,
+            displayText: this.textLinkDisplayText(row, textCache),
+            broken: !this.internalTargetExists(target),
+          });
+        }
+        for (const neighbor of [source, target]) {
+          if (!visited.has(targetKey(neighbor)) && this.internalTargetExists(neighbor)) {
+            queue.push({ target: neighbor, depth: current.depth + 1 });
+          }
+        }
       }
     }
     return { nodes, edges, truncated };
+  }
+
+  private linkedNode(target: InternalLinkTarget): AiLinkedContext['nodes'][number] | null {
+    if (target.kind === 'entry') {
+      const entry = this.database
+        .prepare('SELECT id, canvas_json, created_at, updated_at FROM entries WHERE id = ?')
+        .get(target.id) as EntryRow | undefined;
+      if (!entry) return null;
+      return {
+        target: { ...target },
+        entryId: entry.id,
+        effectiveDate: this.effectiveDate(entry.id, entry.created_at),
+        title: extractCanvasText(entry.canvas_json).title,
+        entryTags: this.entryTags(entry.id),
+      };
+    }
+    const annotation = this.annotationRow(target.id);
+    if (!annotation) return null;
+    const entry = this.entryRow(annotation.entry_id);
+    const text = extractCanvasText(entry.canvas_json).byAnnotation.get(annotation.id);
+    return {
+      target: { ...target },
+      entryId: entry.id,
+      effectiveDate: this.effectiveDate(entry.id, entry.created_at),
+      bounds: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height },
+      tags: this.annotationTags(annotation.id),
+      result: this.annotationResult(annotation.id),
+      text,
+      textLinks: this.textLinksForEntry(entry.id).get(`annotation:${annotation.id}`) ?? [],
+    };
+  }
+
+  private incidentTextLinks(target: InternalLinkTarget): TextLinkRow[] {
+    const outgoing =
+      target.kind === 'entry'
+        ? (this.database
+            .prepare(
+              "SELECT * FROM text_links WHERE source_kind = 'entry-title' AND source_entry_id = ? AND source_object_id = ?",
+            )
+            .all(target.id, target.id) as TextLinkRow[])
+        : (this.database
+            .prepare("SELECT * FROM text_links WHERE source_kind = 'annotation' AND source_object_id = ?")
+            .all(target.id) as TextLinkRow[]);
+    const incoming = this.database
+      .prepare('SELECT * FROM text_links WHERE target_kind = ? AND target_id = ?')
+      .all(target.kind, target.id) as TextLinkRow[];
+    return [...outgoing, ...incoming];
+  }
+
+  private internalTargetExists(target: InternalLinkTarget): boolean {
+    const table = target.kind === 'entry' ? 'entries' : 'annotations';
+    return this.database.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(target.id) !== undefined;
+  }
+
+  private textLinkDisplayText(
+    row: TextLinkRow,
+    cache: Map<string, ReturnType<typeof extractCanvasText>>,
+  ): string {
+    let text = cache.get(row.source_entry_id);
+    if (!text) {
+      text = extractCanvasText(this.entryRow(row.source_entry_id).canvas_json);
+      cache.set(row.source_entry_id, text);
+    }
+    const sourceText =
+      row.source_kind === 'entry-title' ? text.title : text.byAnnotation.get(row.source_object_id);
+    return sourceText ? splitGraphemes(sourceText).slice(row.start_grapheme, row.end_grapheme).join('') : '';
   }
 
   private resolveViewQuery(query?: ViewQuery, savedViewId?: string): ViewQuery {
@@ -398,7 +503,6 @@ export class AiReadRepository {
       bounds: { x: row.x, y: row.y, width: row.width, height: row.height },
       tags: this.annotationTags(row.id),
       result: this.annotationResult(row.id),
-      links: parseLinks(row.links),
       contextResource: this.entryContextUri(row.entry_id, updatedAt),
     };
   }
@@ -414,9 +518,30 @@ export class AiReadRepository {
   private annotationRow(annotationId: string): AnnotationRow | null {
     return (
       (this.database
-        .prepare('SELECT id, entry_id, x, y, width, height, links FROM annotations WHERE id = ?')
+        .prepare('SELECT id, entry_id, x, y, width, height FROM annotations WHERE id = ?')
         .get(annotationId) as AnnotationRow | undefined) ?? null
     );
+  }
+
+  private textLinksForEntry(entryId: string): Map<string, TextLinkSpan[]> {
+    const rows = this.database
+      .prepare(
+        'SELECT source_entry_id, source_kind, source_object_id, start_grapheme, end_grapheme, target_kind, target_id ' +
+          'FROM text_links WHERE source_entry_id = ? ORDER BY source_kind, source_object_id, start_grapheme',
+      )
+      .all(entryId) as TextLinkRow[];
+    const bySource = new Map<string, TextLinkSpan[]>();
+    for (const row of rows) {
+      const key = `${row.source_kind}:${row.source_object_id}`;
+      const list = bySource.get(key) ?? [];
+      list.push({
+        start: row.start_grapheme,
+        end: row.end_grapheme,
+        target: { kind: row.target_kind, id: row.target_id },
+      });
+      bySource.set(key, list);
+    }
+    return bySource;
   }
 
   private entryTags(entryId: string): Tag[] {
@@ -548,9 +673,14 @@ function localCalendarDate(timestamp: number): string {
   return `${year}-${month}-${day}`;
 }
 
-function parseLinks(raw: string): string[] {
-  const parsed: unknown = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string').slice(0, 100) : [];
+function targetKey(target: InternalLinkTarget): string {
+  return `${target.kind}:${target.id}`;
+}
+
+function textLinkSource(row: TextLinkRow): InternalLinkTarget {
+  return row.source_kind === 'entry-title'
+    ? { kind: 'entry', id: row.source_entry_id }
+    : { kind: 'annotation', id: row.source_object_id };
 }
 
 function extractCanvasText(canvasJson: string): { title?: string; byAnnotation: Map<string, string> } {

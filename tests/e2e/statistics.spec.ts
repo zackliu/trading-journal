@@ -24,7 +24,7 @@ function annotation(
   tags: Annotation['tags'],
   result?: Annotation['result'],
 ): Annotation {
-  return { id, bounds: { x: 10, y: 10, width: 40, height: 30 }, tags, result, links: [] };
+  return { id, bounds: { x: 10, y: 10, width: 40, height: 30 }, tags, result };
 }
 
 async function seedStatistics(page: Parameters<typeof store.createEntry>[0]): Promise<void> {

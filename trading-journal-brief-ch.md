@@ -38,15 +38,19 @@
 ```
 Entry（一次复盘 / 一个 chart context）——durable，存一份
 ├─ page         固定尺寸白色复盘页（尺寸随 Entry 存在 canvas_json）
+├─ title        结构性可编辑标题文字（不是 queryable annotation；可带文字超链接）
 ├─ screenshots  0..n 个静态截图对象（可移动 / 缩放 / 堆叠，bytes 按 hash 存 images/）
 ├─ annotations  页面上的所有标注元素（框 / 线 / 箭头 / 文本框 / 组…）
-│                 每个 annotation 自带 geometry(bounds)、可带 0..n 个 tag、可带一个可选的 result、可 link 到别的 annotation
+│                 每个 annotation 自带 geometry(bounds)、可带 0..n 个 tag、可带一个可选的 result；文本框可带文字超链接
 ├─ entryTags    贴在整张复盘上的 tag（Tag[]）
 └─ image        可选 cover hash（仅供页面首次渲染前 fallback，不是唯一底图）
 
 Tag = group:value    group = 分类维度（用户自定义、可枚举）→ UI 第一层；value → UI 第二层
 Result = annotation 上可选的、多维、typed 的结果记录（仅用于统计、不进浏览导航）
        = { dimension → value }；dimension 用户预定义，value 类型为 string 或 number
+InternalLinkTarget = { kind: 'entry', id: EntryId } | { kind: 'annotation', id: AnnotationId }
+InternalLinkAddress = { journalId, target }    仅用于系统剪贴板中的 canonical URI
+TextLinkSpan = { start, end, target }    显示文字只来自所属文字对象该 selection range 的字符
 ```
 
 要点：
@@ -56,7 +60,7 @@ Result = annotation 上可选的、多维、typed 的结果记录（仅用于统
 - **笔记就是文本框 annotation**：文本框的内容即笔记，且它本身也能打 tag。没有独立的 note 字段。
 - **tag 可贴在两个层级**：整张 Entry（entryTags），或某个具体 annotation（annotation.tags）。
 - **所有对象与 annotation 的 geometry 用 page 像素坐标**；截图只是页面里的 image object。V1 仍只处理静态截图，不绑定价格 / 时间轴。
-- **annotation 可互相 link**，用于"类似但语境不同"这类跨图对比。
+- **Entry 与 annotation 都是稳定的内部链接目标**：右键可把由对象类型 + immutable id 组成的内部地址复制到系统剪贴板；改标题、日期、文字或位置不改变地址。可编辑文字（结构性标题与文本框 annotation）用字符区间承载 0..n 个内部超链接，点击后定位到目标 Entry 或 annotation。
 
 ## 5. 分组标签（Group / Tag）模型
 
@@ -89,6 +93,17 @@ Result = annotation 上可选的、多维、typed 的结果记录（仅用于统
 - **population 口径显式可见**：有 annotation 分类条件时，population 是满足这些条件的 annotations；没有 annotation 分类条件时，population 是带有任一活跃 result 记录的 annotations。后者只能表示「已有某项结果记录的样本」，不能被称为「全部交易」。
 - **缺失不等于 0 / 亏损**：选择某个 result 维度后，只有该维度有值的样本进入该维度的均值、分布与条件命中率；未填该维度的样本单列为 missing。若 population 由明确的 annotation 分类条件定义，可把它理解为该范围内的填写 coverage；若使用默认「带任一活跃 result 的样本」population，只能写成「所选维度在这些 result-bearing samples 中未记录」，不能暗示这些样本都应填写该维度。
 
+## 5.2 内部链接与文字超链接
+
+内部链接只有一个统一机制：**Entry / annotation 是可寻址目标，文字区间是超链接载体**。不存在「一个 annotation 持有另一组 annotation ids」的对象级 link，也不存在应用内专用 link clipboard。
+
+- **稳定地址**：每个 journal 有一个随数据文件夹持久化、移动文件夹也不变的 `journalId`；Entry 与 annotation 使用 `trading-journal://journal/{journalId}/{entry|annotation}/{targetId}`。`journalId` 与 `targetId` 各自编码成一个 canonical percent-encoded path segment，parser 必须可逆并拒绝非 canonical 变体。地址不含显示名、日期、文字、画布坐标或数据文件夹路径。
+- **复制目标**：右键任意 Entry 或 annotation 选择 `Copy link`，把 canonical 地址写入系统剪贴板；这个动作不创建、不修改任何 journal 数据。
+- **创建载体**：在可编辑文字里选中非空字符区间，右键 `Link…`（同一动作也可由 `Ctrl/Cmd+K` 触发），打开只有 `Text to display` 与 `Link` 两项的对话框。显示文字预填选区；若系统剪贴板恰好是合法内部地址，Link 自动预填，否则保持空白。保存时以一个原子编辑同时替换显示文字并给新字符区间加 link mark；取消不产生修改。
+- **显示与操作**：超链接以克制的 Office 式链接色 + 下划线派生渲染，不覆盖用户已有字符格式；非文字编辑态只在链接字符上显示手形 pointer，单击定位。文字编辑态仍优先放置光标，`Ctrl/Cmd+单击` 才定位。右键链接可 `Open link`、`Edit link…` 或 `Remove link`；Remove 只去掉 link mark，完整保留显示文字和原有格式。
+- **文字编辑语义**：link mark 跟随字符而不是另存一份显示文字。局部删除只缩短链接区间，剩余字符仍可点击；整段链接字符全部删除后 link mark 才消失。区间内部输入的新字符继承该链接，区间边界外输入不继承；相邻同目标区间自动合并，区间永不重叠。文字、区间与 target 在同一 undo/redo 快照中恢复。
+- **解析与断链**：新建 / 修改链接时必须通过 shared parser 校验；地址的 `journalId` 与当前 journal 不同，或 target 当前不存在时，不能保存并在 Link 字段就地说明。目标后来被删除时，已有 `textLinks` 仍可正常 autosave / 重开，不被静默删除；点击显示「目标已不存在」，仍可编辑或取消链接。首版只接受上述内部地址，不执行外部 URL、文件路径或任意协议。
+
 ## 6. 视图 = 同一份产物的多种渲染（按 group / tag 浏览）
 
 不再有"两份图"，也不再有"专门的 Setup 视角"；只有**一份 Entry，按不同 group/tag 浏览时的不同渲染**：
@@ -110,7 +125,7 @@ Result = annotation 上可选的、多维、typed 的结果记录（仅用于统
 - **没有特殊标注类型**：任意 annotation 都可带 group 下的 tag；"setup 高亮"只是"被 tag 的 annotation 在浏览该 tag 时高亮"的一个实例，必须 general 化，不特判。
 - **高亮 = 对带该 tag 的 annotation 短暂高亮**（不缩放视口、不持久淡化），在 render 期计算，不落库。
 - **tag 可贴在 Entry 或 annotation 两个层级**；annotation 级决定高亮目标。
-- **annotation 支持互相 link**，用于跨图对比。
+- **内部引用 = 稳定目标地址 + 文字超链接**：Entry / annotation 只提供 immutable-id 地址，链接语义挂在文字字符区间上；没有 annotation-to-annotation 的对象级边。
 - **结果 = annotation 上可选的 typed `result`**：多维、每维 string 或 number、维度用户预定义；**只用于统计、不进浏览导航**，与 tag 是两套东西，绝不做成 `outcome` group、也绝不融进某个 tag 值。
 - **绝不复制 artifact 来满足某个视图**：视图 = 查询 + 渲染模式。
 - **app 提供机制，不预置目录**：group、group 内的 tag 值、可复用图章一律由用户自定义/自己设计，系统不内置一套预先设计好的默认集；`date` 是唯一结构性 group。文档里出现的任何具体名字都只是示例。
@@ -126,7 +141,7 @@ Result = annotation 上可选的、多维、typed 的结果记录（仅用于统
 
 1. Ingest：粘贴/导入一张截图，创建一个 Entry。
 2. Canvas 标注：基础绘图原语（线、框、箭头、水平线、文字、自由手绘）+ PPT 级样式（描边/填充/透明度）；**用户自建的可复用图章库**（自己设计并保存组件，系统不预置固定几个）。
-3. 给任意 annotation（框 / 文本框 / …）打 group 下的 tag、并可给它设一个可选的 typed `result`（多维、每维 string 或 number、维度用户预定义）；笔记就是文本框 annotation；annotation 可互相 link。
+3. 给任意 annotation（框 / 文本框 / …）打 group 下的 tag、并可给它设一个可选的 typed `result`（多维、每维 string 或 number、维度用户预定义）；笔记就是文本框 annotation。每个 Entry / annotation 都可复制稳定内部地址；可编辑文字区间可创建、打开、编辑、取消内部超链接，并完整参与文字删除与 undo/redo。
 4. Entry 级 group 标签（贴整张图；`date` 为结构性 group）。
 5. Tag & query 引擎：布尔组合查询、每个 tag 的自动计数、保存为视图。
 6. 按 group/tag 浏览的 UI：左侧 group→tag→缩略图两层可折叠导航（缩略图竖排，像 PPT），右侧完整大图；打开时对带该 tag 的 annotation 短暂高亮。
@@ -160,7 +175,7 @@ Result = annotation 上可选的、多维、typed 的结果记录（仅用于统
 
 - **UI 框架 = React**（renderer）。理由：生态与 AI 生成语料最大、桌面级组件最丰富、可靠性最高（与选 Fabric 同一逻辑）。**Fabric 画布保持命令式**——单独挂载、用 Fabric API 操作，隔离在 React reconciliation 之外；框架只管画布周围的导航 / inspector / 缩略图 / 统计。排除 Svelte / Vue / Solid（生态与语料更小、可靠性风险略高），本项目非必需。
 - **画布技术 = Fabric.js**（MIT）。理由：需要 PPT 级任意描边色/填充色/透明度，Fabric 原生支持；MIT 无水印；API 老牌稳定、语料充足，AI 生成可靠。选择/变换手柄与文本编辑内置，其余编辑器功能（工具条、样式检查面板、撤销、按住 Ctrl 约束水平/垂直、把 annotation 打 tag、浏览 tag 时短暂高亮）由 AI 生成的常规代码补齐。备选 Konva（React-first / 更极致底层控制，能力相当）。排除 tldraw（自定义许可带水印、样式系统需改造才能任意配色、SDK 迭代快 AI 可靠性低）与 Excalidraw（手绘感）。
-- **运行/存储形态 = Electron 薄壳 + 本地 SQLite（better-sqlite3）+ 图片文件夹**。web UI（Fabric）不变，外面套 Electron（纯 JS/TS、无 Rust；Obsidian/VS Code 同款），拿到原生文件系统与 SQLite。结构化数据（Entry / Annotation / group 标签 / annotation 的 typed result / SavedView / annotation-tag 索引 / 统计）进 SQLite，支持布尔多 group 查询，以及在 tag 切片上对 result 的聚合统计；截图作为文件存 `images/<hash>`，由 DB 按 hash 引用，**不 base64 塞进 canvas JSON**；canvas 用 Fabric `toJSON`（含 annotation 的 tag/link 自定义属性）按 Entry 存。整个数据是磁盘上一个可移植文件夹，可放进云盘备份/同步。排除 Tauri（需 Rust 工具链；官方插件之外的自定义原生逻辑要写 Rust，且 v1→v2 API 变动使 AI 生成可靠性低）。
+- **运行/存储形态 = Electron 薄壳 + 本地 SQLite（better-sqlite3）+ 图片文件夹**。web UI（Fabric）不变，外面套 Electron（纯 JS/TS、无 Rust；Obsidian/VS Code 同款），拿到原生文件系统与 SQLite。结构化数据（Entry / Annotation / group 标签 / annotation 的 typed result / SavedView / annotation-tag 索引 / 统计 / 文字超链接投影）进 SQLite，支持布尔多 group 查询，以及在 tag 切片上对 result 的聚合统计；截图作为文件存 `images/<hash>`，由 DB 按 hash 引用，**不 base64 塞进 canvas JSON**；canvas 用 Fabric `toJSON`（含 annotation 的 tag/result 与可编辑文字的 `tjTextLinks` 自定义属性；公共领域/API 字段仍叫 `textLinks`）按 Entry 存。整个数据是磁盘上一个可移植文件夹，可放进云盘备份/同步。排除 Tauri（需 Rust 工具链；官方插件之外的自定义原生逻辑要写 Rust，且 v1→v2 API 变动使 AI 生成可靠性低）。
 - **AI Access = 第一方可选 extension + MCP companion**：extension 是独立受监管进程，不是通用第三方插件平台；transport 为只绑定 loopback 的 Streamable HTTP MCP。Start 是当前 journal 的完整只读授权开关；一把由应用自动管理的本机 access key 只承担 transport 防护，不形成逐 agent 权限系统。数据能力由 main 内独立 `JournalReadApi` 提供，使用 readonly SQLite connection + `PRAGMA query_only=ON`；companion 不获得 DB 路径、store write API 或文件系统路径。MCP 只返回视觉 bytes；用户 repo / 研究目录属于外部 agent 的工作区，Trading Journal 从不接收其路径或代为写入。
 - **AI 视觉证据 = 单 Entry、临时、可追溯的 evidence bundle**：查询 / 统计仍只读 annotation-tag index；视觉服务只解析该 Entry 已提交的 `canvas_json` 与其引用图片，用与编辑器相同的 Fabric class registry 和对象 transform 派生 geometry、locator 与 crop。bundle 绑定 session、workspace 与内容 revision，只存在内存，不新增 annotation geometry 表、AI 索引或 `canvas_json` migration。
 - **AI 图片派生与渐进揭示 = immutable visual-artifact plan**：原图、各种 crop、alignment probe 与 progressive reveal frame 都引用 bundle 内 screenshot instance / annotation，并以 sourcePx 或 pagePx typed ROI 表达；同一 deterministic pipeline 同时服务 MCP ImageContent、resource 与分块 bytes。plan 绑定 session、Entry revision 与输入 spec hash；每一帧记录 bar center / cutoff，输出固定尺寸无损 PNG。agent 用自身文件工具保存时可按 checksum 验证，MCP 本身始终不落盘。

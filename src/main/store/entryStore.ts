@@ -1,8 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db';
-import type { Annotation, CreateEntryInput, Entry, EntrySummary, Tag } from '../../shared/domain';
+import type {
+  Annotation,
+  CreateEntryInput,
+  Entry,
+  EntrySummary,
+  InternalLinkResolution,
+  InternalLinkTarget,
+  Tag,
+} from '../../shared/domain';
 import { projectEntryAnnotations, readAnnotationResult, readAnnotationTags } from './annotationIndex';
 import { entryIdsForTag } from './tagQuery';
+import { projectEntryTextLinks } from './textLinks';
 
 interface EntryRow {
   id: string;
@@ -23,7 +32,6 @@ interface AnnotationRow {
   y: number;
   width: number;
   height: number;
-  links: string;
 }
 
 /** Create a new durable Entry and project its annotations into the index. */
@@ -36,6 +44,7 @@ export function createEntry(db: Db, input: CreateEntryInput): Entry {
     ).run(id, input.image?.hash ?? '', input.canvasJson, now, now);
     insertEntryTags(db, id, input.entryTags);
     projectEntryAnnotations(db, id, input.annotations);
+    projectEntryTextLinks(db, id, input.canvasJson, new Set(input.annotations.map((annotation) => annotation.id)));
   });
   write();
   return requireEntry(db, id);
@@ -58,6 +67,7 @@ export function updateEntry(db: Db, id: string, input: CreateEntryInput): Entry 
     db.prepare('DELETE FROM entry_tags WHERE entry_id = ?').run(id);
     insertEntryTags(db, id, input.entryTags);
     projectEntryAnnotations(db, id, input.annotations);
+    projectEntryTextLinks(db, id, input.canvasJson, new Set(input.annotations.map((annotation) => annotation.id)));
   });
   write();
   return requireEntry(db, id);
@@ -74,7 +84,7 @@ export function getEntry(db: Db, id: string): Entry | null {
   ).map((tag) => ({ group: tag.group, value: tag.value }));
 
   const annotationRows = db
-    .prepare('SELECT id, x, y, width, height, links FROM annotations WHERE entry_id = ? ORDER BY id')
+    .prepare('SELECT id, x, y, width, height FROM annotations WHERE entry_id = ? ORDER BY id')
     .all(id) as AnnotationRow[];
 
   const annotations = annotationRows.map((annotation) => ({
@@ -82,7 +92,6 @@ export function getEntry(db: Db, id: string): Entry | null {
     bounds: { x: annotation.x, y: annotation.y, width: annotation.width, height: annotation.height },
     tags: readAnnotationTags(db, annotation.id),
     result: readAnnotationResult(db, annotation.id),
-    links: JSON.parse(annotation.links) as string[],
   }));
 
   return {
@@ -116,6 +125,7 @@ export function updateEntryCanvas(
       id,
     );
     projectEntryAnnotations(db, id, annotations);
+    projectEntryTextLinks(db, id, canvasJson, new Set(annotations.map((annotation) => annotation.id)));
   });
   write();
   return requireEntry(db, id);
@@ -127,6 +137,15 @@ export function locateAnnotation(db: Db, annotationId: string): { entryId: strin
     | { entry_id: string }
     | undefined;
   return row ? { entryId: row.entry_id } : null;
+}
+
+export function resolveInternalLink(db: Db, target: InternalLinkTarget): InternalLinkResolution | null {
+  if (target.kind === 'entry') {
+    const row = db.prepare('SELECT id FROM entries WHERE id = ?').get(target.id) as { id: string } | undefined;
+    return row ? { entryId: row.id } : null;
+  }
+  const location = locateAnnotation(db, target.id);
+  return location ? { entryId: location.entryId, annotationId: target.id } : null;
 }
 
 /** Set (or replace) an entry's background image reference — the editor's paste-in path. */

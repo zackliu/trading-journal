@@ -7,6 +7,8 @@ import type {
   CreateEntryInput,
   Entry,
   EntrySummary,
+  InternalLinkResolution,
+  InternalLinkTarget,
   ResultDimension,
   ResultDimensionView,
   SavedView,
@@ -47,6 +49,10 @@ export interface IpcApi {
   getAiAccessSettings(): Promise<AiAccessSettings>;
   saveAiAccessSettings(settings: AiAccessSettings): Promise<AiAccessSettings>;
   resetAiAccessKey(): Promise<AiAccessStatus>;
+  getJournalId(): Promise<string>;
+  copyInternalLink(target: InternalLinkTarget): Promise<string>;
+  readClipboardText(): Promise<string>;
+  resolveInternalLink(target: InternalLinkTarget): Promise<InternalLinkResolution | null>;
   ingestImageEntry(bytes: Uint8Array): Promise<Entry>;
   listEntries(): Promise<EntrySummary[]>;
   newEntry(): Promise<Entry>;
@@ -70,7 +76,6 @@ export interface IpcApi {
   setEntryDate(id: string, date: string): Promise<Entry>;
   queryAnnotationsByTag(tag: Tag): Promise<AnnotationHit[]>;
   queryEntriesByTag(tag: Tag): Promise<EntrySummary[]>;
-  locateAnnotation(annotationId: string): Promise<{ entryId: string } | null>;
   listGroups(): Promise<TagGroupView[]>;
   defineGroup(group: TagGroup): Promise<void>;
   deleteGroup(id: string): Promise<void>;
@@ -113,6 +118,9 @@ export const IpcChannel = {
   getAiAccessSettings: 'ai-access:get-settings',
   saveAiAccessSettings: 'ai-access:save-settings',
   resetAiAccessKey: 'ai-access:reset-key',
+  getJournalId: 'internal-link:get-journal-id',
+  copyInternalLink: 'internal-link:copy',
+  resolveInternalLink: 'internal-link:resolve',
   ingestImageEntry: 'ingest:image-entry',
   listEntries: 'store:list-entries',
   newEntry: 'store:new-entry',
@@ -136,7 +144,6 @@ export const IpcChannel = {
   setEntryDate: 'store:set-entry-date',
   queryAnnotationsByTag: 'store:query-annotations-by-tag',
   queryEntriesByTag: 'store:query-entries-by-tag',
-  locateAnnotation: 'store:locate-annotation',
   listGroups: 'vocab:list-groups',
   defineGroup: 'vocab:define-group',
   deleteGroup: 'vocab:delete-group',

@@ -1,4 +1,4 @@
-import type { Bounds, Result, Tag, ViewQuery } from './domain';
+import type { Bounds, InternalLinkTarget, Result, Tag, TextLinkSpan, ViewQuery } from './domain';
 
 export type AiAccessState = 'off' | 'starting' | 'on' | 'stopping' | 'error';
 
@@ -131,7 +131,6 @@ export interface AiSampleSummary {
   bounds: Bounds;
   tags: Tag[];
   result?: Result;
-  links: string[];
   contextResource: string;
 }
 
@@ -216,6 +215,7 @@ export interface AiSampleStudy {
 export interface AiAnnotationContext extends AiSampleSummary {
   text?: string;
   textTrust?: AiEvidenceTrust;
+  textLinks: TextLinkSpan[];
 }
 
 export interface AiEntryContext {
@@ -225,19 +225,46 @@ export interface AiEntryContext {
   updatedAt: number;
   entryTags: Tag[];
   title?: string;
+  titleTextLinks: TextLinkSpan[];
   annotations: AiAnnotationContext[];
   visualEvidenceTool: 'get_visual_evidence';
   evidenceTrust: AiEvidenceTrust;
 }
 
 export interface AiLinkedContextQuery {
-  annotationId: string;
+  target: InternalLinkTarget;
   depth?: 1 | 2;
 }
 
+export type AiLinkedContextNode =
+  | {
+      target: { kind: 'entry'; id: string };
+      entryId: string;
+      effectiveDate: string;
+      title?: string;
+      entryTags: Tag[];
+    }
+  | {
+      target: { kind: 'annotation'; id: string };
+      entryId: string;
+      effectiveDate: string;
+      bounds: Bounds;
+      tags: Tag[];
+      result?: Result;
+      text?: string;
+      textLinks: TextLinkSpan[];
+    };
+
 export interface AiLinkedContext {
-  nodes: AiAnnotationContext[];
-  edges: Array<{ from: string; to: string; broken: boolean }>;
+  nodes: AiLinkedContextNode[];
+  edges: Array<{
+    source: InternalLinkTarget;
+    target: InternalLinkTarget;
+    start: number;
+    end: number;
+    displayText: string;
+    broken: boolean;
+  }>;
   truncated: boolean;
 }
 
@@ -279,7 +306,7 @@ export interface AiVisualAnnotation {
   zIndex: number;
   tags: Tag[];
   result?: Result;
-  links: string[];
+  textLinks: TextLinkSpan[];
   text?: string;
   association: {
     kind: 'unique' | 'ambiguous' | 'none' | 'unsupported';

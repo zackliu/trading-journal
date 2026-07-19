@@ -3,6 +3,7 @@ import type {
   ArchivedResults,
   ArchivedVocab,
   EntrySummary,
+  InternalLinkTarget,
   Result,
   ResultDimension,
   ResultDimensionView,
@@ -23,9 +24,17 @@ import type {
   ViewQuery,
   WorkspaceState,
 } from '../../shared/domain';
+import { formatInternalLink, parseInternalLink } from '../../shared/internalLinks';
 import type { PingResult } from '../../shared/ipc';
 import { CanvasEditor } from './editor/CanvasEditor';
-import type { AnnotationSelection, CanvasController, DrawStyle, EditorState, Tool } from './editor/canvasController';
+import type {
+  AnnotationSelection,
+  CanvasController,
+  DrawStyle,
+  EditorState,
+  TextLinkContext,
+  Tool,
+} from './editor/canvasController';
 import { ContextMenu, type MenuItem } from './shell/ContextMenu';
 import { ConfirmDialog } from './shell/ConfirmDialog';
 import {
@@ -44,8 +53,8 @@ import { ViewBuilder } from './shell/ViewBuilder';
 import { StatusBar } from './shell/StatusBar';
 import { StatsPanel } from './shell/StatsPanel';
 import { StatsSampleDialog } from './shell/StatsSampleDialog';
-import { TagPopover, type AnnotationEdits } from './shell/TagPopover';
 import { Thumbnails } from './shell/Thumbnails';
+import { LinkDialog } from './shell/LinkDialog';
 
 type Health = 'ok' | 'pending' | 'error';
 type Menu = { x: number; y: number; items: MenuItem[] };
@@ -80,6 +89,10 @@ interface RailSnapshot {
 }
 type FlashReq = { tag: Tag } | { annIds: string[] };
 type SaveOutcome = 'saved' | 'skipped' | 'failed';
+interface LinkDialogState {
+  context: TextLinkContext;
+  initialLink: string;
+}
 interface PendingFlash {
   entryId: string;
   contextKey: string;
@@ -257,6 +270,8 @@ export function App(): JSX.Element {
   const [statsExamplesBusy, setStatsExamplesBusy] = useState(false);
   const [showResultSettings, setShowResultSettings] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
+  const [linkDialog, setLinkDialog] = useState<LinkDialogState | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   // The id of a review awaiting delete confirmation (a destructive, unrecoverable action).
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -280,10 +295,8 @@ export function App(): JSX.Element {
   const [selectionStyle, setSelectionStyle] = useState<DrawStyle | null>(null);
   const [editorState, setEditorState] = useState<EditorState>(EMPTY_EDITOR);
   const [zoom, setZoom] = useState<{ percent: number; fitMode: boolean }>({ percent: 100, fitMode: true });
-  const [popover, setPopover] = useState<{ annotation: AnnotationSelection; x: number; y: number } | null>(null);
   const [dimensions, setDimensions] = useState<ResultDimensionView[]>([]);
   const [archivedResults, setArchivedResults] = useState<ArchivedResults>({ dimensions: [], values: [] });
-  const [linkClipboard, setLinkClipboard] = useState<{ entryId: string; annotationId: string } | null>(null);
   const [stampLocked, setStampLocked] = useState(true);
   const controllerRef = useRef<CanvasController | null>(null);
   const pendingSelectRef = useRef<string | null>(null);
@@ -874,7 +887,6 @@ export function App(): JSX.Element {
       setSelectedEntryId(nextId);
       setTool('select');
       setEditorState(EMPTY_EDITOR);
-      setPopover(null);
       setSelectedAnnotation(null);
       await refresh();
       return true;
@@ -1244,7 +1256,6 @@ export function App(): JSX.Element {
           setSelectedOccurrence(null);
           setSelectedEntryId(null);
           setEditorState(EMPTY_EDITOR);
-          setPopover(null);
         }
         await refresh();
       } finally {
@@ -1334,9 +1345,11 @@ export function App(): JSX.Element {
       const key = e.key.toLowerCase();
       if (key !== 'z' && key !== 'y') return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const controller = controllerRef.current;
       if (!controller) return;
+      const isField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      const isFabricTextarea = t?.dataset.fabric === 'textarea';
+      if (isField && (!isFabricTextarea || controller.isEditingText())) return;
       e.preventDefault();
       const redo = key === 'y' || (key === 'z' && e.shiftKey);
       void (redo ? controller.redo() : controller.undo()).then(() => saveNow());
@@ -1354,6 +1367,106 @@ export function App(): JSX.Element {
     [addImage],
   );
 
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const copyInternalLink = useCallback(async (target: InternalLinkTarget): Promise<void> => {
+    try {
+      await window.api.copyInternalLink(target);
+      setNotice('Link copied');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const validateTextLink = useCallback(async (value: string): Promise<string | null> => {
+    const address = parseInternalLink(value);
+    if (!address) return 'Enter a canonical Trading Journal link.';
+    try {
+      const journalId = await window.api.getJournalId();
+      if (address.journalId !== journalId) return 'This link belongs to another journal.';
+      if (!(await window.api.resolveInternalLink(address.target))) return 'The target no longer exists.';
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }, []);
+
+  const openTextLinkDialog = useCallback(async (context: TextLinkContext): Promise<void> => {
+    controllerRef.current?.commitFrozenTextEditing();
+    try {
+      const journalId = await window.api.getJournalId();
+      let initialLink = context.target ? formatInternalLink({ journalId, target: context.target }) : '';
+      if (!initialLink) {
+        const clipboardText = (await window.api.readClipboardText()).trim();
+        if (parseInternalLink(clipboardText)) initialLink = clipboardText;
+      }
+      setLinkDialog({ context, initialLink });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const saveTextLink = useCallback(
+    async (text: string, value: string): Promise<string | null> => {
+      const validation = await validateTextLink(value);
+      if (validation) return validation;
+      const address = parseInternalLink(value);
+      if (!address) return 'Enter a canonical Trading Journal link.';
+      if (!controllerRef.current?.applyFrozenTextLink(text, address.target)) {
+        return 'The selected text changed. Select it again and retry.';
+      }
+      setLinkDialog(null);
+      return null;
+    },
+    [validateTextLink],
+  );
+
+  const removeFrozenTextLink = useCallback(() => {
+    controllerRef.current?.commitFrozenTextEditing();
+    if (!controllerRef.current?.removeFrozenTextLink()) {
+      setError('The selected text changed. Select the link again and retry.');
+    }
+  }, []);
+
+  const followInternalLink = useCallback(
+    async (target: InternalLinkTarget): Promise<void> => {
+      const stillCurrent = beginNavigationIntent();
+      setMenu(null);
+      setLinkDialog(null);
+      const controller = controllerRef.current;
+      controller?.commitTextEditing();
+      if (controller?.isDirty() && (await saveNow()) === 'failed') return;
+      const resolved = await window.api.resolveInternalLink(target);
+      if (!resolved || !stillCurrent()) {
+        if (!resolved) setError('This link target no longer exists.');
+        return;
+      }
+      if (resolved.entryId === selectedEntryIdRef.current) {
+        if (resolved.annotationId) controllerRef.current?.selectAnnotationById(resolved.annotationId);
+        return;
+      }
+      pendingSelectRef.current = resolved.annotationId ?? null;
+      await switchTo(resolved.entryId, null, stillCurrent);
+    },
+    [beginNavigationIntent, saveNow, switchTo],
+  );
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
+      const context = controllerRef.current?.freezeCurrentTextLinkSelection();
+      if (!context) return;
+      event.preventDefault();
+      void openTextLinkDialog(context);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openTextLinkDialog]);
+
   const onReady = useCallback((controller: CanvasController) => {
     controllerRef.current = controller;
     loadedEntryIdRef.current = null;
@@ -1363,15 +1476,41 @@ export function App(): JSX.Element {
     controller.onSelectionStyle(setSelectionStyle);
     controller.onContext((r) => {
       const items: MenuItem[] = [];
-      if (r.annotation) {
-        const ann = r.annotation;
-        const px = r.x;
-        const py = r.y;
+      if (r.textLink?.target) {
+        const link = r.textLink;
         items.push({
-          label: 'Links…',
+          label: 'Open link',
           icon: 'browse',
-          testId: 'menu-links',
-          onClick: () => setPopover({ annotation: ann, x: px, y: py }),
+          testId: 'menu-open-link',
+          onClick: () => void followInternalLink(link.target as InternalLinkTarget),
+        });
+        items.push({
+          label: 'Edit link…',
+          icon: 'pencil',
+          testId: 'menu-edit-link',
+          onClick: () => void openTextLinkDialog(link),
+        });
+        items.push({
+          label: 'Remove link',
+          icon: 'unlink',
+          testId: 'menu-remove-link',
+          onClick: removeFrozenTextLink,
+        });
+      } else if (r.textLink) {
+        items.push({
+          label: 'Link…',
+          icon: 'link',
+          testId: 'menu-create-link',
+          onClick: () => void openTextLinkDialog(r.textLink as TextLinkContext),
+        });
+      }
+      if (r.annotation) {
+        const annotationId = r.annotation.id;
+        items.push({
+          label: 'Copy link',
+          icon: 'link',
+          testId: 'menu-copy-link',
+          onClick: () => void copyInternalLink({ kind: 'annotation', id: annotationId }),
         });
       }
       if (r.isLocked) {
@@ -1425,6 +1564,7 @@ export function App(): JSX.Element {
       if (items.length > 0) setMenu({ x: r.x, y: r.y, items });
     });
     controller.onZoom(setZoom);
+    controller.onLinkActivate((target) => void followInternalLink(target));
     // Every committed edit auto-saves the Entry page + stamp library and mirrors the rail thumbnail.
     controller.onContentChanged(() => void saveNow());
     controller.onAnnotationSelection((selection, source) => {
@@ -1433,7 +1573,7 @@ export function App(): JSX.Element {
     });
     controller.setPaletteLocked(stampLockedRef.current);
     controller.setStyle(styleRef.current);
-  }, [saveNow]);
+  }, [copyInternalLink, followInternalLink, openTextLinkDialog, removeFrozenTextLink, saveNow]);
 
   const pickTool = useCallback((next: Tool) => {
     setTool(next);
@@ -1451,6 +1591,12 @@ export function App(): JSX.Element {
         y,
         items: [
           {
+            label: 'Copy link',
+            icon: 'link',
+            testId: 'context-copy-link',
+            onClick: () => void copyInternalLink({ kind: 'entry', id }),
+          },
+          {
             label: 'Delete review',
             icon: 'trash',
             danger: true,
@@ -1463,7 +1609,7 @@ export function App(): JSX.Element {
         ],
       });
     },
-    [],
+    [copyInternalLink],
   );
 
   const onDefineDimension = useCallback(
@@ -1516,43 +1662,12 @@ export function App(): JSX.Element {
       const next: Result = { ...sel.result };
       if (value === null) delete next[dimensionId];
       else next[dimensionId] = value;
-      controllerRef.current?.applyAnnotationEdits(sel.id, sel.tags, next, sel.links);
+      controllerRef.current?.applyAnnotationEdits(sel.id, sel.tags, next);
       void saveNow().then(() => void refresh());
     },
     [saveNow, refresh],
   );
-  const onCopyLinkTarget = useCallback(
-    (annotationId: string) => {
-      if (selectedEntryId) setLinkClipboard({ entryId: selectedEntryId, annotationId });
-    },
-    [selectedEntryId],
-  );
-  const onPopoverSave = useCallback(
-    (edits: AnnotationEdits) => {
-      if (popover) {
-        controllerRef.current?.setAnnotationResultLinks(popover.annotation.id, edits.result, edits.links);
-      }
-      setPopover(null);
-    },
-    [popover],
-  );
-
   const onToggleStampLock = useCallback(() => setStampLocked((v) => !v), []);
-  const jumpToAnnotation = useCallback(
-    async (annotationId: string) => {
-      const stillCurrent = beginNavigationIntent();
-      setPopover(null);
-      const loc = await window.api.locateAnnotation(annotationId);
-      if (!loc || !stillCurrent()) return;
-      if (loc.entryId === selectedEntryId) {
-        controllerRef.current?.selectAnnotationById(annotationId);
-      } else {
-        pendingSelectRef.current = annotationId;
-        await switchTo(loc.entryId, null, stillCurrent);
-      }
-    },
-    [beginNavigationIntent, selectedEntryId, switchTo],
-  );
   // Toggle a tag on the whole review (Review tab quick-pick). Entry tags save immediately.
   const onToggleEntryTag = useCallback(
     (tag: Tag, on: boolean) => {
@@ -1614,14 +1729,14 @@ export function App(): JSX.Element {
     [refresh],
   );
 
-  // Toggle a tag on the selected annotation (Annotation contextual tab). Preserves its result / links.
+  // Toggle a tag on the selected annotation (Annotation contextual tab). Preserves its result.
   const onToggleAnnotationTag = useCallback(
     (tag: Tag, on: boolean) => {
       const sel = selectedAnnotationRef.current;
       if (!sel) return;
       const has = sel.tags.some((t) => t.group === tag.group && t.value === tag.value);
       const next = on ? (has ? sel.tags : [...sel.tags, tag]) : sel.tags.filter((t) => !(t.group === tag.group && t.value === tag.value));
-      controllerRef.current?.applyAnnotationEdits(sel.id, next, sel.result, sel.links);
+      controllerRef.current?.applyAnnotationEdits(sel.id, next, sel.result);
       void saveNow().then(() => {
         void refresh();
         void refreshGroups();
@@ -1910,6 +2025,7 @@ export function App(): JSX.Element {
             </div>
           ) : null}
           {busy ? <div className="notice">Working…</div> : null}
+          {notice ? <div className="notice" data-testid="action-notice">{notice}</div> : null}
           {selectedEntryId ? (
             loadError ? (
               <div className="empty-state" data-testid="load-error">
@@ -1996,16 +2112,13 @@ export function App(): JSX.Element {
       />
 
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} /> : null}
-      {popover ? (
-        <TagPopover
-          x={popover.x}
-          y={popover.y}
-          annotation={popover.annotation}
-          linkClipboard={linkClipboard}
-          onCopyLinkTarget={onCopyLinkTarget}
-          onJumpLink={jumpToAnnotation}
-          onSave={onPopoverSave}
-          onCancel={() => setPopover(null)}
+      {linkDialog ? (
+        <LinkDialog
+          initialText={linkDialog.context.text}
+          initialLink={linkDialog.initialLink}
+          validateLink={validateTextLink}
+          onSave={saveTextLink}
+          onCancel={() => setLinkDialog(null)}
         />
       ) : null}
       {showSettings ? (

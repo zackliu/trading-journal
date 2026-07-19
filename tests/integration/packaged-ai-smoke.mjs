@@ -67,7 +67,6 @@ try {
           id: 'packaged-annotation',
           bounds: { x: 40, y: 20, width: 60, height: 50 },
           tags: [],
-          links: [],
         },
       ],
     });

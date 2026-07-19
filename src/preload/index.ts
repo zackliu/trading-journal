@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { clipboard, contextBridge, ipcRenderer } from 'electron';
 import { IpcChannel, type IpcApi } from '../shared/ipc';
 
 // Minimal, whitelisted bridge. contextIsolation is on and nodeIntegration is off,
@@ -17,6 +17,14 @@ const api: IpcApi = {
   getAiAccessSettings: () => ipcRenderer.invoke(IpcChannel.getAiAccessSettings),
   saveAiAccessSettings: (settings) => ipcRenderer.invoke(IpcChannel.saveAiAccessSettings, settings),
   resetAiAccessKey: () => ipcRenderer.invoke(IpcChannel.resetAiAccessKey),
+  getJournalId: () => ipcRenderer.invoke(IpcChannel.getJournalId),
+  copyInternalLink: async (target) => {
+    const address = (await ipcRenderer.invoke(IpcChannel.copyInternalLink, target)) as string;
+    clipboard.writeText(address);
+    return address;
+  },
+  readClipboardText: async () => clipboard.readText(),
+  resolveInternalLink: (target) => ipcRenderer.invoke(IpcChannel.resolveInternalLink, target),
   ingestImageEntry: (bytes) => ipcRenderer.invoke(IpcChannel.ingestImageEntry, bytes),
   listEntries: () => ipcRenderer.invoke(IpcChannel.listEntries),
   newEntry: () => ipcRenderer.invoke(IpcChannel.newEntry),
@@ -42,7 +50,6 @@ const api: IpcApi = {
   setEntryDate: (id, date) => ipcRenderer.invoke(IpcChannel.setEntryDate, id, date),
   queryAnnotationsByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryAnnotationsByTag, tag),
   queryEntriesByTag: (tag) => ipcRenderer.invoke(IpcChannel.queryEntriesByTag, tag),
-  locateAnnotation: (annotationId) => ipcRenderer.invoke(IpcChannel.locateAnnotation, annotationId),
   listGroups: () => ipcRenderer.invoke(IpcChannel.listGroups),
   defineGroup: (group) => ipcRenderer.invoke(IpcChannel.defineGroup, group),
   deleteGroup: (id) => ipcRenderer.invoke(IpcChannel.deleteGroup, id),

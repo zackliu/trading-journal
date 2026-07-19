@@ -31,13 +31,6 @@ async function drag(page: Page, box: Box, x1: number, y1: number, x2: number, y2
   await page.mouse.up();
 }
 
-/** Right-click an annotation (screen coords) and open its "Links…" popover. */
-async function openPopover(page: Page, screenX: number, screenY: number): Promise<void> {
-  await page.mouse.click(screenX, screenY, { button: 'right' });
-  await page.getByTestId('menu-links').click();
-  await expect(page.getByTestId('tag-popover')).toBeVisible();
-}
-
 async function firstEntryId(page: Page): Promise<string> {
   const list = await store.listEntries(page);
   const id = list[0]?.id;
@@ -88,61 +81,6 @@ test('a trade records a typed result via presets on the Annotation tab', async (
   await expect
     .poll(async () => (await store.getEntry(page, entryId))?.annotations[0]?.result ?? null)
     .toEqual({ 'r-multiple': 2 });
-
-  await app.close();
-});
-
-test('an annotation links to another across entries, and you can jump to it', async () => {
-  const dataDir = tempDataDir();
-  const { app, page } = await launchApp(dataDir);
-
-  // Entry 1: draw A, tag it (recognisable after a jump), copy it as a link target.
-  await page.getByTestId('ribbon-new').click();
-  await expect(page.getByTestId('editor')).toBeVisible();
-  let box = await canvasBox(page);
-  const entry1 = await firstEntryId(page);
-  await page.getByTestId('tool-rect').click();
-  await drag(page, box, 40, 40, 220, 150);
-  await openPopover(page, box.x + 130, box.y + 95);
-  await page.getByTestId('link-copy').click();
-  await page.getByTestId('popover-save').click();
-
-  // Entry 2: New lives on the Home tab (an open review shows Draw), so return Home to create it.
-  await page.getByTestId('tab-home').click();
-  await page.getByTestId('ribbon-new').click();
-  await expect(page.getByTestId('editor')).toBeVisible();
-  await page.getByTestId('tab-draw').click();
-  box = await canvasBox(page);
-  const entry2 = await firstEntryId(page);
-  expect(entry2).not.toBe(entry1);
-  await page.getByTestId('tool-rect').click();
-  await drag(page, box, 60, 60, 240, 170);
-  await openPopover(page, box.x + 150, box.y + 115);
-  await page.getByTestId('link-paste').click();
-  await page.getByTestId('popover-save').click();
-
-  // B links to A's id; that id resolves back to entry 1 (no reverse edge is stored).
-  await expect
-    .poll(async () => {
-      const e = await store.getEntry(page, entry2);
-      return (e?.annotations ?? []).some((a) => (a.links ?? []).length > 0);
-    })
-    .toBe(true);
-  const e2 = await store.getEntry(page, entry2);
-  const aId = (e2?.annotations ?? []).find((a) => (a.links ?? []).length > 0)?.links?.[0];
-  expect(aId).toBeTruthy();
-  const loc = await store.locateAnnotation(page, aId as string);
-  expect(loc?.entryId).toBe(entry1);
-
-  // Jump to A from B: reopen B's popover and follow the link; the editor switches to entry 1.
-  await openPopover(page, box.x + 150, box.y + 115);
-  await page.getByTestId('link-go').click();
-  await expect(page.getByTestId('editor')).toBeVisible();
-
-  // The jump landed on entry 1 (A's entry): A's annotation id is the link target that resolved there.
-  await expect
-    .poll(async () => (await store.getEntry(page, entry1))?.annotations.some((a) => a.id === aId))
-    .toBe(true);
 
   await app.close();
 });

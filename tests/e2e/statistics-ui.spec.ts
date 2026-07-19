@@ -21,7 +21,7 @@ function localDay(offset: number): string {
 const BOUNDS = { x: 200, y: 180, width: 220, height: 130 };
 
 function annotation(id: string, tags: Annotation['tags'], result?: Result, left = 200): Annotation {
-  return { id, bounds: { ...BOUNDS, x: left }, tags, result, links: [] };
+  return { id, bounds: { ...BOUNDS, x: left }, tags, result };
 }
 
 function canvasJson(annotations: Annotation[]): string {
@@ -44,7 +44,6 @@ function canvasJson(annotations: Annotation[]): string {
       tjId: item.id,
       tjTags: item.tags,
       tjResult: item.result,
-      tjLinks: item.links,
     })),
   });
 }

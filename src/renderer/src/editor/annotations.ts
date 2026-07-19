@@ -18,7 +18,8 @@ import {
   controlsUtils,
   util,
 } from 'fabric';
-import type { Result, Tag } from '../../../shared/domain';
+import type { Result, Tag, TextEditOperation, TextLinkSpan } from '../../../shared/domain';
+import { transformTextLinkSpans } from '../../../shared/textLinkSpans';
 
 // Office-style selection handles on every interactive object: small, crisp white dots with a thin
 // accent ring and a thin accent border — clear but light enough to grab on very small drawings
@@ -53,7 +54,7 @@ export const TJ_PROPS = [
   'tjId',
   'tjTags',
   'tjResult',
-  'tjLinks',
+  'tjTextLinks',
   'tjRole',
   'mmFlipX',
   'mmFlipY',
@@ -64,7 +65,7 @@ export const TITLE_PLACEHOLDER = '点击添加标题';
 
 /**
  * Every custom field we stash on a Fabric object goes here, read through one typed door.
- * `tjId` / `tjTags` / `tjResult` / `tjLinks` are the persisted annotation payload (a screenshot
+ * `tjId` / `tjTags` / `tjResult` are the persisted annotation payload (a screenshot
  * carries none); `tjLocked` pins a stamp in the palette; `tjChrome` / `tjGhost` mark transient
  * helper objects (the page/strip divider and the drag-out ghost) that are never serialized.
  */
@@ -72,7 +73,7 @@ export interface TjMeta {
   tjId?: string;
   tjTags?: Tag[];
   tjResult?: Result;
-  tjLinks?: string[];
+  tjTextLinks?: TextLinkSpan[];
   tjLocked?: boolean;
   tjChrome?: boolean;
   tjGhost?: boolean;
@@ -409,6 +410,42 @@ export class TextBoxAnnotation extends Textbox {
   declare boxFill?: string;
   declare boxDash?: number[] | null;
   declare tjRole?: string;
+  declare tjTextLinks?: TextLinkSpan[];
+
+  override onInput(e: Event): void {
+    const textarea = this.hiddenTextarea;
+    if (!textarea || !this.isEditing) {
+      super.onInput(e);
+      return;
+    }
+
+    const oldLength = this._text.length;
+    const oldStart = this.selectionStart;
+    const oldEnd = this.selectionEnd;
+    const nextText = this._splitTextIntoLines(textarea.value).graphemeText;
+    const nextSelection = this.fromStringToGraphemeSelection(
+      textarea.selectionStart,
+      textarea.selectionEnd,
+      textarea.value,
+    );
+    const selection = oldStart !== oldEnd;
+    const charDiff = nextText.length - oldLength + (selection ? oldEnd - oldStart : 0);
+    const insertedGraphemes = nextText.slice(nextSelection.selectionEnd - charDiff, nextSelection.selectionEnd);
+    let from = oldStart;
+    let to = oldEnd;
+    if (!selection && nextText.length < oldLength) {
+      const backDelete = oldStart > nextSelection.selectionStart;
+      const removedCount = oldLength - nextText.length;
+      from = backDelete ? oldEnd - removedCount : oldEnd;
+      to = backDelete ? oldEnd : oldEnd + removedCount;
+    }
+
+    const operation: TextEditOperation = { from, to, insertedGraphemes };
+    const nextLinks = transformTextLinkSpans(this.tjTextLinks ?? [], oldLength, operation);
+    super.onInput(e);
+    this.tjTextLinks = nextLinks.length > 0 ? nextLinks : undefined;
+    this.canvas?.requestRenderAll();
+  }
 
   override _render(ctx: CanvasRenderingContext2D): void {
     const pad = 6;
@@ -436,7 +473,18 @@ export class TextBoxAnnotation extends Textbox {
       ctx.fillText(TITLE_PLACEHOLDER, -this.width / 2, 0);
       ctx.restore();
     }
-    super._render(ctx);
+    const originalStyles = this.styles;
+    if (this.tjTextLinks?.length) {
+      this.styles = structuredClone(originalStyles);
+      for (const span of this.tjTextLinks) {
+        this.setSelectionStyles({ fill: '#0563c1', underline: true }, span.start, span.end);
+      }
+    }
+    try {
+      super._render(ctx);
+    } finally {
+      this.styles = originalStyles;
+    }
   }
 }
 classRegistry.setClass(TextBoxAnnotation, 'TextBoxAnnotation');

@@ -72,7 +72,7 @@ Expect：
 - 可移植数据文件夹：解析/创建数据目录，内含 `app.sqlite` 与 `images/`。
 - SQLite schema 与 migration：`entries`、`annotations`、`entry_tags`、`annotation_tags`、`result_dimensions`、`annotation_results`、`saved_views`。
 - Electron main 进程内的 Entry Store：create / load 一个 Entry（image 引用、canvas JSON blob、entry tags；canvas JSON 内含每个 annotation 的 tag 与可选 result）。
-- Annotation-Tag Index：`annotations`、`annotation_tags`、`annotation_results` 表作为 Entry 内 annotation 及其 tag 与 typed result 的去规范化投影，随 Entry 写入同步（annotation id、entry id、geometry(bounds)、tag、result 维度/值、links）；result 的类型以 `result_dimensions` 为准（string / number 分列存储）。
+- Annotation-Tag Index：`annotations`、`annotation_tags`、`annotation_results` 表作为 Entry 内 annotation 及其 tag 与 typed result 的去规范化投影，随 Entry 写入同步（annotation id、entry id、geometry(bounds)、tag、result 维度/值）；result 的类型以 `result_dimensions` 为准（string / number 分列存储）。文字超链接是独立投影，由 Slice 10 定义，不塞进 annotation 的分类投影。
 - typed IPC 契约：renderer 通过 store API 调用 main，不直接访问 SQLite / 文件。
 
 Scenario-based test：`scenario: creating an entry writes durable truth readable after restart`
@@ -156,7 +156,7 @@ Expect：
 - **单一 Office 式 Ribbon（无模式切换、无返回）**：顶部常驻一条 Ribbon（品牌 + 标签页 `Home / Draw / Tags / Browse / Stats`，每页内是带标题的分组命令），底部一条状态条（健康点 + 保存态「Saving… / All changes saved」 + zoom 控件）。命令按上下文启用 / 禁用：无复盘打开时 `Draw` 工具与删除置灰，无选中对象时删除所选 / 排列置灰；打开复盘自动切到 `Draw` 页。**编辑即自动保存**，故无「未保存」门控；手动 Save 按钮在 `Home` 页、全局 Ctrl+S 为习惯性「立即保存」（见 §8）。
 - **主体左栏 + 中间画布，无 Daily / 编辑器两态切换**：左栏（group→tag 导航 + 复盘缩略图廊）｜中间（打开复盘时是 Canvas 编辑器，否则「开始复盘」空状态）。同一外壳常驻，打开复盘即在中间渲染画布，不再有「进编辑器 / 返回」两态。**Stamp 印章条不是独立右栏——自 Slice 5 起它并入中间这张画布**（复盘页右侧、一条细分隔线、共享同一缩放，见 §8）。
 - **本 slice 已接行为的部分**：`Home`（新建 / 保存 / 删除复盘）、`Draw`（画布工具 / 样式 / 排列，见 B）、左栏复盘缩略图廊 + 右键「删除复盘」、状态栏 zoom 控件。
-- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页（Slice 6 起改为 `Review` 页 = entry 级 tag + 快捷选择）、`Home` 的 Settings 词表窗口与选中标注才出现的 `Annotation` 上下文页（Slice 6）、左栏按单一 group 维度 pivot 分桶的**浏览行为**与 `Browse` 页（Slice 6）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 8）。标注的 tag 编辑自 Slice 6 起走 `Annotation` 上下文页，result / link 走 Slice 4 的右键浮窗。
+- **为后续 slice 预留的占位（图标 / 空面板 / 区域，无行为）**：**Stamp 印章条**（可复用组件，Slice 5 起并入中间画布右侧）、`Tags` 页（Slice 6 起改为 `Review` 页 = entry 级 tag + 快捷选择）、`Home` 的 Settings 词表窗口与选中标注才出现的 `Annotation` 上下文页（Slice 6）、左栏按单一 group 维度 pivot 分桶的**浏览行为**与 `Browse` 页（Slice 6）、搜索 / 布尔查询 / 保存视图入口（Slice 7）、`Stats` 页统计入口（Slice 8）。标注的 tag / result 编辑自 Slice 6 起走 `Annotation` 上下文页；稳定内部地址与文字超链接由 Slice 10 完成。
 - 这些占位是**非功能骨架**（图标、按钮、空面板、区域标题），真正行为在各自 slice 接入，不在本 slice 实现。
 
 **B. Canvas 标注层（本 slice 真正实现的能力）**
@@ -247,22 +247,21 @@ Expect：
 - **端点手柄抓取区放大（可点区大、可见点不变）**：线 / 箭头 / MM 两端"经常点不到"。`annotations.ts` 的 `enlargeHandleHit(control)` 把控件 `sizeX/sizeY=20`、`touchSizeX/Y=30`（屏幕 px、zoom 无关）放大 hit 盒，同时把 `control.render` 换成自写的 `renderHandleDot`——按 `cornerSize` 画小圆点、**无视 sizeX**（因 `renderCircleControl` 的可见半径= `sizeX||cornerSize`，只调 sizeX 会连圆点一起撑大）。`attachSegmentControls`（poly 端点）与 `attachMmControls`（MM a/b）都调它。离端点/线体带外按下仍能抓端点：Fabric `findTarget` 先查 `activeObject.findControl(pointer)`，命中控件即进 transform。`editor.spec.ts` 加两项（离端点 8px 抓线→变斜；离 MM handle 8px 抓→height 变、A 不动）。全套 **93 项 e2e 全绿**。
 - **MM 两端点对称（修复"拖一端推另一端"）**：原 `setMmFromAnchors` 把 `width` 夹到 `MM_MIN_WIDTH`、且 `left/top` 锚在第一参 A 上——拖 A 靠近 B 时按最小宽从 A 撑开，把"固定"的 B **推走**（拖 B 却不推 A），即用户说的"规定谁必须在左/右"、不对称。**修复：`setMmFromAnchors` 去掉 clamp（`width=|dx|`，可为 0），每个锚点精确落在自己的点、谁都不特权、左右自由穿越**。最小宽度降为**创建期专属**：controller `mmCreatePoint` 只在 onDown/onMove 的 mm 分支把第二点夹到离起点 ≥`MM_MIN_WIDTH`（裸击/近竖直拖仍留可抓的宽度）；编辑期用原始 pointer、无最小值。`editor.spec.ts` 加「endpoints are symmetric」（拖 A 到 B 同列→B 不动 + A 到达 B 列；已回归验证旧 clamp 下该测试 fail）。全套 **94 项 e2e 全绿**。
 
-## 7. Slice 4：Annotation Tagging、Result & 编辑浮窗
+## 7. Slice 4：Annotation Tagging、Result & 索引接线
 
-目标：给画布上任意 annotation（框 / 文本框 / 箭头 …）打 group 下的 tag、并可给它设一个可选的 typed `result`，使它成为可查询、可统计、可高亮指认的元素；笔记就是可打 tag 的文本框 annotation。没有任何特殊标注类型。**编辑入口是贴着该 annotation 的右键浮窗，不是常驻面板。**
+目标：给画布上任意 annotation（框 / 文本框 / 箭头 …）打 group 下的 tag、并可给它设一个可选的 typed `result`，使它成为可查询、可统计、可高亮指认的元素；笔记就是可打 tag 的文本框 annotation。没有任何特殊标注类型。最终编辑入口是 Slice 6 的 `Annotation` 上下文页，本 slice 负责先立稳 annotation payload、typed result 与索引同步契约。
 
-**用户动作流程与直觉逻辑**：用户在某个框 / 箭头 / 文字上**右键 →「Tags & result…」**，就地弹出一个贴着它的小浮窗，在里面给这个标注打 tag、（可选）填这次的结果、或连一条到另一张图的对比线；填好点 **Save** 收起，点到别处就当没改、自动收起。直觉上「我是在**这个元素本身**上做标记」——所以浮窗紧贴它，而不是跑到右边一个远远的常驻面板；文本框也走同一个右键入口设置，不跟「双击＝进入打字」的手感打架。
+**用户动作流程与直觉逻辑**：用户用选择工具点中某个框 / 箭头 / 文字，Ribbon 像 Office 的上下文格式页一样出现 `Annotation` 页；他在同一个地方给**这枚标注本身**打 tag、（可选）登记结果，取消选择后页面自然消失。文本框没有另一套“笔记属性”机制：文字就是笔记，整枚文本框仍与任何形状一样承载 tag / result。所有分类与结果都跟着被选对象走，不需要在远处寻找一个常驻 Inspector。
 
 实现范围：
 
-- 右键任意 annotation →「Tags & result…」→ **贴着该对象的浮窗**：给它加 / 删 group 下的 tag（group 与 tag 值用户自定义）。**Save 提交并收起；点浮窗外＝取消未保存改动并收起。**
-- 浮窗也能给该 annotation 设 / 改 / 清可选的 `result`：从用户预定义的 result 维度里选维度并填值，值类型为 string 或 number（由维度定义决定）。result 只用于统计、不进浏览导航。
+- 选中任意 annotation → `Annotation` 上下文页：给它加 / 删 group 下的 tag（group 与 tag 值用户自定义），编辑即随 canvas 自动保存。
+- 同一上下文页能给该 annotation 设 / 改 / 清可选的 `result`：从用户预定义的 result 维度里选维度并填值，值类型为 string 或 number（由维度定义决定）。result 只用于统计、不进浏览导航。
 - result 维度管理：用户可预定义 result 维度（id、label、type ∈ string | number）；app 不预置维度。
-- 笔记 = 文本框 annotation：其文本即笔记，本身也能打 tag（右键同一浮窗设置）；没有独立 note 字段。
+- 笔记 = 文本框 annotation：其文本即笔记，本身也能打 tag；没有独立 note 字段。
 - annotation 的 geometry 用 page 像素坐标；一个 Entry 可含多个截图对象与多个带 tag 的 annotation。
-- annotation links：把一个 annotation 单向关联到另一个 annotation（跨图对比）；反向「谁 link 到我」由对 links 的查询得到，不单独存反向边。
 - 写入随 Entry 同步进 Annotation-Tag Index（tag 进 `annotation_tags`、result 进 `annotation_results`）。
-- **不再有常驻 Inspector 右栏**——右栏让位给 Stamp 库（Slice 5）；标注的 tag / result / link 编辑一律走右键浮窗。
+- **不再有常驻 Inspector 右栏**——右栏让位给 Stamp 库（Slice 5）；标注的 tag / result 统一由 `Annotation` 上下文页编辑。对象级 links 不属于本 slice；引用能力由 Slice 10 的稳定地址 + 文字超链接统一承担。
 
 Scenario-based test：`scenario: any annotation can carry a group tag and become queryable`
 
@@ -287,23 +286,12 @@ Expect：
 - 只有带 tag 的 annotation 进入 tag 查询结果。
 - 那条趋势线不出现在任何 tag 查询里，直到用户给它打 tag。
 
-Scenario-based test：`scenario: an annotation links to another annotation for cross-chart comparison`
-
-Given：
-
-- 两个不同 Entry 各有一个 annotation；用户把 A link 到 B。
-
-Expect：
-
-- A 的 links 含 B 的 annotation id，从 A 可跳到 B。
-- 「谁 link 到 B」通过查询 links 得到，系统不单独存储反向边。
-
 Scenario-based test：`scenario: an annotation carries an optional typed result used only for statistics`
 
 Given：
 
 - 用户预定义了两个 result 维度：一个 number（如 R 倍数）、一个 string（如 回调深度）。
-- 选中一个代表入场的 annotation，在**右键浮窗**里设 R 倍数=1.0、回调深度=深；另一个说明文本框不设 result。
+- 选中一个代表入场的 annotation，在 `Annotation` 上下文页设 R 倍数=1.0、回调深度=深；另一个说明文本框不设 result。
 
 Expect：
 
@@ -311,7 +299,7 @@ Expect：
 - result 不出现在任何 group→tag 浏览导航或浏览高亮里——它只是 annotation 上的 typed 统计属性。
 - 改 / 清该 annotation 的 result 后，索引同步更新。
 
-**实现状态（已落地，21/21 e2e 全绿）**
+**实现状态（已落地；其中旧对象级 Links 能力由 Slice 10 移除）**
 
 - **数据模型与投影 — 已落地。** 画布上任意对象（矩形 / 线 / 箭头 / 水平线 / 文本框 / 自由手绘）在创建时被打上稳定 `tjId` 与空 `tjTags`，即成为可打 tag 的 annotation；截图（`FabricImage`）不带 `tjId`，不是 annotation。`tjId / tjTags / tjResult / tjLinks` 随 `canvas_json` 持久化（`toObject` 白名单）并在重开时复活——没有任何一种 annotation 类型被特判。
 - **投影进 Annotation-Tag Index**：编辑器保存路径改为 `updateEntryCanvas(id, canvasJson, annotations)`，同一事务里写 `canvas_json` 并把 `controller.extractAnnotations()`（读对象的 `tjId` + `getBoundingRect()` 页面像素 bounds + tags/result/links）投影进 `annotations / annotation_tags / annotation_results`，**不触碰 `entry_tags`**（那是 Slice 6）。tag 查询与 result 读回只走索引，不读 canvas JSON。
@@ -330,11 +318,11 @@ Expect：
 - **Stamp 库 = 主画布右侧的印章条**：与复盘页同处**一张 Fabric 画布**（`page[0..pageW] ｜ gap 分隔线 ｜ strip`），**共享同一缩放**、跨区拖动**连续不裁剪**。对象归属由**位置分区**决定（中心 x 落在页区还是条区）。页与条都是白色纸面，只由一条很窄的分隔带区分。**只含绘图、不含截图**。
 - **存储按区拆分**：`serializePage()` 只写页区对象 → Entry 的 `canvas_json`；`serializeStrip()` 只写条区对象 → 全局 **Stamp store**（存一份、跨复盘、独立于任何 Entry）；`serializeAll()` 供撤销 / 重做。`extractAnnotations()` 只投影**页区**标注（条区 stamp 不进 Entry 索引）。
 - **调色板锁（默认锁定）**：功能区一个锁。**锁定态 = 固定库**：条里 stamp 拖到页 = **复制**（半透明幽灵→实体、原件不动、新 id）；条内挪动 / 页对象拖进条一律**弹回**（不改库、不新增）。**解锁态 = 整块画布如一体**：在页与条之间自由移动——把 stamp 拖到页 = **移出调色板**（成为该页标注、**同 id**、非复制，库相应少一枚）、把绘图拖进条 = **变成 stamp**、条内挪动 = rearrange。
-- **拖出＝复制到页（半透明幽灵→实体）**：锁定态在 stamp 上按下拖动，跟随光标的是**一份半透明副本（幽灵）**——**印章原件不选中、不移动**；落到页那一刻幽灵变实体，是一个**新 annotation（新 `tjId`）**，**带几何 + 样式 + tag，不带 result / links**（result 是某笔交易的结果、link 指向具体标注 id，复制它们无意义）。落下副本即刻按其 tag 进入该复盘索引、可查。**库不变**（拖出不写库）。
+- **拖出＝复制到页（半透明幽灵→实体）**：锁定态在 stamp 上按下拖动，跟随光标的是**一份半透明副本（幽灵）**——**印章原件不选中、不移动**；落到页那一刻幽灵变实体，是一个**新 annotation（新 `tjId`）**，**带几何 + 样式 + tag，不带 result**（result 是某笔交易的结果，复制它无意义）。若 stamp 的可编辑文字含文字超链接，副本像普通 Office 文字复制一样保留同一 target 的 `textLinks`；可见的链接样式不会在落地时失效。落下副本即刻按其 tag 进入该复盘索引、可查。**库不变**（拖出不写库）。
 - **拖入＝移动进条（仅解锁）**：把页上一个绘图拖过分隔线进条 → 它**离开复盘、成为 stamp**（带当时的 tag）；写库 + 写该复盘。因同画布同缩放，尺寸与拖动都连续一致。截图（无 `tjId`）拖进条会被弹回（截图不能当 stamp）。
 - **Ctrl+C / Ctrl+V ＝统一的「把剪贴板粘到页面」**：Ctrl+C 复制选中绘图到内部剪贴板；Ctrl+V 把剪贴板内容作为**页面上的对象**粘上——有内部复制的绘图就粘一份副本（略偏移）、否则系统剪贴板里的截图就粘一张图片对象（**与既有截图粘贴同一机制，不特判截图**）。
 - **单个对象为单位**：不做组合 stamp（一次拖一个对象）。
-- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；条里也可对某个 stamp 右键浮窗改它的 tag（与 Slice 4 同一浮窗）。
+- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；要改库内 stamp 的 tag，先解锁并选中它，再走 Slice 6 同一套 `Annotation` 上下文页，不另留右键属性浮窗。
 
 Scenario-based test：`scenario: dragging a stamp onto a review drops a tagged copy while the palette keeps the stamp`
 
@@ -347,15 +335,15 @@ Expect：
 - 从库拖到画布 → 该复盘多出一个**新 id** 的 annotation，带该 stamp 的 tag，按该 tag 可查到它、母 Entry 是当前复盘。
 - 库里那个 stamp 仍在、内容不变（拖出是复制，不搬走）。
 
-Scenario-based test：`scenario: a dropped stamp copy carries tags but not result or links`
+Scenario-based test：`scenario: a dropped stamp copy carries tags and text hyperlinks but not result`
 
 Given：
 
-- 库里一个 stamp 带着 tag。
+- 库里一个文字 stamp 带着 tag、result，并含指向某个现存 Entry 的超链接。
 
 Expect：
 
-- 落到画布的副本带 tag，但 `result` 为空、`links` 为空。
+- 落到画布的副本带 tag，文字超链接仍指向同一 Entry，但 `result` 为空。
 
 Scenario-based test：`scenario: unlocking the palette lets a canvas drawing be moved in as a global stamp`
 
@@ -424,7 +412,7 @@ Expect：
 
 - **`Review` 页**（原 `Tags` 页改名）：展示并编辑**这张复盘的 entry 级 tag**——每个 pinned group 是一个**固定宽度块**（组间一条很淡的细线分隔，谁也不推谁），块内值 chip 按 Settings 顺序、**已选(applied)浮到最前**始终可见；**长名 chip 省略号 + 悬停显示全名**；**放不下的收成 `+N` 展开钮**，点开一个**每组一个、限高可滚、带搜索框**的伸缩板（覆盖画布、点外/Esc 收），列全部值(applied 置顶)、点即打 tag。**只选不建**（新建走 Settings）。
 - **`Annotation` 上下文页**：**仅在选中某个 annotation 时出现**。用户用选择工具直接点击 annotation 时，Ribbon 自动进入该上下文页，可立即打 tag 或登记 result；刚完成绘制、Stats 证据定位等程序化自动选中只让该页出现，仍保留当前页签，避免打断连续动作。取消选中即隐藏，Ribbon 回 `Draw`。该页承载**与 `Review` 页完全相同**的一套 group & tag 快捷选择，作用于选中的 annotation；二者共用同一个快捷标签控件（target = 整张 Entry 或选中 annotation），不写两套。
-- **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；`Annotation` 页在 tag 快捷选择之外还**并排承载结果登记**（result 维度：`choices` 预设值单选 chips / `number` 数字框，与 tag 一个手感）；Slice 4 的右键浮窗**收敛为「Links…」**（跨图链接是标注独有、较低频，留在贴着对象的浮窗）。**结果类型（result 维度与其预设值）在 Home 的「Settings → Result」注册表里声明**，镜像 group & tags 的注册表设计（migration 006 加 `result_dimension_values`）。
+- **标注的 tag 编辑从右键浮窗迁到 `Annotation` 上下文页**；`Annotation` 页在 tag 快捷选择之外还**并排承载结果登记**（result 维度：`choices` 预设值单选 chips / `number` 数字框，与 tag 一个手感）。右键不再承担 annotation 属性表单；Slice 10 在同一上下文菜单上提供 `Copy link`，并只在文字选区 / 既有超链接上显示对应的链接命令。**结果类型（result 维度与其预设值）在 Home 的「Settings → Result」注册表里声明**，镜像 group & tags 的注册表设计（migration 006 加 `result_dimension_values`）。
 
 **D. entry-tag 写入路径**
 
@@ -863,7 +851,7 @@ interface StatsExamplesEntry {
 
 ## 12. Slice 9：Read-only AI Access Extension（post-MVP）
 
-目标：用户可以让**自己选择、自己信任的兼容 agent**读取当前 Trading Journal 中的结构化复盘与视觉证据，帮助完成近期复盘、分类对比、反例 / 离群样本检查、相似案例回看、跨图 link 追踪与数据完整性审计。Trading Journal 只提供本机、按需、可撤销的只读 MCP 数据能力；它不内置模型、不绑定供应商、不替用户保存 AI 结论，并且**永远不向 agent 暴露任何 journal write 能力**。当前 MCP tool surface 不提供通用 statistics / data-gaps tool；后续若增加，必须直接委托 Slice 8 contract，不能在 AI layer 另做一套统计。
+目标：用户可以让**自己选择、自己信任的兼容 agent**读取当前 Trading Journal 中的结构化复盘与视觉证据，帮助完成近期复盘、分类对比、反例 / 离群样本检查、相似案例回看、文字超链接脉络追踪与数据完整性审计。Trading Journal 只提供本机、按需、可撤销的只读 MCP 数据能力；它不内置模型、不绑定供应商、不替用户保存 AI 结论，并且**永远不向 agent 暴露任何 journal write 能力**。当前 MCP tool surface 不提供通用 statistics / data-gaps tool；后续若增加，必须直接委托 Slice 8 contract，不能在 AI layer 另做一套统计。
 
 这里的 extension 是一个**第一方可选 companion package / process**，不是通用第三方插件平台。用户可以使用任何通过支持矩阵验证、能连接本 extension Streamable HTTP MCP 能力的 agent；不承诺所有 agent 都支持 Authorization header、Resources 或 image content。
 
@@ -877,7 +865,7 @@ interface StatsExamplesEntry {
   - 「比较两个市场背景下同一 setup 的结果，找结果相反的盘面。」
   - 「找出 R 倍数离群的样本，逐张看入场 annotation 周围的图。」
   - 「哪些明确属于这个 setup 的样本还没填 result？」
-  - 「沿着这些 annotation links 回顾我当时如何修正判断。」
+  - 「沿着笔记文字里的内部超链接，回顾我当时如何修正判断。」
 5. Agent 先调用有界结构化查询，再为少量候选 annotation 请求视觉证据包。包同时提供已提交页面、编号 locator、局部 focus、可用时的原始截图 native crop，以及 annotation geometry ↔ screenshot instance 的结构化映射；不会先把整个 journal 和全部图片一次性塞进上下文。回答引用 `A1 + annotationId + Entry date / id`，并把结构化事实、视觉观察与推断分开。若后续增加通用 statistics tool，它直接委托已落地的 Slice 8 contract，不由 AI layer 预做另一套统计。
 6. 应用状态栏与 AI Access 页面只显示当前连接数、正在调用的 tool / resource / prompt 与最近 20 次读取摘要。日志仅保存在内存，Stop / 重启即清空，不写 journal。
 7. 用户点 `Stop`、关闭应用或切换 workspace，就立即终止所有 sessions，并令 cursor 与 resource link 失效。若复制的配置曾被不该持有的人拿到，`Reset access key` 一次使所有旧 HTTP 配置失效；它放在 Advanced，不成为日常流程。
@@ -956,8 +944,8 @@ type JournalReadRequest =
 | `search_entries` | typed `ViewQuery` 或 `savedViewId`、date range、sort、cursor | Entry id / date / entry tags / matching sample count / context resource link；Entry 为单位 |
 | `search_samples` | Entry predicates + 同一 annotation 共现的 tag / result predicates、date range、result existence / missing、稳定排序、cursor | annotation id / bounds / tags / results + Entry id / date；不读 canvas JSON |
 | `prepare_sample_study` | 显式 annotation/result population、可选 date、result dimensions、明细 / nearby-text 上限 | 一次返回 exact sample / Entry 分母、recorded / missing、string counts / number summary、按 Entry 聚合的命中样本与邻近文字、可直接传给 batch visual 的分包计划 |
-| `get_entry_context` | 单个 `entryId` | Entry tags、indexed annotations、results、links、受限 title / text objects 与 media resource links；不返回 raw JSON |
-| `get_linked_context` | 起始 `annotationId`、depth（默认 1、最大 2） | 有界 link graph；处理循环、broken link，节点 / 边数硬上限 |
+| `get_entry_context` | 单个 `entryId` | Entry tags、indexed annotations、results、受限 title / text objects 及其 `textLinks`、media resource links；不返回 raw JSON |
+| `get_linked_context` | 起始 `InternalLinkTarget`、depth（默认 1、最大 2） | 有界文字超链接图：source text/range/display、typed target、循环与 broken target；节点 / 边数硬上限 |
 | `get_visual_evidence` | 单个 `entryId` + 0..8 个属于该 Entry 的 `annotationIds` | 创建 revision-bound `VisualEvidenceBundle`；无 annotation 时用于安全列出 screenshot instances，有 annotation 时另返回 locator / focus / source pair；不接受任意 image id / path / bbox |
 | `get_visual_evidence_batch` | `prepare_sample_study.visualBatches[n].requests`；最多 4 Entries / 8 annotations | 一次返回跨 Entry manifests 与有效图片；所有图片共享 inline byte budget，source locator / clean pair 原子纳入或省略 |
 | `create_visual_artifacts` | `bundleId` + 1..16 个 typed specs；source spec 另选 bundle 内 `screenshotId` | 创建 immutable、revision-bound artifact plan；可产出原始存储 bytes、instance source window、source/page ROI、annotation context、bar alignment probe 或已接受 proposal 的 progressive reveal |
@@ -1012,7 +1000,7 @@ type JournalReadRequest =
 #### Manifest、geometry 与截图映射
 
 - manifest 明确定义三个坐标空间：持久化 `pagePx`、bundle 输出 `renderPx`、每个 screenshot instance 的原始 `sourcePx`；返回完整 affine `pageToRender`、`sourceToPage` 与可逆时的 `pageToSource`，不让 agent 猜缩放比例。每个 asset descriptor 另返回 pixel dimensions、外部 gutter / chart `contentRect`、page / source ROI、对应 crop transform、clipping 与 paired asset id，保证 locator / clean / focus 的关系可由程序验证。非等比缩放 / skew 的质量信息返回 $2 \times 2$ 线性部分及 singular-value `min / max`，不用一个虚假的 `sourcePixelsPerPagePixel` scalar。
-- 每个 annotation 返回 bundle 内稳定但不持久化的 `markId + annotationId`、index 中用于查询 / 高亮的 `indexBounds`、包含 stroke / arrowhead / text-box 外框的派生 `paintBounds`、style、z-order、受限 text，以及 index 提供的 tags / result / links。若 index 与 `canvas_json` 的 `tjId` 对不上，返回 integrity error / warning；不能让 canvas 中的 tag / result 成为第二事实来源。
+- 每个 annotation 返回 bundle 内稳定但不持久化的 `markId + annotationId`、index 中用于查询 / 高亮的 `indexBounds`、包含 stroke / arrowhead / text-box 外框的派生 `paintBounds`、style、z-order、受限 text，以及 index 提供的 tags / result；若是文本框，另从文字超链接投影返回 `textLinks`。若 index 与 `canvas_json` 的 `tjId` 对不上，返回 integrity error / warning；不能让 canvas 中的 tag / result / textLinks 成为第二事实来源。
 - geometry 是判别联合：rect / text 返回变换后 quad；line / arrow 返回 start、end、`arrowTip` 与 arrowhead polygon；polyline 返回路径点；MeasuredMove 返回 anchors / levels；group / stamp 返回有界 composite child geometry；freehand Path 返回 `precision: 'flattened'`、误差容限与点数；未知 class、奇异矩阵或不支持的 clip / filter 返回 `unsupported`，绝不静默降级成 bbox。`arrowTip` 只描述图形端点，不命名为 `target / entry / exit`。
 - 所有 geometry adapter 从 hydrated Fabric object 使用 `calcTransformMatrix()` 派生 page geometry；Polyline / Arrow 计入 `pathOffset`，TextBox 计入自绘 padding，MeasuredMove 复用编辑器 anchor / level 公式，image 计入 scale / rotation / skew / flip / crop 与受支持的 group transform。`getBoundingRect()` 只做候选预筛与 crop envelope，不决定精确关联。
 - 每个 screenshot object 都是独立实例 `S1 / S2 …`，即使引用相同 hash 也不合并；manifest 返回 native size、page quad、z-order、可见 source region 与 transform。annotation ↔ screenshot 只称为 **spatial association**：点报告 inside，线报告相交长度，面报告相交面积；重叠截图、跨图 annotation、clip 或多个候选一律返回 `ambiguous` 和全部候选，不按最近、最大面积或最高 z-order 偷选。
@@ -1223,7 +1211,7 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 
 `scenario: a single Entry context exposes bounded text and grounded annotation evidence`
 
-- 服务 On 时可读 tags / bounds / results / links、受限 title / note 与视觉 resource；只解析该 Entry 且截断超限文本 / 对象。首次 Start 披露图片和机器可读文字都会提供给 client。
+- 服务 On 时可读 tags / bounds / results、受限 title / note 及其文字超链接与视觉 resource；只解析该 Entry 且截断超限文本 / 对象。首次 Start 披露图片和机器可读文字都会提供给 client。
 - journal 文本中的指令按 untrusted evidence 原样返回，不进入 tool description / prompt instruction。
 
 `scenario: visual evidence deterministically maps annotation ids to chart pixels`
@@ -1301,3 +1289,143 @@ machine-local AI config 至少保存：stable port、access-key credential refer
 - 一张真实多 panel TradingView 截图已通过实际 Entry → MCP 路径验证：第一版 spacing 在长距离后出现累计漂移；按头 / 中 / 尾 residual 修正后，三段同时对齐图内累计 bar 编号。局部主图 ROI 创建完整 reveal definition 后只实际推进前三帧；三个 frame 的历史侧与 source-clean 均为 0 mismatch pixels，未来侧均为 0 non-mask pixels。测试图片只存在隔离临时 journal 与 ignored `test-results`，具体尺寸 / ROI / spacing 未写入 prompt、fixture 或正式 repo 资产。
 - 真实 GitHub Copilot CLI integration 已通过：Copilot 实际调用 overview → search → context → visual evidence，在同一上下文收到 5 张图片，正确返回 `A1 → count-zone`、可见累计编号 `3, 6, …, 30`，并按 center-in-rectangle 口径数出 8 根 candle；随机模型输出不作为 CI 硬门，协议 / 像素行为由 deterministic e2e 固定。
 - 最终验证：`npm run typecheck`、`npm run lint`、`npm run build`、`npm run package`、`npm run test:package-ai` 全绿；AI Access 专项 **5 / 5**。Slice 8 合入后默认 `npm test` 再次全绿：Vitest **5 / 5**、完整 Playwright + Electron suite **118 / 118**（list reporter、workers=1、测试窗口不抢焦点）。
+
+## 13. Slice 10：稳定内部地址与文字超链接（重做引用）
+
+目标：彻底移除当前「annotation 保存一组 annotation ids + 应用内 link clipboard + Links 浮窗」的对象级 link 能力，改成用户一眼就懂的统一机制：**每个 Entry / annotation 都能复制一个不会随改名或移动而变化的内部地址；任意可编辑文字区间都能把这个地址变成 Office 式超链接，并完整支持打开、编辑、取消、局部删字、整段删除与 undo/redo。** 首版只链接当前 journal 内的 Entry / annotation，不执行外部 URL、文件路径或其它协议。
+
+### 用户动作流程与直觉逻辑
+
+1. 用户在左栏任意 Entry 缩略图上右键，点 `Copy link`；或在画布任意 annotation 上右键，点同名命令。系统把 `trading-journal://journal/{journalId}/{entry|annotation}/{targetId}` 的 canonical 地址写入**系统剪贴板**，随后轻量提示 `Link copied`。目标没有被“创建一份引用记录”，journal 也没有变化——用户只是拿到了这个东西本来就有的地址。
+2. 用户双击进入标题或文本框编辑，选中一段非空文字，右键点 `Link…`（`Ctrl/Cmd+K` 完全等价）。对话框只有 `Text to display` 与 `Link`：前者就是当前选区；如果刚才复制的系统剪贴板文本恰好是合法内部地址，后者已经自动填好，否则为空。用户可改显示文字或粘贴另一个内部地址；`Save` 一次完成文字替换 + 加链接，`Cancel` / `Esc` / 点遮罩关闭且不留下半次修改。
+3. 保存后，只有那段字符呈现克制的 Office 式链接色与下划线。未进入文字编辑时，鼠标只有压在链接字符上才变成手形 pointer，单击直接前往；压在同一文本框的普通字符 / 空白处仍是选择对象。进入文字编辑后，普通单击继续放光标，`Ctrl/Cmd+单击` 才前往，避免“想改字却被传送”。
+4. 用户在链接字符上右键，可 `Open link`、`Edit link…`、`Remove link`。Edit 复用同一对话框并预填当前显示文字 / 地址；Remove 只拿掉链接语义，文字及其颜色、字号、粗体等用户格式原样保留。对选区重新执行 `Link…`，会把该选区统一改为一个 target，选区外原有链接片段不受影响。
+5. 用户像普通文字一样按 Backspace / Delete：删掉几个字符只会让链接变短，剩下的字仍可点击；最后一个链接字符也删掉时，链接才随之消失。新字在链接**内部**输入会继承 target，在区间首尾之外输入不会“黏”进链接。创建、改显示文字、改地址、取消、局部删除与整段删除都进入同一画布 history；一次 Undo 同时恢复文字、区间和 target，Redo 对称。
+6. 前往 Entry 时切换到那条复盘；前往 annotation 时先由索引解析所属 Entry，再切换、选中目标并做一次短暂非持久化提示。跳转前必须提交当前文字编辑并完成 autosave；保存失败就留在原处明确报错，绝不为了导航丢字。目标后来被彻底删除时，源文字与地址仍保留；点击提示目标已不存在，右键仍可 Edit / Remove。
+
+### 契约先行
+
+```ts
+type InternalLinkTarget =
+  | { kind: 'entry'; id: string }
+  | { kind: 'annotation'; id: string };
+
+interface InternalLinkAddress {
+  journalId: string;
+  target: InternalLinkTarget;
+}
+
+interface TextLinkSpan {
+  start: number; // inclusive, 使用 Fabric 文字选区的同一位置单位
+  end: number;   // exclusive
+  target: InternalLinkTarget;
+}
+```
+
+- migration 009 在 `schema_meta` 写入一次性的随机 `journal_id`；已有值永不重写，数据文件夹移动 / 改名不影响它。`Entry.id` 与 annotation 的 `tjId` 是 target 唯一真源；标题、日期、文字、tag、geometry 与数据文件夹路径都不进入地址。
+- shared `formatInternalLink / parseInternalLink` 是 URI 的唯一 formatter / parser。固定语法为 `trading-journal://journal/{journalId}/{entry|annotation}/{targetId}`；两个 id 都经 `encodeURIComponent` 成为**单个** path segment。parser 拒绝 malformed percent encoding、username / port、query、fragment、空 / 额外 segment、未知 kind 与任意其它协议，并以 `format(parse(uri)) === uri` 强制 canonical round-trip；因此任意既有非空 id（含 `/`、`?`、`%`、CJK 或 emoji）都可逆。
+- canonical URI 只用于系统剪贴板和对话框输入；`canvas_json` 与 `text_links` 只保存 same-journal typed `InternalLinkTarget`，不在每个 span 重复 `journalId`，也不靠运行时拆自由字符串。粘入另一 journal 的地址因 `journalId` 不同而明确 unresolved；系统不搜索磁盘、不自动切 workspace。
+- `TextLinkSpan` 可存在于所有可编辑 `TextBoxAnnotation`，包括结构性 Entry 标题和普通文本框 annotation。显示文字永远由统一 range helper 按 Fabric 选区的同一 grapheme 位置单位从对象自身 `text` 读取，不在 span 里复制第二份；禁止直接假设 `start/end` 是 JavaScript UTF-16 offset。span 按 start 排序、非空、不重叠、不得越界，相邻且 target 相同的 span 归一化合并。
+- 新建 / 修改时，typed parser 后还要验证 journal identity 与目标此刻存在；无效、其它 journal 或 unresolved 时 `Save` 禁用并在 Link 字段就地说明。self-link 是普通合法地址，不加隐藏特例。
+
+### 文字编辑、样式与 history
+
+- 把超链接实现为**附着在字符上的 mark**，持久化时压缩成 spans。唯一编辑原语是 `TextEditOperation { from, to, insertedGraphemes }`；一套纯函数以它同时变换文字链接 spans，键盘输入、粘贴、对话框改显示文字与程序化替换不得各写一套区间修补。
+- `TextBoxAnnotation` 在 Fabric 6.9.1 自己处理文字的同一个 `onInput` 边界接入 `TextEditAdapter`：在调用 `super.onInput` 前捕获旧 `_text`、旧 `selectionStart / selectionEnd`，读取 hidden textarea 的 next value / selection，并用 Fabric 的 `_splitTextIntoLines(...).graphemeText` 与 `fromStringToGraphemeSelection` 按其原生 `onInput` 同一公式得到精确 remove range 与 inserted graphemes；调用 `super` 成功后只把这一个 operation 交给 span transformer。**禁止**在 `text:changed` 后用 LCS / 前后字符串猜 diff，因此重复字符也没有歧义。
+- 该 adapter 必须覆盖普通键入、Backspace / Delete、selection replace、cut、纯文本 paste、hidden textarea 原生 undo / redo 与每次 IME composition input。composition 过程中 spans 随当前组合文字更新，但不 push canvas history；`compositionend` 只 normalize，退出编辑时把整个文字编辑 session 提交为一个 history step。所有程序化文字修改统一走 controller 的 `replaceTextRange`；除 hydrate / 初始构造外，不允许直接 `set('text', ...)` 绕过 adapter。
+- 删除与替换保留未被删字符的 mark；完整覆盖一个 span 才移除。插入点严格位于某个 span 内，或替换区间完整位于同一个 span 内时，新字符继承 target；位于边界或跨越不同 targets 时，新字符默认为无链接。对话框创建 / 编辑是显式赋值，始终把最终显示文字的完整新区间设为所选 target。
+- 对话框替换显示文字时，新 graphemes 沿用 Fabric 现有 selection replacement 规则继承选区起点的用户字符样式；链接色 / 下划线仍只是派生覆盖。选区外的 `styles` 与 links 均按同一 grapheme operation 平移 / 裁切，不另写特殊路径。
+- 链接色 / 下划线是 `TextBoxAnnotation` render / style-resolution 时的**派生覆盖层**，不写进 Fabric 的用户字符 `styles`，也不持久化 visited 状态。Remove 后原有逐字符 fill / fontSize / fontWeight 立即恢复；hover / active 只做轻微派生反馈。缩略图按最终视觉正常包含链接外观，但不新增 canvas JSON 样式字段、history step 或 annotation-tag index 事实。
+- 右键 / `Ctrl/Cmd+K` 在 Fabric 改变 active object、折叠 selection 或失焦**之前**冻结 `{ sourceKey, start, end, hitSpan, textRevision }`。打开 Dialog 前先把此前尚未提交的普通打字按内容差异提交为独立 history step（无变化不 push）；Dialog Save 的“替换显示文字 + 赋 target”只 push 一次，Cancel 不回滚此前已经输入的普通文字。Modal 打开期间 canvas 不可编辑，Save 仍校验 frozen revision。
+- 每个用户可感知命令只 push 一次 history：Dialog Save、Remove link、一次已提交的文字编辑分别是一个原子快照；Dialog Cancel、Copy link、Open link 与 unresolved 错误不 push。undo/redo hydrate 后必须恢复 spans、派生样式、命中区和可点击行为。
+
+### UI、剪贴板与命中
+
+- Entry context menu 在每条 rail thumbnail 提供 `Copy link`；annotation context menu 对任意带 `tjId` 的页区 annotation 提供同名命令。stamp 库里的模板不是 Entry annotation target，不提供地址；截图对象也不是 annotation，不提供地址。
+- 文字编辑中的非空选区显示 `Link…`；右键命中一个既有 span 时显示 `Open link / Edit link… / Remove link`，同时仍可见 `Copy link to annotation`（它复制的是该文本框 annotation 自身的地址，不是 span target）。选区跨多个 spans 时 `Link…` 以一个新 target 覆盖选区，外侧残片按字符 mark 规则保留。Context menu 使用上一步冻结的 selection / hit，不因右键本身重新选对象而漂移。
+- 系统剪贴板读写走一套 typed preload/main 能力；不再有 React `linkClipboard` 会话态。打开创建对话框时只在剪贴板文本通过 canonical parser 后自动填 Link，普通文字、半截 URI 或外部 URL 一律不猜、不报打扰性错误。
+- 点击命中复用 Fabric 的 inverse object transform、wrapped-line grapheme layout 与 cursor bounds，只在实际链接 glyph box 内触发；padding、边框、行尾空白与文本框其余区域不是链接热区。旋转、scale、zoom、换行、CJK 与 emoji 后，hover / contextmenu / click 必须使用同一 hit result，不得一处按整框、一处按字符。
+- 链接激活统一延迟到 `pointerup`：按下后移动未超过 drag threshold 才算 click；超过 threshold 时，页区文字按正常对象拖动，锁定 stamp 按既有 ghost-copy 手感拖出，绝不先跳转。锁定 / 解锁 stamp 上的链接字符在无拖动 click 时可打开 target；stamp 模板自身仍不是可复制地址的 target。键盘可用 `Ctrl/Cmd+K` 打开、Tab 遍历两个字段与按钮、Enter 保存、Esc 取消；右键 `Open link` 为不便使用组合点击时的等价路径。
+- 普通复制 / 粘贴或 duplicate 一只文字 annotation 时，文字、用户格式与 `textLinks` 一起复制，annotation 自身获得新 `tjId`，link targets 不变。Stamp 拖出也保留可见文字超链接、仍丢弃 result；不能出现库里看着是链接、落到页面却悄悄变普通文字的净效果特例。
+- 页区 annotation 移入 stamp strip 时不再是 Entry 内可解析 target，指向它的既有链接暂时成为 broken；解锁后把**同一对象 / 同一 `tjId`**移回任一 Entry，地址随对象重新解析到新所属 Entry。这个生命周期沿用 Slice 5 的“移动保持身份”合同，不暗中换 id，也不把 stamp 加进 annotation index。
+
+### 持久化、投影与旧能力退役
+
+- 公共领域 / controller / IPC 字段统一叫 `textLinks: TextLinkSpan[]`；只有 Fabric `canvas_json` 的自定义序列化键叫 `tjTextLinks`，缺省为空。旧 Entry 加载时“缺字段 = 空”是明确 load-time upgrade；不出现 `textLinks` / `tjTextLinks` 两套并存的运行时模型。
+- Entry Store 内部定义 `TextLinkSourceProjection = { source: { kind: 'entry-title' } | { kind: 'annotation'; annotationId: string }; text: string; textLinks: TextLinkSpan[] }`。`updateEntryCanvas` 不信任 renderer 另报一份 links：main 在**保存当前这一个 Entry**时用有字节 / 深度 / 对象数上限的结构化 parser 从本次 `canvas_json` 提取 title / text annotations 与 `tjTextLinks`，用 shared grapheme helper 校验 / normalize ranges，并要求 annotation source 出现在同事务的新 annotation 集中。`text` 只参与验证，不另存；这是写侧 projection，不是查询时扫描全库。
+- migration 009 新建 `text_links`：`source_entry_id`（FK `entries`，source Entry 删除时 cascade）、`source_kind`（`entry-title | annotation`）、`source_object_id`（title = Entry id；annotation = `tjId`）、`start_grapheme`、`end_grapheme`、`target_kind`、`target_id`；以 source + start 为主键，CHECK 非空 / `end > start` / kind 合法，并建 `(target_kind, target_id)` 反查索引。target **刻意不设 FK / cascade**，否则删除目标会篡改源文字语义。
+- Entry 保存时先由同一请求得到 durable canvas + annotations + normalized text-link projection，再在一个 SQLite transaction 里整体替换该 Entry 的 annotations/tags/results/text_links；任何一处校验失败全部回滚。投影写入只验证 source 与 grapheme bounds，**不要求 target 仍存在**：存在性只在用户新建 / 修改链接命令时检查。因此目标删除后的 broken link 可经历无关 autosave、重启和再次编辑而不丢失。
+- `resolveInternalLink` 属于 Entry Store / annotation index 读边界：Entry target 直接按 id 读，annotation target 从 index 得到所属 Entry。renderer 只拿 typed resolve 结果，不直接查 SQLite。链接不是 tag、result 或 browse highlight，不进入任何 group bucket、View population 或 Statistics denominator。
+- AI read contract 同步切到新模型：`get_entry_context` 返回受限文字及 `TextLinkSpan`。`get_linked_context` 从 typed Entry / annotation target 出发，同时沿 incoming / outgoing 邻接扩展到指定深度，但每条 edge 永远保留用户写下的 `source → target` 方向：Entry 节点的 outgoing 只来自其 title，annotation 节点的 outgoing 只来自该 annotation 自己的文本；非文本 annotation 没有 outgoing。broken target 返回 edge 但不继续扩展，cycle 去重，节点 / 边数硬上限不变。
+- AI 的图拓扑与反查只读 `text_links`。投影不复制显示文字，因此仅对已经进入有界结果的少量 source Entries 使用现有 bounded single-Entry parser，并用同一个 grapheme range helper取得 `displayText`；绝不为文字全库扫描 `canvas_json`。旧 `Annotation.links` 不再出现在 read repository、visual manifest、prompt 或 canonical domain digest 中；canonical non-mutation digest 新增排序后的 `journal_id + text_links`。AI 仍永久只读。
+- **旧能力整套删除**：移除 shared `Annotation.links / AnnotationHit.links`、zod `links`、Fabric `tjLinks`、`applyAnnotationEdits(...links)` / `setAnnotationResultLinks`、App `linkClipboard`、`TagPopover` 的 Copy target / Link to copied / Go / remove 列表、旧 IPC / repository link graph、旧 annotation-link e2e 与所有运行时 fallback。结果编辑只留在 `Annotation` 上下文页；右键浮窗组件若无其它职责则删除。
+- 用户已明确旧对象级 link 无关紧要、可以丢弃，但其余复盘数据必须完整保留。migration 009 先依赖通用 migration backup 留下原始 v8 数据库，再在同一 migration transaction 内把历史 `annotations.links` 清成 `[]`，并从所有 Entry / stamp `canvas_json` 任意深度递归删除 `tjLinks` 字段；文字、annotation id、tag、result、geometry、对象顺序、图片引用与其它字段均保留。没有 `tjLinks` 的 JSON byte-for-byte 不改；需要清理时只做结构化 parse / delete / serialize。若整个 canvas / stamp JSON 本身 malformed，抛 `LegacyLinksMigrationError` 并回滚，绝不在无法证明安全时重写复盘。
+- 本 slice **不把旧边猜测性转换成一段凭空生成的显示文字**，也不保留双路径。`migration001Initial` 已发布、不可改写，其中历史 `annotations.links` 列按 append-only 纪律物理保留；migration 009 成功后任何 domain type、post-migration store/read SQL、IPC、UI、AI 或行为测试都不再读写 / 暴露它。旧空 `tjLinks` 在 load-time upgrade 后不进入新的序列化白名单。
+- 这是持久化契约变化：migration 前自动 backup、too-new guard、既有 golden-DB 链与现有 Entry / image / tags / results / canvas / views / stamps 必须保持。测试覆盖「无 legacy 字段时原文不变」「任意深度非空 / 非数组 `tjLinks` 只删除该字段」「malformed canvas 原子拒绝」与 committed v7 golden upgrade；另用真实 v8 backup 的临时副本核对所有领域表行数前后一致。发布时再 snapshot 新 schema fixture、同步 bump app version。
+- Prompt Library 同步退役 shipped `trace_annotation_links`，新增 `trace_text_links`。machine-config migration 以旧 built-in 的已知默认 hash 区分：未改默认直接替换；用户改过的正文保留为 disabled custom copy 并明确标记 contract 已退役，同时安装新的 built-in。运行时不注册旧 built-in，也不保留旧 tool schema；用户自写 custom prompt 仍是用户内容，不会获得不存在的能力。
+
+### 实现分解
+
+1. **Slice 10A — Contract、纯函数与 migration safety**：先冻结 `InternalLinkAddress / InternalLinkTarget / TextLinkSpan / TextEditOperation / TextLinkSourceProjection`、canonical URI、grapheme range helper、span transform / normalize、migration 009 的 `journal_id + text_links + 精准 legacy cleanup`、typed resolve / IPC 与 golden tests；不接 UI。此阶段即可证明 arbitrary id round-trip、broken target 可存、旧 link 之外的复盘事实不变且原始 v8 库已有 backup。
+2. **Slice 10B — Fabric 文字与 Office 式交互**：接 `TextEditAdapter`、`tjTextLinks` hydrate / serialize、派生 render、glyph hit、selection snapshot、Dialog、context menus、系统剪贴板、pointer-up click-vs-drag、autosave 与 history；普通文字 / duplicate / stamp 全部复用同一 operation / copy contract。
+3. **Slice 10C — 导航、AI 与旧能力清除**：接 Entry / annotation resolve + save-before-navigation、broken target UI、`text_links` incoming/outgoing AI graph、bounded display extraction、Prompt Library machine-config migration；删除旧 domain / SQL / UI / tests，跑 package + real MCP smoke。10A–10C 是同一个发布 slice，10C 完成前不得发布双模型中间态。
+
+### Scenario-based tests
+
+`scenario: every Entry and annotation has one stable copyable internal address`
+
+- 右键 Entry / annotation 的 `Copy link` 分别得到带稳定 `journalId` 的 canonical URI；改 Entry 标题 / 日期、改 annotation 文字 / 位置 / tag 后 URI 不变并仍解析到同一 id。`/ ? %`、CJK、emoji 等 arbitrary non-empty ids 均 format → parse 可逆，非 canonical encoding 与 query / fragment 被拒。
+- 把 A journal 的 URI 粘到 B journal 时 Dialog 明确显示属于其它 journal、Save 不可用；不扫描磁盘、不误解析同 id。Copy 只改系统剪贴板，不改 canvas、DB domain digest 或 undo state。
+
+`scenario: selected text becomes an Office-style internal hyperlink`
+
+- 复制目标地址 → 选中一段文字 → 右键 `Link…`；即使 contextmenu 会改变 Fabric active state，冻结选区仍准确，Dialog 自动填显示文字与 Link。Save 后仅该段派生链接色 / 下划线，glyph 命中为 pointer。重开 Entry 后样式、span 与 target 一致；Remove 保留文字和原字符格式。
+- wrapped / rotated / scaled / zoomed 文本只在实际 glyph box 显示 pointer / 打开；padding、边框、行尾空白不触发。文字编辑态普通 click 放光标，`Ctrl/Cmd+click` 才打开。
+
+`scenario: hyperlink text editing obeys character marks and undo/redo`
+
+- 在 span 内插字会扩展链接，在边界外插字不扩展；从前 / 中 / 后局部删除都只收缩 span，删完最后字符才移除。selection replace、cut、paste、hidden textarea 原生 undo / redo 与 IME composition 都产生明确 `TextEditOperation`，不靠字符串 diff。
+- 纯函数 edit matrix 固定重复字符、CJK、surrogate emoji、combining mark、ZWJ sequence、换行、多 span / 跨 span replacement；任何时刻 range 不越 grapheme bounds、不重叠。创建、改显示文字 / target、Remove、局部删字分别 Undo / Redo 后，文字、规范化 spans、用户格式、视觉与点击目标完全恢复。
+
+`scenario: following a link never loses the text being edited`
+
+- 当前文本仍在编辑时打开 Entry / annotation 链接，先 commit + autosave 再导航；annotation 被选中并短暂提示。模拟 save 失败时不导航且原文字仍在；目标删除后点击得到 broken-target 提示，源文字可继续 Edit / Remove。
+- broken link 经无关文字修改、canvas autosave、app 重启与 AI context read 后仍保留同一 target；只有用户 Remove / 覆盖该 range 或删尽字符才会消失。
+
+`scenario: link click and stamp drag remain one unambiguous gesture`
+
+- 在页区链接 glyph 按下后小范围释放才打开；拖过 threshold 则移动对象、不跳转。锁定 stamp 的同一 glyph 小范围释放打开 target，拖过 threshold 则出现 ghost 并落副本；原 stamp 不动。
+- 页区对象移入 strip 后其 target 返回 broken，textLinks 仍随 stamp 保存；同一对象 / 同一 `tjId` 解锁移入另一 Entry 后 target 重新解析到新 Entry，incoming links 无需改写。
+
+`scenario: copied text objects preserve hyperlinks without sharing identity`
+
+- duplicate / paste / stamp 拖出一个含超链接的文字对象，新 annotation 有新 `tjId`，显示文字与 target 保留；修改副本 span 不影响原对象。Stamp 副本仍不带 result。
+
+`scenario: the text-link projection is exact without duplicating display text`
+
+- 保存含 title links 与多个 text-annotation links 的 Entry 后，`text_links` source / grapheme ranges / targets 与 canvas 一致，可按 target 反查；表中没有 display text。删除 source Entry 会 cascade source rows，删除 target Entry / annotation 不删除 incoming rows。
+- 伪造 source、越界 / 空 / overlap span 或 annotation 不属于该 Entry 时，整个 canvas + annotation + text-link transaction 回滚；target 已不存在则仍允许原样重投影。
+
+`scenario: migration retires the old link feature without discarding legacy data`
+
+- committed v7 fixture 与带 legacy payload 的 v8 journal 升到 migration 009 后，既有 Entry、图片、tags、results、views、stamps 及 canvas 内除旧 link 字段外的内容不变，得到一个跨重开稳定的 `journal_id`；新文字超链接进入 `text_links` 并可按 target 反查。
+- SQL `annotations.links` 统一清空，Entry / stamp canvas 任意深度的 `tjLinks` 字段被删除；其余字段深比较一致。malformed canvas / stamp JSON 会让整个 migration 回滚且 backup 已存在。公开 domain / IPC / AI surfaces 不再出现旧 links 数组，历史列不被任何 post-migration store/read SQL 使用。
+
+`scenario: AI follows authored text links in both directions without inventing edges`
+
+- Entry title → annotation、text annotation → Entry、cycle、incoming-only 与 broken target 共同组成 fixture；`get_linked_context` 同时扩展 incoming / outgoing，却逐边保留 source → target、准确返回 display range / text、截断与 broken 状态，且不扫描未入图的 Entry canvas。
+- canonical digest 在完整 AI 调用前后包含同一 `journal_id + text_links`；machine config 不再注册旧 built-in，新的 `trace_text_links` 可用，编辑过的旧模板只作为 disabled custom text 留存。
+
+### 完成定义
+
+- 新增纯函数单测覆盖 URI parser / formatter、grapheme helper、Fabric-input-to-operation adapter、span normalization 与完整 edit matrix；Playwright + Electron 覆盖 context menus、clipboard 自动填充、Dialog、selection freeze、wrapped/rotated glyph pointer / click、编辑态 `Ctrl/Cmd+click`、stamp click-vs-drag、Remove、broken target、autosave 与 undo/redo。
+- 更新 `tests/e2e/data-migration.spec.ts` 与 golden fixture；更新 AI Access tests，使 entry / linked context 只读取 `text_links`，并继续通过 canonical non-mutation digest。
+- 删除旧实现与旧测试后执行 `npm run typecheck`、`npm run lint`、`npm run build`、专项 Playwright、`npm test`、`npm run package` 与 `npm run test:package-ai`；全库搜索除不可改写的 migration 001 历史 DDL 与本 slice 的退役说明外，不再出现 `tjLinks`、`linkClipboard`、`Annotation.links`、`Link to copied` 或旧 Links 浮窗。
+
+**实现状态（已落地；v0.5.0 / schema v9）**
+
+- 已落地 stable `journal_id`、canonical internal URI、typed `InternalLinkTarget / TextLinkSpan`、Fabric `tjTextLinks`、统一字符 mark 变换，以及 title / text annotation 的 Office 式派生链接外观。
+- Entry / page annotation 右键 `Copy link`、文字选区 `Link…` / `Ctrl/Cmd+K`、Link Dialog、Open / Edit / Remove、broken-target 提示、save-before-navigation、局部删字与一次 Undo/Redo 已接入；duplicate / stamp copy 保留 `textLinks`，stamp 模板自身不提供地址。
+- migration 009 在自动 backup 后精准清理三处 legacy payload，新增持久 `journal_id` 与无 target FK 的 `text_links` 反查投影；真实 v8 backup 的临时副本已成功迁到 v9，61 Entries / 705 annotations 及 tags、results、views、stamp 等 11 张领域表行数前后一致。Entry canvas、annotation index 与 text-link projection 同事务保存，旧 `annotations.links` 仅保留为 migration 001 的历史物理列，运行时不再读写。
+- AI Entry context 与 linked context 已切到 `text_links`，支持 typed Entry / annotation 节点、incoming + outgoing 遍历、方向保留与 display text；旧 object-link tool semantics / built-in prompt 已退役，用户改过的旧 prompt 仅作为 disabled custom text 保留。
+- 聚焦验证已通过：internal URI / legacy audit / span edit matrix / canvas projection unit tests，schema v7 → v9 golden migration，title hyperlink create → linked delete → Undo → Remove → Undo → Open，以及 secured MCP text-link graph。最终全库 gate 见本 Slice 合入时的验证记录。

@@ -218,9 +218,6 @@ export const store = {
   deleteEntry: (page: Page, id: string): Promise<void> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.deleteEntry(x), id),
 
-  locateAnnotation: (page: Page, annotationId: string): Promise<{ entryId: string } | null> =>
-    page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.locateAnnotation(x), annotationId),
-
   getStampLibrary: (page: Page): Promise<{ canvasJson: string }> =>
     page.evaluate(() => (globalThis as unknown as WindowWithApi).api.getStampLibrary()),
 

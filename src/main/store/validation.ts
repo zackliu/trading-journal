@@ -27,10 +27,13 @@ const annotation = z.object({
   bounds,
   tags: z.array(tag),
   result: result.optional(),
-  links: z.array(z.string().min(1)).optional(),
 });
 
 export const idSchema = z.string().min(1);
+export const internalLinkTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('entry'), id: idSchema }),
+  z.object({ kind: z.literal('annotation'), id: idSchema }),
+]);
 
 /** A review's structural date, as an explicit `YYYY-MM-DD` calendar day. */
 export const dateValueSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');

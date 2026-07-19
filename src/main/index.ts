@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, shell, type OpenDialogOp
 import { join } from 'node:path';
 import { ensureDataFolder, type DataFolder } from './dataFolder';
 import { readConfig, resolveWorkspace, validateWorkspaceDir, writeConfig } from './appConfig';
-import { openDatabase, stampAppVersion, type Db } from './db';
+import { getJournalId, openDatabase, stampAppVersion, type Db } from './db';
 import { detectImageMime, readImage, storeImage } from './ingest/imageStore';
-import { createEntry, deleteEntry, getEntry, listEntries, locateAnnotation, queryEntriesByTag, setEntryDate, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
+import { createEntry, deleteEntry, getEntry, listEntries, queryEntriesByTag, resolveInternalLink, setEntryDate, setEntryImage, setEntryTags, updateEntry, updateEntryCanvas } from './store/entryStore';
 import { queryAnnotationsByTag } from './store/annotationIndex';
 import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, purgeGroup, purgeValue, listArchivedGroups } from './store/vocabulary';
 import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
@@ -21,6 +21,7 @@ import {
   idListSchema,
   idSchema,
   imageHashSchema,
+  internalLinkTargetSchema,
   kebabSchema,
   pinnedSchema,
   resultDimensionSchema,
@@ -41,6 +42,7 @@ import { IpcChannel, type PingResult } from '../shared/ipc';
 import type { WorkspaceState } from '../shared/domain';
 import type { AiAccessSettings } from '../shared/aiAccess';
 import { AiAccessController } from './ai/accessController';
+import { formatInternalLink } from '../shared/internalLinks';
 
 // Register the image-serving scheme before app 'ready' (privileged + secure).
 protocol.registerSchemesAsPrivileged([
@@ -192,6 +194,15 @@ function registerIpc(): void {
     aiAccess.saveSettings(settings),
   );
   ipcMain.handle(IpcChannel.resetAiAccessKey, () => aiAccess.resetAccessKey());
+  ipcMain.handle(IpcChannel.getJournalId, () => getJournalId(requireDb()));
+  ipcMain.handle(IpcChannel.copyInternalLink, (_event, raw: unknown) => {
+    const target = internalLinkTargetSchema.parse(raw);
+    if (!resolveInternalLink(requireDb(), target)) throw new Error('link target no longer exists');
+    return formatInternalLink({ journalId: getJournalId(requireDb()), target });
+  });
+  ipcMain.handle(IpcChannel.resolveInternalLink, (_event, raw: unknown) =>
+    resolveInternalLink(requireDb(), internalLinkTargetSchema.parse(raw)),
+  );
 
   ipcMain.handle(IpcChannel.ingestImageEntry, (_event, raw: unknown) => {
     const bytes = toImageBuffer(raw);
@@ -260,9 +271,6 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.getEntry, (_event, id: unknown) => getEntry(requireDb(), idSchema.parse(id)));
   ipcMain.handle(IpcChannel.queryAnnotationsByTag, (_event, raw: unknown) =>
     queryAnnotationsByTag(requireDb(), tagSchema.parse(raw)),
-  );
-  ipcMain.handle(IpcChannel.locateAnnotation, (_event, annotationId: unknown) =>
-    locateAnnotation(requireDb(), idSchema.parse(annotationId)),
   );
   ipcMain.handle(IpcChannel.setEntryTags, (_event, id: unknown, tags: unknown) =>
     setEntryTags(requireDb(), idSchema.parse(id), entryTagsSchema.parse(tags)),
