@@ -101,7 +101,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
           className={`ctxmenu__item${item.danger ? ' ctxmenu__item--danger' : ''}${item.active ? ' is-active' : ''}`}
           data-testid={item.testId}
           role={nested ? 'menuitem' : undefined}
-          onMouseEnter={() => setOpenSubmenu(null)}
+          onMouseEnter={nested ? undefined : () => setOpenSubmenu(null)}
           onClick={() => {
             item.onClick?.();
             onClose();

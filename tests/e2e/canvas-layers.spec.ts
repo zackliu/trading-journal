@@ -160,8 +160,9 @@ test('layer-local movement swaps adjacent objects while multi-selection cannot c
   await expect(page.getByTestId('menu-layer-info')).toContainText('Top');
   await expect(page.getByTestId('menu-layer-forward')).toHaveText('挪上');
   await expect(page.getByTestId('menu-layer-front')).not.toBeVisible();
-  await page.getByTestId('menu-other-arrange').click();
+  await page.getByTestId('menu-other-arrange').hover();
   await expect(page.getByTestId('menu-layer-front')).toBeVisible();
+  await page.getByTestId('menu-layer-front').hover();
   await expect(page.getByTestId('menu-layer-front').locator('..')).toHaveCSS('opacity', '1');
   await page.keyboard.press('Escape');
   await page.getByTitle('同层上移一层').click();
@@ -293,8 +294,9 @@ test('a stamp keeps its strip position while its selected target layer controls 
   await expect(page.getByTestId('menu-layer-info')).toContainText('基层');
   await expect(page.getByTestId('menu-stamp-layer')).toContainText('选择图层');
   await expect(page.getByTestId('menu-stamp-layer')).toContainText('基层');
-  await page.getByTestId('menu-stamp-layer').click();
+  await page.getByTestId('menu-stamp-layer').hover();
   await expect(page.getByTestId(`menu-stamp-layer-${BASE_CANVAS_LAYER_ID}`)).toHaveClass(/is-active/);
+  await page.getByTestId(`menu-stamp-layer-${BASE_CANVAS_LAYER_ID}`).hover();
   await expect(page.getByTestId(`menu-stamp-layer-${BASE_CANVAS_LAYER_ID}`).locator('..')).toHaveCSS('opacity', '1');
   await page.getByTestId(`menu-stamp-layer-${top.id}`).click();
   await page.getByTestId('tab-annotation').click();
