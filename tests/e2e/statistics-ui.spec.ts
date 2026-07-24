@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Annotation, Result } from '../../src/shared/domain';
+import { BASE_CANVAS_LAYER_ID, type Annotation, type Result } from '../../src/shared/domain';
 import { launchApp, store } from './electronApp';
 
 function tempDataDir(): string {
@@ -42,6 +42,7 @@ function canvasJson(annotations: Annotation[]): string {
       stroke: index % 2 === 0 ? '#b13f3a' : '#4165cc',
       strokeWidth: 4,
       tjId: item.id,
+      tjLayerId: BASE_CANVAS_LAYER_ID,
       tjTags: item.tags,
       tjResult: item.result,
     })),

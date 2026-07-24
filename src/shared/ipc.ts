@@ -4,6 +4,9 @@ import type {
   Annotation,
   ArchivedResults,
   ArchivedVocab,
+  CanvasLayer,
+  CanvasLayerDeletionImpact,
+  CanvasLayerUsage,
   CreateEntryInput,
   Entry,
   EntrySummary,
@@ -86,6 +89,13 @@ export interface IpcApi {
   purgeGroup(id: string): Promise<void>;
   purgeValue(groupId: string, value: string): Promise<void>;
   listArchivedGroups(): Promise<ArchivedVocab>;
+  listCanvasLayers(): Promise<CanvasLayer[]>;
+  listCanvasLayerUsage(): Promise<CanvasLayerUsage[]>;
+  createCanvasLayer(name: string): Promise<CanvasLayer>;
+  renameCanvasLayer(id: string, name: string): Promise<CanvasLayer>;
+  reorderCanvasLayers(ids: string[]): Promise<CanvasLayer[]>;
+  inspectCanvasLayerDeletion(id: string): Promise<CanvasLayerDeletionImpact>;
+  deleteCanvasLayerAndMerge(id: string): Promise<CanvasLayerDeletionImpact>;
   setGroupPinned(id: string, pinned: boolean): Promise<void>;
   reorderGroups(ids: string[]): Promise<void>;
   reorderValues(groupId: string, values: string[]): Promise<void>;
@@ -154,6 +164,13 @@ export const IpcChannel = {
   purgeGroup: 'vocab:purge-group',
   purgeValue: 'vocab:purge-value',
   listArchivedGroups: 'vocab:list-archived',
+  listCanvasLayers: 'canvas-layer:list',
+  listCanvasLayerUsage: 'canvas-layer:list-usage',
+  createCanvasLayer: 'canvas-layer:create',
+  renameCanvasLayer: 'canvas-layer:rename',
+  reorderCanvasLayers: 'canvas-layer:reorder',
+  inspectCanvasLayerDeletion: 'canvas-layer:inspect-deletion',
+  deleteCanvasLayerAndMerge: 'canvas-layer:delete-and-merge',
   setGroupPinned: 'vocab:set-group-pinned',
   reorderGroups: 'vocab:reorder-groups',
   reorderValues: 'vocab:reorder-values',

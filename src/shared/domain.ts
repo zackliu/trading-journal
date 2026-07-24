@@ -13,6 +13,32 @@ export interface ImageRef {
   hash: string;
 }
 
+/** Stable identity of the permanent bottom layer in every journal. */
+export const BASE_CANVAS_LAYER_ID = 'base';
+
+/** A journal-global paint layer. Rows are returned from bottom to top. */
+export interface CanvasLayer {
+  id: string;
+  name: string;
+  isBase: boolean;
+}
+
+/** Layer-management status. Usage spans every Entry page and the global stamp library. */
+export interface CanvasLayerUsage extends CanvasLayer {
+  entryCount: number;
+  objectCount: number;
+  stampCount: number;
+}
+
+/** Journal-wide impact shown before an irreversible layer merge. */
+export interface CanvasLayerDeletionImpact {
+  layer: CanvasLayer;
+  mergeInto: CanvasLayer;
+  entryCount: number;
+  objectCount: number;
+  stampCount: number;
+}
+
 /**
  * Where the app looks for the active journal data folder, and whether it is usable. `ready` means the
  * folder exists, is writable, and the database is open on it; the other states drive the setup gate.

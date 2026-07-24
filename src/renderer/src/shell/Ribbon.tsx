@@ -1,8 +1,9 @@
 import { useEffect, type ReactNode } from 'react';
-import type { AnnotationSelection, DashStyle, DrawStyle, Tool } from '../editor/canvasController';
+import type { AnnotationSelection, ArrangeState, DashStyle, DrawStyle, Tool } from '../editor/canvasController';
 import type {
   ResultDimensionView,
   SavedView,
+  CanvasLayer,
   StatsCompareBy,
   StatsDateRange,
   StatsScope,
@@ -23,6 +24,7 @@ interface RibbonProps {
   style: DrawStyle;
   canUndo: boolean;
   canRedo: boolean;
+  arrange: ArrangeState;
   onNew: () => void;
   onDeleteReview: () => void;
   onTool: (tool: Tool) => void;
@@ -31,6 +33,12 @@ interface RibbonProps {
   onUndo: () => void;
   onRedo: () => void;
   onDeleteSelected: () => void;
+  onMoveForward: () => void;
+  onMoveBackward: () => void;
+  onBringToLayerFront: () => void;
+  onSendToLayerBack: () => void;
+  onMoveLayerUp: () => void;
+  onMoveLayerDown: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
   onFitToCanvas: () => void;
@@ -46,6 +54,9 @@ interface RibbonProps {
   onToggleEntryTag: (tag: Tag, on: boolean) => void;
   onToggleAnnotationTag: (tag: Tag, on: boolean) => void;
   onOpenSettings: () => void;
+  onOpenLayers: () => void;
+  canvasLayers: CanvasLayer[];
+  onSetStampTargetLayer: (layerId: string) => void;
   onOpenResultSettings: () => void;
   onOpenGeneral: () => void;
   resultDimensions: ResultDimensionView[];
@@ -201,6 +212,9 @@ export function Ribbon(props: RibbonProps): JSX.Element {
                 onClick={props.onOpenResultSettings}
               >
                 <Icon name="gauge" /> Result
+              </button>
+              <button type="button" className="rtext" data-testid="ribbon-layers" onClick={props.onOpenLayers}>
+                <Icon name="front" /> Layers
               </button>
               <button type="button" className="rtext" data-testid="ribbon-general" onClick={props.onOpenGeneral}>
                 <Icon name="settings" /> App settings
@@ -380,15 +394,51 @@ export function Ribbon(props: RibbonProps): JSX.Element {
             <Group label="Arrange">
               <div className="rgrid rgrid--2">
                 <IconButton
-                  icon="front"
-                  title="Bring to front"
-                  disabled={!entryOpen || !hasSelection}
+                  icon="stepfront"
+                  title="同层上移一层"
+                  disabled={!entryOpen || !props.arrange.localForward}
+                  onClick={props.onMoveForward}
+                />
+                <IconButton
+                  icon="stepback"
+                  title="同层下移一层"
+                  disabled={!entryOpen || !props.arrange.localBackward}
+                  onClick={props.onMoveBackward}
+                />
+                <IconButton
+                  icon="layerfront"
+                  title="移至本图层最前"
+                  disabled={!entryOpen || !props.arrange.localFront}
+                  onClick={props.onBringToLayerFront}
+                />
+                <IconButton
+                  icon="layerback"
+                  title="移至本图层最后"
+                  disabled={!entryOpen || !props.arrange.localBack}
+                  onClick={props.onSendToLayerBack}
+                />
+                <IconButton
+                  icon="layerup"
+                  title="移到上一图层"
+                  disabled={!entryOpen || !props.arrange.layerUp}
+                  onClick={props.onMoveLayerUp}
+                />
+                <IconButton
+                  icon="layerdown"
+                  title="移到下一图层"
+                  disabled={!entryOpen || !props.arrange.layerDown}
+                  onClick={props.onMoveLayerDown}
+                />
+                <IconButton
+                  icon="allfront"
+                  title="移至所有内容最前"
+                  disabled={!entryOpen || !props.arrange.absoluteTop}
                   onClick={props.onBringToFront}
                 />
                 <IconButton
-                  icon="sendtoback"
-                  title="Send to back"
-                  disabled={!entryOpen || !hasSelection}
+                  icon="allback"
+                  title="移至所有内容最后"
+                  disabled={!entryOpen || !props.arrange.absoluteBottom}
                   onClick={props.onSendToBack}
                 />
                 <IconButton
@@ -442,6 +492,20 @@ export function Ribbon(props: RibbonProps): JSX.Element {
         ) : null}
         {active === 'Annotation' && selectedAnnotation ? (
           <>
+            {selectedAnnotation.isStamp ? (
+              <Group label="Target layer">
+                <select
+                  className="rselect"
+                  data-testid="stamp-target-layer"
+                  value={selectedAnnotation.layerId}
+                  onChange={(event) => props.onSetStampTargetLayer(event.target.value)}
+                >
+                  {[...props.canvasLayers].reverse().map((layer) => (
+                    <option value={layer.id} key={layer.id}>{layer.name}</option>
+                  ))}
+                </select>
+              </Group>
+            ) : null}
             <QuickTag
               groups={props.groups}
               selected={selectedAnnotation.tags}

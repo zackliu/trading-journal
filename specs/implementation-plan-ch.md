@@ -25,6 +25,7 @@
 10. **进程边界**：Electron **main** 拥有 Entry Store、Annotation-Tag Index、Tag & Query 引擎、统计、SQLite 与图片文件（durable / query 边界）；**renderer** 拥有 Fabric 画布与渲染/视图层。二者通过一套 typed IPC 契约（store/query API）通信；renderer 不直接开 SQLite 或读写文件。Slice 9 的 AI companion 是受 main 监管的独立进程，只接收专用 `JournalReadApi` 判别联合，不接收混合 IPC、DB path 或任何 write capability。
 11. **测试方式（两层 + AI 协议边界）**：因 better-sqlite3 按 Electron ABI 编译，领域测试分两层——(a) **纯逻辑单测**：tag 解析、布尔查询构造、result 聚合数学等无 native 依赖模块用 **Vitest** 在 Node 跑；(b) **契约 / 持久化 scenario test**：Slice 1–8 的 store/query/stats API 通过 **Playwright + Electron** harness 断言领域行为，不绕过契约直接读 SQLite。Slice 9 另用真实 MCP client 覆盖 Streamable HTTP、安全拒绝、分页快照、媒体资源与 non-mutation，并由 GitHub Copilot 做真实多模态 handoff；绝不通过 renderer 的混合 `window.api` 冒充 extension 边界。
 12. **本计划不含**：PPT 迁移（brief §10 后续研究）、可回放/实盘图表、多端同步、云后端、经纪/回测/行情、内置模型或 agent。可选 AI Access 只把用户授权的当前 journal 证据交给外部兼容 agent，不构成 Trading Journal 云后端。
+13. **图层是绘制结构，不是分类**：journal 全局图层只决定截图与 annotation 的页面绘制顺序，不进入 tag/group、Annotation-Tag Index、SavedView 或统计；完整页面 `objects[]` 是唯一精确 paint order，过滤掉结构标题后的可排列对象子序列才按图层成块，不再持久化 numeric `zIndex`。系统基层永久最底；已用层的相对顺序不可改变，只有未被页面对象或 stamp 使用的空层可在建库时重排。
 
 ## 3. Slice 0：项目骨架与可运行外壳（Walking Skeleton）
 
@@ -147,7 +148,7 @@ Expect：
 
 目标：一次把**整个应用的主界面外壳**立起来——所有区域按目标布局摆好，后续 slice 才实现的功能先以**图标 / 占位**就位（不含行为）；同时实现其中真正的 **Canvas 标注**能力（在 Entry 底图上 PPT 级绘图、持久化、图章）。这层 UI（尤其外壳与占位）**预期多次视觉 / 交互迭代**——先有成品才好判断怎么改。
 
-**用户动作流程与直觉逻辑**：用户打开软件，看到的是一个像 PPT 一样眼熟的外壳——顶部一条 Ribbon、左边是他的复盘缩略图、中间一大块白页。他点「New」或直接 Ctrl+V 贴张图，中间立刻出现一张可涂画的白页，工具栏亮起来，他就能像在 PPT 上一样框选、画箭头、写字。直觉上「这一整块白页就是我这次复盘」、「截图只是我贴上去的一张图、能随便挪」、「画完自动回到选择、鼠标一放就能拖」。这一版先把**外壳与画布手感**做成成品，后续每个 slice 只是往这套眼熟的布局里填真实行为，用户不必重新学界面。
+**用户动作流程与直觉逻辑**：用户打开软件，看到的是一个像 PPT 一样眼熟的外壳——顶部一条 Ribbon、左边是他的复盘缩略图、中间一大块白页。他点「New」或直接 Ctrl+V 贴张图，中间立刻出现一张可涂画的白页，工具栏亮起来，他就能像在 PPT 上一样框选、画箭头、写字。直觉上「这一整块白页就是我这次复盘」、「截图只是我贴上去的一张图、能随便挪」、「新截图稳定落在基层上方、刚手画的东西一定出现在最高层最上面，不会一画完就被遮住」、「画完自动回到选择、鼠标一放就能拖」。这一版先把**外壳与画布手感**做成成品，后续每个 slice 只是往这套眼熟的布局里填真实行为，用户不必重新学界面。
 
 实现范围分两部分。
 
@@ -165,7 +166,7 @@ Expect：
 - **标题带 + 常规工作区（画布总尺寸不变）**：页面顶部切出一条约 **100px 的标题带** `[0,0,pageW,TITLE_H]`（一层极淡暖色底 + 底部发丝线，属 `tjChrome`——渲染、进缩略图、**不序列化、不算标注**）；下方 `[TITLE_H,pageH]` 是常规工作区（故比原来稍矮）。每个复盘恒有**一个标题文本框**（`tjRole:'title'`，横在带内、大字深墨、可自由编辑）：进 `canvas_json` 与缩略图，但**无 `tjId` 故绝不进标注索引**、**空时不被「空文本框自动丢弃」删掉**（显示淡灰占位 `点击添加标题`，打字即消失、不存为内容）、**不可单独删除**（`loadEntry` 若缺失即补一个，保证恒有）。**默认落点在常规区**：`fitActiveToCanvas`、首图 contain、新粘贴/截图都居中于 `[TITLE_H,pageH]`；但**手动画到标题带里不拦**（其它对象不做位置限制）。左栏不显示标题文字（空就空着），缩略图仍是整页快照、比例不变。
 - **缩放（zoom）与适配窗口**：页面按一个 zoom 比例显示，状态栏右下角有 `−／滑块／＋／百分比` 控件（百分比 = 当前显示像素∶页面真实像素，100% = 1:1），与 PPT 一致。默认 **fit 模式**：自动缩放让整页放进可视区；窗口变大 / 最大化时 fit 比例随之变大。用户手动缩放则切到固定比例；点百分比回到 fit。画布大于可视区时容器出现滚动条。
 - **截图是页面上的图片对象（可选中 / 缩放 / 移动 / 叠放），不是背景。** 每张截图按内容 hash 存 `images/<hash>`，在 `canvas_json` 里以 `tj-image://<hash>` 作为 `src` 引用（hash 引用，**非 base64 字节**）。允许在同一页面上**叠加多张截图**（例：把复盘图撑满页面，再从别处截一张小图贴在其上）。
-- **截图不决定页面尺寸**：贴入的截图只是页面上的对象。首图按“适配页面(contain，保持比例、不失真)”居中放置并置于最底；之后的截图按较小尺寸（约页面 60% 内）居中叠在上层，均可自由缩放 / 移动 / 改层级。
+- **截图不决定页面尺寸**：贴入的截图只是页面上的对象。首图按“适配页面(contain，保持比例、不失真)”居中放置，之后的截图按较小尺寸（约页面 60% 内）居中；**第一张与后续截图都走同一层级原语——插入基层最上面**，没有“首图特殊置底”分支。截图落地后可自由缩放 / 移动 / 改层级。
 - **左栏缩略图 = 页面渲染快照**（`renderThumbnail()` 视口无关地把整页截成 JPEG，随每次自动保存刷新，故反映所有绘制与叠图，见 §8）。空白复盘的缩略图就是一张白页（不特殊处理、不显示 “blank”）。**`Entry.image` 退化为封面 hash 兜底**：仅在页面尚未渲染出快照前（如粘贴导入但未编辑的复盘）供缩略图回退，并在打开某复盘且 `canvas_json` 无任何对象时把封面按 contain 适配页面居中作为首图插入（ingest 种子）。捕获截图或首次贴图时设为该 hash，叠加图不改封面。
 - 基础绘图原语：线、矩形、箭头、水平线、文字、自由手绘；PPT 级样式：描边色、填充色（含 rgba）、透明度、线宽、**实线 / 虚线 / 点线**（`strokeDashArray`）。
 - **线 / 箭头按两端编辑**：线、水平线、箭头是"两点"对象（Fabric `Polyline`，箭头为额外渲染箭头的 `Polyline` 子类并注册进 classRegistry 以持久化），选中后显示**两个端点手柄**——拖端点只改那一端、拖线身整体移动；**不给它们图片式的缩放 / 旋转包围盒**。矩形等面积形状仍用包围盒手柄，**四角自由拉伸**（各角独立改宽 / 高、按住 Shift 才等比；手柄为 Office 式小白点、细而清晰，小图上也好用）。端点几何随 `canvas_json` 持久化。
@@ -178,7 +179,9 @@ Expect：
   - 框属性与文字属性都随 `canvas_json` 持久化。
 - **无边框（No border）选项**：Stroke 组的“No border”把描边设为无——**仅对矩形与文本框生效**（矩形 `strokeWidth`＝0、文本框 `boxStrokeWidth`＝0）；线 / 箭头忽略它（它们本身就是描边，不能无边框）。
 - 交互：选择 / 变换手柄、撤销 / 重做（功能区按钮 + 快捷键 **Ctrl+Z** 撤销、**Ctrl+Y / Ctrl+Shift+Z** 重做；在输入框内则让位给原生撤销；撤销/重做后即 `saveNow` 落盘并刷新缩略图，与页面同步）、按住 Ctrl 约束水平 / 竖直 / 45°；**画完任一形状 / 文字后自动切回选择(箭头)模式**（自由手绘保持画笔态以便连续画），于是鼠标移到任意对象上**始终**显示可移动(move)光标（与 PPT 一致，无需先选中一次）。
-- **层级与适配**：右键画布对光标下对象弹出菜单——图片可“适配画布(Fit to page，保持比例、居中撑满、不失真)”，任意对象可“置于顶层 / 置于底层 / 删除”；功能区 Arrange 组提供相同操作。- **锁定 / 解锁**：右键任意对象可"锁定"——锁定后该对象**不能被点选 / 拖动 / 缩放 / 误删**（常用于把底图钉住，方便在其上标注），悬停显示普通光标而非移动光标；但**右键仍能命中它**，菜单相应变为"解锁"（并可继续置顶 / 置底）。锁定状态随 `canvas_json` 持久化（对象上的 `tjLocked`）。- 用户自建图章库（占位，后续实现）：把选中的一组形状保存为可复用图章；系统不预置固定图章。
+- **图层与适配**：用户手画的新 annotation 一律插入当前最高图层最上面；图片可右键“适配画布(Fit to page，保持比例、居中撑满、不失真)”。主页面右键与 Ribbon Arrange 提供八个无歧义命令：`层内上移一位 / 层内下移一位 / 本层置顶 / 本层置底 / 上移图层 / 下移图层 / 置于最顶部 / 置于最底部`；不提供任意“移到图层…”菜单。跨层命令只对单选启用；多选全部在同一图层时可做层内排列并保持相对顺序。具体图层目录、删除与 Stamp 目标层由 Slice 5 完成。
+- **锁定 / 解锁**：右键任意对象可“锁定”——锁定后该对象**不能被点选 / 拖动 / 缩放 / 误删**（常用于把底图钉住，方便在其上标注），悬停显示普通光标而非移动光标；但**右键仍能命中它**，菜单相应变为“解锁”，并可继续执行上述排列命令。锁定状态随 `canvas_json` 持久化（对象上的 `tjLocked`）。
+- 用户自建图章库（占位，后续实现）：把选中的单个形状保存为可复用 stamp；系统不预置固定图章、不支持组合 stamp。
 - 序列化：`canvas.toJSON()`（含图片对象的 `tj-image://<hash>` src、白色页面底色）+ `tjPage`；**图片字节永不进 canvas_json，只进 `images/<hash>`**。
 
 **验证方式**：外壳布局与占位**以人工视觉复核（截图）为准**，不写脆弱的静态断言（这层会反复改）；**Canvas 标注的领域行为**（持久化往返、贴图为对象、Ctrl 约束、画完回选择态、图章）用下面的 scenario test 断言。
@@ -203,6 +206,7 @@ Given：
 Expect：
 
 - 画布上新增一个可选中 / 缩放 / 移动的图片对象；保存后 canvas JSON 以 `tj-image://<hash>` 引用它、不含 base64 字节。
+- 第一张与后续每张截图都进入基层最上面；已有更高图层对象仍绘制在截图之上。
 - 若是首图，则把封面 hash 写入 `Entry.image`（缩略图渲染前的兜底 / ingest 种子；左栏缩略图本身是页面渲染快照，见 §8）。
 
 Scenario-based test：`scenario: finishing a shape returns to the select tool`
@@ -230,7 +234,7 @@ Scenario-based test：`scenario: a user-defined stamp can be saved and reused`
 
 Given：
 
-- 用户把一组形状保存为一个自定义图章；系统未预置任何默认图章。
+- 用户把一个形状保存为一个自定义图章；系统未预置任何默认图章。
 
 Expect：
 
@@ -309,20 +313,28 @@ Expect：
 
 ## 8. Slice 5：Stamp 库（可复用绘图调色板）
 
-目标：Stamp 库是主复盘画布**同一张画布上**的一条**印章条（strip）**——复盘页在左、一条**很窄的分隔线**、右边是装用户可复用绘图印章的印章条；页与条**都是白色、共享同一缩放**。用户把画好的标记存成 stamp，以后从印章条一拖即在复盘页上落一份**连 tag 一起带来**的副本，省去「重复画 + 重复打标签」。因为页与条同处一张画布、同一缩放，拖入 / 拖出**尺寸一致、拖动连续不消失**。stamp 只含绘图、不含截图。
+目标：Stamp 库是主复盘画布**同一张画布上**的一条**印章条（strip）**——复盘页在左、一条**很窄的分隔线**、右边是装用户可复用绘图印章的印章条；页与条**都是白色、共享同一缩放**。同时建立 journal 全局图层目录：基层永久最底，已用层的相对顺序受保护，完全空的用户层可在建库时调整位置；页面对象按“图层 + 层内顺序”稳定绘制，每枚单对象 stamp 指定一个目标图层。用户从印章条拖出 stamp 时，副本不仅带 tag，也直接落到预定视觉深度，不再取决于拖出先后。
 
-**用户动作流程与直觉逻辑**：用户画了个满意的标记（比如一个红框配“DT”），想以后复用——他解开顶部的**调色板锁**，把它拖过那条分隔线进印章条，它就地**变成一枚 stamp**。以后任何复盘里（默认锁定），他在印章上按下往复盘页一拖：跟着光标滑过分隔线的是**一份半透明的副本**（**印章原件在条里纹丝不动**）、**尺寸不变**，一松手落到复盘页就**变成实体**、**连当初的 tag 一起带过来**。直觉上「复盘页和调色板是连在一起的一整张纸，我在同一张纸上平移取用」「**锁定**时往外拖是复制（半透明副本落地成实体、原件不动）；**解锁**时整块画布如一体，在页与条之间**自由移动**——把 stamp 拖到页就是把它**移出调色板**（不是复制）、把绘图拖进条就是收纳。」
+**用户动作流程与直觉逻辑**：用户打开图层管理，列表顶部明确写“最上层 / 覆盖下方”，底部明确写“最下层 / 固定基层”。他从永久基层向上添加自己理解的层次并命名；刚建且尚未使用的层显示绿色“空图层 · 可拖动调整”和拖动手柄，拖过层间时插入线展开预告落点。层一旦承载页面对象或 stamp 就显示锁定状态，不能再拖乱；改名和删除仍走各自入口。页面对象右键时，第一眼先看到它隶属哪个图层；高频的「挪上 / 挪下」就在一级，低频排列收进「其他选项」。他画了个满意的标记，解开顶部的**调色板锁**，把它拖进印章条，原对象当前所属层就成为这枚 stamp 的目标层；解锁状态下右键 stamp，菜单顶部和「选择图层」入口都显示当前层，展开后当前项带勾，点另一个层即可切换。以后任何复盘里（默认锁定），他把 stamp 往页面一拖：原件纹丝不动，半透明副本落地后自动进入目标层最上面。直觉上「建库时空挡位可以整理，装入内容后层次就稳定」「图层决定它应该压住谁，层内顺序才决定同类对象谁在前」「Stamp 只记落层，不在库里谈前后移动」「主页面才是我微调前后关系的地方」。新截图无论第几张都进入基层最上面；新手绘永远进入最高层最上面，所以刚创建的内容立即可见。
 
 实现范围：
 
+- **journal 全局图层目录**：新增稳定 `CanvasLayer { id, name }` 契约与持久化表。初始化一个稳定 id 的基层；基层永远最底、不可删除，允许重命名。用户层新增到当前最高层上方；全 journal 中 `objectCount=0 && stampCount=0` 的用户层可拖动重排，已用层无拖动入口。main 在提交完整顺序时重新扫描使用情况，要求 id 恰好完整一次、基层仍为第一项、全部已用层的相对序列不变；成功只更新目录 `sort`，不改写 Entry 或 stamp JSON。图层名称是显示词，不是 tag/group，不进入查询与统计。
+- **页面绘制不变量**：每个截图与 annotation 在 Fabric JSON 中持久化 `tjLayerId`；结构标题与 `tjChrome` 不进入图层。完整页面 `objects[]` 仍是唯一精确 paint order；过滤掉结构标题后的可排列对象子序列从底到顶规范化为「基层对象 + 各上层对象」，同层对象连续且保持层内顺序，结构标题在完整数组中的固定位置不被排列命令移动。缩略图与 AI 视觉证据直接消费完整数组，不增加 numeric `zIndex`。Stamp strip 的对象数组只表达条内展示顺序，stamp 的 `tjLayerId` 仅表达落地目标层。
+- **统一插入规则**：第一张与后续截图都插入基层最上面；新手绘 annotation 插入最高图层最上面；内部复制 annotation 保留源图层并插入该层最上面；stamp 副本插入其目标图层最上面。截图落地后可以像普通页面对象一样改层。
+- **主页面排列命令**：Ribbon 直接提供 `层内上移一位 / 层内下移一位 / 本层置顶 / 本层置底 / 上移图层 / 下移图层 / 置于最顶部 / 置于最底部` 八个差异化图标按钮。右键菜单顶部显示当前隶属图层，一级只留高频「挪上 / 挪下」，其余六项进入「其他选项」二级菜单。上移图层进入紧邻上层最下面，下移图层进入紧邻下层最上面，绝对置顶进入最高层最上面，绝对置底进入基层最下面。不提供“移到图层…”菜单。多选时所有跨层命令禁用；只有全部选中对象同属一层时才启用层内排列，并保持其相对顺序。无实际变化时不写 history、不触发 autosave。
+- **对象边界**：截图可以执行全部排列命令；锁定对象仍可由右键排列，锁定只冻结位置、尺寸和删除。结构标题不出现在图层管理里，也不响应排列。Palette 锁定时 Stamp 不开放右键编辑；解锁后 Stamp 右键只显示当前目标层与「选择图层」二级菜单，不显示任何层内/跨层排列命令。当前层带勾，选择新层与 Annotation Ribbon 的 Target layer 共用 `setStampTargetLayer`，只改 `tjLayerId`，不改变 stamp 在条中的位置。
+- **删除图层 = 不可撤销的向下合并**：删除任一用户层时，该层在所有 Entry 中的对象全部改属紧邻下方图层，stamp 目标层也改为该下方层；因两个层原本相邻，只改 `tjLayerId`、绝不移动任何 `objects[]` 元素，故所有页面与 stamp strip 的绘制顺序保持不变。删除空层也要确认；基层无删除入口。删除不进入当前 Entry 的 undo。
+- **严重警告与原子提交**：删除前对全 journal 统计受影响的 Entry、页面对象与 stamp 数量，明确显示并入的下方图层，文案说明“对象内容不会删除，但原图层结构无法恢复”，确认按钮为危险操作“删除并合并”。main process 先结构化解析并校验所有受影响文档，再用一个 SQLite transaction 同时更新图层目录、全部受影响 Entry 和 stamp library；任一步失败全部回滚，不能由 renderer 逐 Entry autosave 拼接。
+- **v10 forward migration**：在现有 migration 链末尾追加迁移，创建基层与图层目录；为所有既有截图、annotation 与 stamp 写入基层 id，结构标题不写，保持每份 `objects[]` 的原顺序、几何、id、tag、result、`tjTextLinks` 与图片引用不变。任一 canvas/stamp JSON 损坏则整次迁移回滚；沿用迁移前自动备份与 too-new guard。新增带真实 stamp library 数据的 golden fixture，不能继续依赖 stamp 行为空的 v7 fixture 证明安全。
 - **Stamp 库 = 主画布右侧的印章条**：与复盘页同处**一张 Fabric 画布**（`page[0..pageW] ｜ gap 分隔线 ｜ strip`），**共享同一缩放**、跨区拖动**连续不裁剪**。对象归属由**位置分区**决定（中心 x 落在页区还是条区）。页与条都是白色纸面，只由一条很窄的分隔带区分。**只含绘图、不含截图**。
 - **存储按区拆分**：`serializePage()` 只写页区对象 → Entry 的 `canvas_json`；`serializeStrip()` 只写条区对象 → 全局 **Stamp store**（存一份、跨复盘、独立于任何 Entry）；`serializeAll()` 供撤销 / 重做。`extractAnnotations()` 只投影**页区**标注（条区 stamp 不进 Entry 索引）。
 - **调色板锁（默认锁定）**：功能区一个锁。**锁定态 = 固定库**：条里 stamp 拖到页 = **复制**（半透明幽灵→实体、原件不动、新 id）；条内挪动 / 页对象拖进条一律**弹回**（不改库、不新增）。**解锁态 = 整块画布如一体**：在页与条之间自由移动——把 stamp 拖到页 = **移出调色板**（成为该页标注、**同 id**、非复制，库相应少一枚）、把绘图拖进条 = **变成 stamp**、条内挪动 = rearrange。
-- **拖出＝复制到页（半透明幽灵→实体）**：锁定态在 stamp 上按下拖动，跟随光标的是**一份半透明副本（幽灵）**——**印章原件不选中、不移动**；落到页那一刻幽灵变实体，是一个**新 annotation（新 `tjId`）**，**带几何 + 样式 + tag，不带 result**（result 是某笔交易的结果，复制它无意义）。若 stamp 的可编辑文字含文字超链接，副本像普通 Office 文字复制一样保留同一 target 的 `textLinks`；可见的链接样式不会在落地时失效。落下副本即刻按其 tag 进入该复盘索引、可查。**库不变**（拖出不写库）。
-- **拖入＝移动进条（仅解锁）**：把页上一个绘图拖过分隔线进条 → 它**离开复盘、成为 stamp**（带当时的 tag）；写库 + 写该复盘。因同画布同缩放，尺寸与拖动都连续一致。截图（无 `tjId`）拖进条会被弹回（截图不能当 stamp）。
-- **Ctrl+C / Ctrl+V ＝统一的「把剪贴板粘到页面」**：Ctrl+C 复制选中绘图到内部剪贴板；Ctrl+V 把剪贴板内容作为**页面上的对象**粘上——有内部复制的绘图就粘一份副本（略偏移）、否则系统剪贴板里的截图就粘一张图片对象（**与既有截图粘贴同一机制，不特判截图**）。
+- **拖出＝复制到页（半透明幽灵→实体）**：锁定态在 stamp 上按下拖动，跟随光标的是**一份半透明副本（幽灵）**——**印章原件不选中、不移动**；落到页那一刻幽灵变实体，是一个**新 annotation（新 `tjId`）**，进入 stamp 的目标图层最上面，**带几何 + 样式 + tag，不带 result**（result 是某笔交易的结果，复制它无意义）。若 stamp 的可编辑文字含文字超链接，副本像普通 Office 文字复制一样保留同一 target 的 `textLinks`；可见的链接样式不会在落地时失效。落下副本即刻按其 tag 进入该复盘索引、可查。**库不变**（拖出不写库）。
+- **拖入＝移动进条（仅解锁）**：把页上一个绘图拖过分隔线进条 → 它**离开复盘、成为 stamp**（带当时的 tag，并保留原 `tjLayerId` 作为目标层）；写库 + 写该复盘。因同画布同缩放，尺寸与拖动都连续一致。截图（无 `tjId`）拖进条会被弹回（截图不能当 stamp）。
+- **Ctrl+C / Ctrl+V ＝统一的「把剪贴板粘到页面」**：Ctrl+C 复制选中绘图到内部剪贴板；Ctrl+V 粘贴内部 annotation 时保留源图层并进入该层最上面；系统剪贴板中的截图则统一进入基层最上面。两者仍使用同一“把剪贴板内容物化为页面对象”入口，不按第一张/后续截图分叉。
 - **单个对象为单位**：不做组合 stamp（一次拖一个对象）。
-- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；要改库内 stamp 的 tag，先解锁并选中它，再走 Slice 6 同一套 `Annotation` 上下文页，不另留右键属性浮窗。
+- stamp 携带的 tag 就是它被拖入时带的 tag（可有可无、纯视觉印章就没 tag）；要改库内 stamp 的 tag 或目标图层，先解锁并选中它，再走同一上下文入口，不另造一套排列菜单。
 
 Scenario-based test：`scenario: dragging a stamp onto a review drops a tagged copy while the palette keeps the stamp`
 
@@ -333,6 +345,7 @@ Given：
 Expect：
 
 - 从库拖到画布 → 该复盘多出一个**新 id** 的 annotation，带该 stamp 的 tag，按该 tag 可查到它、母 Entry 是当前复盘。
+- 副本进入 stamp 指定的目标图层最上面；该层以上对象仍在它上方，该层以下对象仍在它下方。
 - 库里那个 stamp 仍在、内容不变（拖出是复制，不搬走）。
 
 Scenario-based test：`scenario: a dropped stamp copy carries tags and text hyperlinks but not result`
@@ -365,8 +378,127 @@ Given：
 Expect：
 
 - Ctrl+C 后 Ctrl+V → 旁边出现一份副本；两者是**各自独立**的 annotation（不同 `tjId`），原件不受影响。
+- 副本保留原件的图层并进入该层最上面。
 
-**实现状态（已落地，25/25 e2e 全绿）**
+Scenario-based test：`scenario: empty layers can be arranged while every used layer keeps its protected order`
+
+Given：
+
+- 一个迁移到当前 schema 的 journal，尚未创建用户图层。
+
+Expect：
+
+- 图层管理只显示一个稳定 id 的基层；基层固定在列表最下方，没有删除或重排入口，但可以重命名；列表顶部和底部明确说明覆盖方向。
+- 连续新增两个图层时，它们依次追加到当前最高层上方；未使用层显示拖动手柄与层间插入预告，可插入任意两层之间。
+- 任一层被页面对象或 stamp 使用后立即变为锁定状态；renderer 不提供拖动入口，main 也拒绝任何改变已用层相对顺序或移动基层的请求。
+- 空层重排前后，全部 Entry 与 stamp 的 `canvas_json` 逐字不变，既有对象 paint order 与视觉遮挡关系不变。
+- 重命名只改变显示名，页面对象与 stamp 的稳定图层引用、绘制顺序和缩略图均不改变。
+
+Scenario-based test：`scenario: screenshots share one base-layer insertion rule while new drawings stay visible`
+
+Given：
+
+- 页面已有基层对象、两个上层对象；用户依次粘贴第一张和第二张截图，然后手画一个矩形。
+
+Expect：
+
+- 两张截图都进入基层最上面，第二张在第一张上方；不存在首图特殊置底路径。
+- 原有上层对象仍绘制在两张截图上方。
+- 新矩形进入当前最高图层最上面，创建完成时立即可见。
+- 截图落地后可由单选跨层命令移出基层。
+
+Scenario-based test：`scenario: layer-local arrange commands never cross a layer boundary`
+
+Given：
+
+- 基层、一个中间层和最高层各有多个重叠对象；选择中间层中的一个对象。
+
+Expect：
+
+- `层内上移一位 / 层内下移一位` 每次只跨过本层紧邻的一个对象；到本层边界后命令禁用。
+- `本层置顶 / 本层置底` 只移动到本层首尾，`layerId` 不变，其他层对象顺序不变。
+- 无实际变化的边界命令不新增 undo history，也不触发 autosave。
+- 保存、关闭并重开后，层归属与层内顺序完全一致。
+
+Scenario-based test：`scenario: single-object cross-layer arrange uses exact boundary insertion positions`
+
+Given：
+
+- 页面从底到顶为 `基层[B1,B2] ｜ 中层[M1,M2] ｜ 顶层[T1,T2]`。
+
+Expect：
+
+- 对 `M1` 执行“上移图层”后得到 `中层[M2] ｜ 顶层[M1,T1,T2]`；它只进入紧邻上层一次并落在该层最下面。
+- Undo 后对 `M1` 执行“下移图层”得到 `基层[B1,B2,M1] ｜ 中层[M2]`；它落在紧邻下层最上面。
+- “置于最顶部”进入最高层最上面；“置于最底部”进入基层最下面。
+- 最上层对象的“上移图层”和基层对象的“下移图层”禁用；每个有效命令恰好一个 undo/redo 步骤。
+
+Scenario-based test：`scenario: multi-selection can reorder within one layer but can never change layers`
+
+Given：
+
+- 用户多选同一层中的若干对象，随后又建立一个跨层多选。
+
+Expect：
+
+- 同层多选可执行四个层内命令，选中对象保持原相对顺序并作为稳定块移动。
+- 任意多选状态下，`上移图层 / 下移图层 / 置于最顶部 / 置于最底部` 全部禁用。
+- 跨层多选时四个层内命令也禁用；任何禁用命令都不改变 canvas、图层归属或 history。
+
+Scenario-based test：`scenario: locked objects remain arrangeable while the structural title stays outside layers`
+
+Given：
+
+- 页面有一个锁定截图、一个锁定 annotation 和结构标题。
+
+Expect：
+
+- 两个锁定页面对象仍可从右键执行层内与跨层排列，之后继续保持锁定。
+- 结构标题不出现在图层对象列表，不带 `tjLayerId`，也不响应任何排列命令；标题带与 `tjChrome` 永远不被普通对象的“置于最底部”压住。
+
+Scenario-based test：`scenario: deleting a used layer merges downward without changing any visual order`
+
+Given：
+
+- journal 有 `基层 ｜ L1 ｜ L2 ｜ L3`；多个 Entry 在 `L2` 有页面对象，stamp library 也有目标为 `L2` 的 stamp；各层对象互相重叠以便观察遮挡。
+
+Expect：
+
+- 删除对话框显示受影响的 Entry 数、页面对象数、stamp 数和目标下方图层 `L1`，明确“对象内容不会删除，但原图层结构无法恢复”，危险按钮为“删除并合并”。取消时 canonical journal digest 完全不变。
+- 确认后所有 `L2` 页面对象与 stamp 目标只改属 `L1`；每份页面和 stamp strip 的 `objects[]` 元素、顺序、geometry、id、tag、result、`tjTextLinks` 与图片引用逐项不变。
+- 删除前后主页面、缩略图和 AI clean overview 的像素遮挡顺序一致；tag 查询、统计与 brief-highlight 结果不变。
+- Ctrl+Z 不恢复被删除图层；应用重启后原图层结构仍不存在。
+
+Scenario-based test：`scenario: top, empty, base, and failed layer deletions obey the hard boundaries`
+
+Given：
+
+- journal 分别存在一个有对象的最高层、一个无页面对象但仍被 stamp 引用的层、一个真正空层和永久基层。
+
+Expect：
+
+- 删除最高层时对象并入紧邻下层最上面，原全局顺序不变。
+- 被 stamp 引用的层不是空层；删除时必须统计并改写该 stamp 目标。真正空层仍显示严重确认，确认后只删除目录行。
+- 基层没有删除入口；即使绕过 UI 调用契约也被拒绝，journal digest 不变。
+- 故障注入使任一受影响 Entry 的 canvas JSON 校验失败时，图层目录、所有 Entry 与 stamp library 在同一个事务中全部回滚，不留下半合并状态。
+
+Scenario-based test：`scenario: an older journal migrates every drawable into the base layer without reordering`
+
+Given：
+
+- 一个 schema v9 golden journal，含多个 Entry 的重叠截图/annotations、结构标题，以及真实非空的 stamp library；对象带 tag、result、文字链接和图片引用。
+
+Expect：
+
+- 升级创建永久基层；所有既有截图、annotation 与 stamp 都引用基层，结构标题仍无图层归属。
+- 每份 page/stamp `objects[]` 的元素和原顺序完全不变，所有 review、annotation、tag、result、`tjTextLinks`、图片 hash 与视觉遮挡关系均保留。
+- migration 前生成 v9 backup，schema 升到 v10；损坏任一 canvas/stamp JSON 会让整个 migration 回滚并保持原数据库不变。
+
+**实现状态（Stamp 基础 + journal 全局图层已落地）**
+
+- **journal 全局图层 — 已落地。** Schema v10 追加 `canvas_layers` 与永久基层；migration 结构化升级全部 Entry/stamp JSON，给 drawable 写 `tjLayerId:'base'`、跳过结构标题并保持数组顺序，golden v7 fixture 现含真实旧 Stamp。main-owned `canvasLayers` store 提供只向上新增、稳定 id 重命名、全 journal usage 摘要、仅空层重排、删除预检和单事务“向下合并”；重排边界要求基层不动且全部已用层相对顺序不变，成功只更新既有 `sort`，无 schema/canvas migration。Home → 图层管理以顶部/底部方向标、空层手柄、已用锁定态和动画插入线表达堆叠关系；删除显示 Entry/对象/Stamp 计数与不可恢复警告，成功后强制重载当前 Canvas。
+- **插入与排列 — 已落地。** 第一张/后续截图统一插入基层顶部，手绘插入最高层顶部，复制保留源层，Stamp 按目标层落地；Annotation 页与解锁 Stamp 右键共用目标层选择。CanvasController 只重排页面 drawable slots，标题/chrome/strip 不动；Ribbon 提供八个中文精确命令及八枚可区分图标，右键顶部显示隶属层、一级只留「挪上 / 挪下」、其他六项进入自适应左右展开的「其他选项」二级菜单。多选只允许同层排列、全部跨层命令禁用，边界 no-op 不写 history。`canvas-layer-store.spec.ts` 与 `canvas-layers.spec.ts` 覆盖目录、usage、空层拖排不改任何 JSON、已用层拒排、菜单真实展开 opacity、Stamp 当前层勾选/切换、插入、层内/跨层边界、多选、严重删除与迁移。
+- **迁移数据安全加固 — 已落地。** 既有库先经 readonly too-new probe，拒开时主库与 sidecar 零残留；迁移前必须完成并验证 WAL checkpoint，备份先写临时文件、独立 `quick_check` + schema version 校验后才原子改名。一次打开的整条 pending migration chain 与所有 `user_version` bump 共用一个事务，任一步失败都回到起始版本；异常连接显式关闭。v9 golden 逐对象证明完整 canvas 树除新增 `tjLayerId` 外不变，v7/v9 malformed fixtures 以文件 SHA-256 证明失败后源库完全不变，生成的备份可独立恢复。
 
 - **Slice 5 (stamp palette) implemented as ONE continuous canvas.** 复盘页与 stamp 印章条同处一张 Fabric 画布：`page[0..2500] ｜ gap(20, 细分隔带) ｜ strip(760)`、`sceneH = pageH`、整张背景 `#ffffff`，**共享一个缩放**（fit 覆盖整条场景）。对象归属由 `regionOf()`（中心 x ≥ `pageW + GAP/2` 即条区）判定。因同画布同缩放，**拖入 / 拖出尺寸一致、跨区拖动连续不消失**——这正是本次从「独立右栏画布（`zoom=1`，拖动会被裁剪 / 尺寸跳变）」重做为单画布的原因。
 - **Stamp store（持久化边界）**：migration `002` bumps `user_version` → 2，单例 `stamp_library(id=1, canvas_json, updated_at)`；`stampStore.ts` 的 `getStampLibrary` / `saveStampLibrary` 走 typed `stamp:*` IPC（zod 校验、renderer 不开 SQLite）。全局、跨复盘、独立于任何 Entry。

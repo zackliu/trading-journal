@@ -47,6 +47,8 @@ export const workspacePathSchema = z.string().min(1).max(4096);
 // Vocabulary registry payloads. Group / value ids are the stable kebab keys.
 export const kebabSchema = kebab;
 export const pinnedSchema = z.boolean();
+export const canvasLayerNameSchema = z.string().trim().min(1).max(80);
+export const canvasLayerOrderSchema = z.array(idSchema).min(1);
 export const entryTagsSchema = z.array(tag);
 export const idListSchema = z.array(kebab);
 export const tagGroupSchema = z.object({ id: kebab, label: z.string().min(1), pinned: z.boolean() });
@@ -126,14 +128,56 @@ export const resultValueSchema = z.object({
   label: z.string().min(1).optional(),
 });
 
+export const canvasJsonSchema = z.string().superRefine((raw, context) => {
+  let root: unknown;
+  try {
+    root = JSON.parse(raw) as unknown;
+  } catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'must be valid canvas JSON' });
+    return;
+  }
+  if (!root || typeof root !== 'object' || Array.isArray(root)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'canvas JSON must be an object document' });
+    return;
+  }
+  const objects = (root as Record<string, unknown>).objects;
+  if (objects === undefined) return;
+  if (!Array.isArray(objects)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'canvas objects must be an array', path: ['objects'] });
+    return;
+  }
+  objects.forEach((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'canvas objects must be records', path: ['objects', index] });
+      return;
+    }
+    const object = value as Record<string, unknown>;
+    if (object.tjChrome === true) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'canvas chrome cannot be persisted', path: ['objects', index] });
+      return;
+    }
+    if (object.tjRole === 'title') {
+      if (object.tjLayerId !== undefined) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'the structural title cannot belong to a layer', path: ['objects', index, 'tjLayerId'] });
+      }
+      return;
+    }
+    if (typeof object.tjLayerId !== 'string' || object.tjLayerId.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'drawable canvas objects must have a layer id',
+        path: ['objects', index, 'tjLayerId'],
+      });
+    }
+  });
+});
+
 export const createEntryInputSchema = z.object({
   image: z.object({ hash: z.string().min(1) }).optional(),
-  canvasJson: z.string(),
+  canvasJson: canvasJsonSchema,
   entryTags: z.array(tag),
   annotations: z.array(annotation),
 });
-
-export const canvasJsonSchema = z.string();
 
 export const annotationsSchema = z.array(annotation);
 

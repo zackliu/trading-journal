@@ -4,6 +4,9 @@ import type {
   AnnotationHit,
   ArchivedResults,
   ArchivedVocab,
+  CanvasLayer,
+  CanvasLayerDeletionImpact,
+  CanvasLayerUsage,
   CreateEntryInput,
   Entry,
   EntrySummary,
@@ -102,6 +105,30 @@ export const store = {
 
   listArchivedGroups: (page: Page): Promise<ArchivedVocab> =>
     page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listArchivedGroups()),
+
+  listCanvasLayers: (page: Page): Promise<CanvasLayer[]> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listCanvasLayers()),
+
+  listCanvasLayerUsage: (page: Page): Promise<CanvasLayerUsage[]> =>
+    page.evaluate(() => (globalThis as unknown as WindowWithApi).api.listCanvasLayerUsage()),
+
+  createCanvasLayer: (page: Page, name: string): Promise<CanvasLayer> =>
+    page.evaluate((value) => (globalThis as unknown as WindowWithApi).api.createCanvasLayer(value), name),
+
+  renameCanvasLayer: (page: Page, id: string, name: string): Promise<CanvasLayer> =>
+    page.evaluate((arg) => (globalThis as unknown as WindowWithApi).api.renameCanvasLayer(arg.id, arg.name), {
+      id,
+      name,
+    }),
+
+  reorderCanvasLayers: (page: Page, ids: string[]): Promise<CanvasLayer[]> =>
+    page.evaluate((values) => (globalThis as unknown as WindowWithApi).api.reorderCanvasLayers(values), ids),
+
+  inspectCanvasLayerDeletion: (page: Page, id: string): Promise<CanvasLayerDeletionImpact> =>
+    page.evaluate((value) => (globalThis as unknown as WindowWithApi).api.inspectCanvasLayerDeletion(value), id),
+
+  deleteCanvasLayerAndMerge: (page: Page, id: string): Promise<CanvasLayerDeletionImpact> =>
+    page.evaluate((value) => (globalThis as unknown as WindowWithApi).api.deleteCanvasLayerAndMerge(value), id),
 
   restoreResultDimension: (page: Page, id: string): Promise<void> =>
     page.evaluate((x) => (globalThis as unknown as WindowWithApi).api.restoreResultDimension(x), id),

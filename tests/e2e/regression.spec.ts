@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchApp, store } from './electronApp';
+import { BASE_CANVAS_LAYER_ID } from '../../src/shared/domain';
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'tj-regress-'));
@@ -48,6 +49,7 @@ async function seedLegacyStamp(page: Page): Promise<void> {
           fill: 'transparent',
           stroke: '#f85149',
           strokeWidth: 3,
+          tjLayerId: BASE_CANVAS_LAYER_ID,
           tjId: 'legacy-stamp',
           tjTags: [],
         },

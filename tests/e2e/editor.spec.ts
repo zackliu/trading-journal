@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchApp, store } from './electronApp';
+import { BASE_CANVAS_LAYER_ID } from '../../src/shared/domain';
 
 const PNG_A =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -52,7 +53,7 @@ test('the editor save path persists canvas JSON round-trip', async () => {
 
   const canvasJson = JSON.stringify({
     version: '6.0.0',
-    objects: [{ type: 'Rect', left: 10, top: 20, width: 40, height: 30, stroke: '#f85149' }],
+    objects: [{ type: 'Rect', left: 10, top: 20, width: 40, height: 30, stroke: '#f85149', tjLayerId: BASE_CANVAS_LAYER_ID }],
     tjPage: { width: 640, height: 480 },
   });
   const saved = await store.updateEntryCanvas(page, entry.id, canvasJson);

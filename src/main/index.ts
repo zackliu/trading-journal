@@ -9,11 +9,23 @@ import { queryAnnotationsByTag } from './store/annotationIndex';
 import { defineGroup, defineValue, deleteGroup, deleteValue, listGroups, reorderGroups, reorderValues, setGroupPinned, restoreGroup, restoreValue, purgeGroup, purgeValue, listArchivedGroups } from './store/vocabulary';
 import { listResultDimensions, upsertResultDimension, distinctResultValues, listResultVocabulary, deleteResultDimension, defineResultValue, deleteResultValue, restoreResultDimension, restoreResultValue, listArchivedResults } from './store/resultDimensions';
 import { getStampLibrary, saveStampLibrary } from './store/stampStore';
+import {
+  assertCanvasLayerReferences,
+  createCanvasLayer,
+  deleteCanvasLayerAndMerge,
+  inspectCanvasLayerDeletion,
+  listCanvasLayers,
+  renameCanvasLayer,
+  listCanvasLayerUsage,
+  reorderCanvasLayers,
+} from './store/canvasLayers';
 import { countGroupValuesUnderView, queryEntriesByView, runViewQuery } from './store/viewQuery';
 import { queryStatsExamples, queryStatsScopeEntries, runStatsQuery } from './store/statistics';
 import { createSavedView, deleteSavedView, getSavedView, listSavedViews } from './store/savedViewStore';
 import {
   annotationsSchema,
+  canvasLayerNameSchema,
+  canvasLayerOrderSchema,
   canvasJsonSchema,
   createEntryInputSchema,
   dateValueSchema,
@@ -253,21 +265,30 @@ function registerIpc(): void {
     restoreResultValue(requireDb(), kebabSchema.parse(dimensionId), resultValueTextSchema.parse(value)),
   );
   ipcMain.handle(IpcChannel.listArchivedResults, () => listArchivedResults(requireDb()));
-  ipcMain.handle(IpcChannel.createEntry, (_event, raw: unknown) =>
-    createEntry(requireDb(), createEntryInputSchema.parse(raw)),
-  );
-  ipcMain.handle(IpcChannel.updateEntry, (_event, id: unknown, raw: unknown) =>
-    updateEntry(requireDb(), idSchema.parse(id), createEntryInputSchema.parse(raw)),
-  );
-  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown, annotations: unknown, thumbnail: unknown) =>
-    updateEntryCanvas(
-      requireDb(),
+  ipcMain.handle(IpcChannel.createEntry, (_event, raw: unknown) => {
+    const input = createEntryInputSchema.parse(raw);
+    const database = requireDb();
+    assertCanvasLayerReferences(database, input.canvasJson);
+    return createEntry(database, input);
+  });
+  ipcMain.handle(IpcChannel.updateEntry, (_event, id: unknown, raw: unknown) => {
+    const input = createEntryInputSchema.parse(raw);
+    const database = requireDb();
+    assertCanvasLayerReferences(database, input.canvasJson);
+    return updateEntry(database, idSchema.parse(id), input);
+  });
+  ipcMain.handle(IpcChannel.updateEntryCanvas, (_event, id: unknown, canvasJson: unknown, annotations: unknown, thumbnail: unknown) => {
+    const parsedCanvasJson = canvasJsonSchema.parse(canvasJson);
+    const database = requireDb();
+    assertCanvasLayerReferences(database, parsedCanvasJson);
+    return updateEntryCanvas(
+      database,
       idSchema.parse(id),
-      canvasJsonSchema.parse(canvasJson),
+      parsedCanvasJson,
       annotationsSchema.parse(annotations),
       thumbnailSchema.parse(thumbnail),
-    ),
-  );
+    );
+  });
   ipcMain.handle(IpcChannel.getEntry, (_event, id: unknown) => getEntry(requireDb(), idSchema.parse(id)));
   ipcMain.handle(IpcChannel.queryAnnotationsByTag, (_event, raw: unknown) =>
     queryAnnotationsByTag(requireDb(), tagSchema.parse(raw)),
@@ -307,6 +328,23 @@ function registerIpc(): void {
     purgeValue(requireDb(), kebabSchema.parse(groupId), kebabSchema.parse(value));
   });
   ipcMain.handle(IpcChannel.listArchivedGroups, () => listArchivedGroups(requireDb()));
+  ipcMain.handle(IpcChannel.listCanvasLayers, () => listCanvasLayers(requireDb()));
+  ipcMain.handle(IpcChannel.listCanvasLayerUsage, () => listCanvasLayerUsage(requireDb()));
+  ipcMain.handle(IpcChannel.createCanvasLayer, (_event, name: unknown) =>
+    createCanvasLayer(requireDb(), canvasLayerNameSchema.parse(name)),
+  );
+  ipcMain.handle(IpcChannel.renameCanvasLayer, (_event, id: unknown, name: unknown) =>
+    renameCanvasLayer(requireDb(), idSchema.parse(id), canvasLayerNameSchema.parse(name)),
+  );
+  ipcMain.handle(IpcChannel.reorderCanvasLayers, (_event, ids: unknown) =>
+    reorderCanvasLayers(requireDb(), canvasLayerOrderSchema.parse(ids)),
+  );
+  ipcMain.handle(IpcChannel.inspectCanvasLayerDeletion, (_event, id: unknown) =>
+    inspectCanvasLayerDeletion(requireDb(), idSchema.parse(id)),
+  );
+  ipcMain.handle(IpcChannel.deleteCanvasLayerAndMerge, (_event, id: unknown) =>
+    deleteCanvasLayerAndMerge(requireDb(), idSchema.parse(id)),
+  );
   ipcMain.handle(IpcChannel.setGroupPinned, (_event, id: unknown, pinned: unknown) => {
     setGroupPinned(requireDb(), kebabSchema.parse(id), pinnedSchema.parse(pinned));
   });
@@ -344,9 +382,12 @@ function registerIpc(): void {
   ipcMain.handle(IpcChannel.deleteSavedView, (_event, id: unknown) => deleteSavedView(requireDb(), idSchema.parse(id)));
 
   ipcMain.handle(IpcChannel.getStampLibrary, () => getStampLibrary(requireDb()));
-  ipcMain.handle(IpcChannel.saveStampLibrary, (_event, canvasJson: unknown) =>
-    saveStampLibrary(requireDb(), canvasJsonSchema.parse(canvasJson)),
-  );
+  ipcMain.handle(IpcChannel.saveStampLibrary, (_event, canvasJson: unknown) => {
+    const parsedCanvasJson = canvasJsonSchema.parse(canvasJson);
+    const database = requireDb();
+    assertCanvasLayerReferences(database, parsedCanvasJson);
+    saveStampLibrary(database, parsedCanvasJson);
+  });
 }
 
 function createWindow(): void {
@@ -416,7 +457,9 @@ app
     // journal written by a newer app version) instead of a silent quit, so review data is never risked.
     console.error('[main] failed to start:', err);
     const message = err instanceof Error ? err.message : String(err);
-    dialog.showErrorBox('Trading Journal — cannot open your journal', message);
+    if (!process.env['TJ_TEST']) {
+      dialog.showErrorBox('Trading Journal — cannot open your journal', message);
+    }
     app.quit();
   });
 

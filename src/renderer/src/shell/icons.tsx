@@ -11,6 +11,14 @@ export type IconName =
   | 'plus'
   | 'front'
   | 'sendtoback'
+  | 'stepfront'
+  | 'stepback'
+  | 'layerfront'
+  | 'layerback'
+  | 'layerup'
+  | 'layerdown'
+  | 'allfront'
+  | 'allback'
   | 'fit'
   | 'lock'
   | 'unlock'
@@ -32,7 +40,10 @@ export type IconName =
   | 'link'
   | 'unlink'
   | 'settings'
-  | 'folder';
+  | 'folder'
+  | 'layers'
+  | 'chevronright'
+  | 'check';
 
 const PATHS: Record<IconName, string> = {
   select: 'M5 3l5 15 2.2-6.3L18.5 9.5z',
@@ -47,6 +58,14 @@ const PATHS: Record<IconName, string> = {
   plus: 'M12 5v14M5 12h14',
   front: 'M12 4l4 4h-3v6h-2V8H8zM4 18h16',
   sendtoback: 'M12 16l-4-4h3V6h2v6h3zM4 20h16',
+  stepfront: 'M5 15h9v5H5zM10 9h9v5h-5M7 11l3-3 3 3',
+  stepback: 'M10 4h9v5h-9zM5 10h9v5H5M17 12l-3 3-3-3',
+  layerfront: 'M4 5h16M4 12h16M4 19h16M12 16V8M9 11l3-3 3 3',
+  layerback: 'M4 5h16M4 12h16M4 19h16M12 8v8M9 13l3 3 3-3',
+  layerup: 'M5 6h14M5 12h14M5 18h14M9 15l3-3 3 3',
+  layerdown: 'M5 6h14M5 12h14M5 18h14M9 9l3 3 3-3',
+  allfront: 'M4 5h16M4 8h16M12 19V11M9 14l3-3 3 3',
+  allback: 'M4 16h16M4 19h16M12 5v8M9 10l3 3 3-3',
   fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
   lock: 'M7 10V7a5 5 0 0110 0v3M5 10h14v10H5zM12 14v3',
   unlock: 'M7 10V7a5 5 0 019.6-2M5 10h14v10H5zM12 14v3',
@@ -69,6 +88,9 @@ const PATHS: Record<IconName, string> = {
   unlink: 'M9.5 14.5l5-5M4 4l16 16M6.3 17.7a3.5 3.5 0 01-5-5l2-2M17.7 6.3a3.5 3.5 0 015 5l-2 2',
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.34 1.88l.06.06-1.8 3.12-.09-.03a1.7 1.7 0 00-1.8.22l-.47.27a1.7 1.7 0 00-.83 1.69V22h-3.6v-.09a1.7 1.7 0 00-.83-1.69l-.47-.27a1.7 1.7 0 00-1.8-.22l-.09.03-1.8-3.12.06-.06A1.7 1.7 0 006.6 15v-.55a1.7 1.7 0 00-.97-1.57l-.08-.03V9.24l.08-.03a1.7 1.7 0 00.97-1.57v-.55a1.7 1.7 0 00-.34-1.88l-.06-.06L8 2.03l.09.03a1.7 1.7 0 001.8-.22l.47-.27A1.7 1.7 0 0011.19 0h3.6a1.7 1.7 0 00.83 1.57l.47.27a1.7 1.7 0 001.8.22l.09-.03 1.8 3.12-.06.06a1.7 1.7 0 00-.34 1.88v.55a1.7 1.7 0 00.97 1.57l.08.03v3.61l-.08.03a1.7 1.7 0 00-.97 1.57z',
   folder: 'M3 7a1 1 0 011-1h5l2 2h9a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1z',
+  layers: 'M12 4L3 9l9 5 9-5zM5 13l7 4 7-4M5 17l7 4 7-4',
+  chevronright: 'M9 5l7 7-7 7',
+  check: 'M5 12l4 4L19 6',
 };
 
 export function Icon({ name }: { name: IconName }): JSX.Element {

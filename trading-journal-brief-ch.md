@@ -39,12 +39,13 @@
 Entry（一次复盘 / 一个 chart context）——durable，存一份
 ├─ page         固定尺寸白色复盘页（尺寸随 Entry 存在 canvas_json）
 ├─ title        结构性可编辑标题文字（不是 queryable annotation；可带文字超链接）
-├─ screenshots  0..n 个静态截图对象（可移动 / 缩放 / 堆叠，bytes 按 hash 存 images/）
+├─ screenshots  0..n 个静态截图对象（可移动 / 缩放 / 堆叠，带 layerId，bytes 按 hash 存 images/）
 ├─ annotations  页面上的所有标注元素（框 / 线 / 箭头 / 文本框 / 组…）
-│                 每个 annotation 自带 geometry(bounds)、可带 0..n 个 tag、可带一个可选的 result；文本框可带文字超链接
+│                 每个 annotation 自带 geometry(bounds) 与 layerId、可带 0..n 个 tag、可带一个可选的 result；文本框可带文字超链接
 ├─ entryTags    贴在整张复盘上的 tag（Tag[]）
 └─ image        可选 cover hash（仅供页面首次渲染前 fallback，不是唯一底图）
 
+CanvasLayer = { id, name }    journal 全局、从基层到最高层固定排序；基层永久存在且永远最底
 Tag = group:value    group = 分类维度（用户自定义、可枚举）→ UI 第一层；value → UI 第二层
 Result = annotation 上可选的、多维、typed 的结果记录（仅用于统计、不进浏览导航）
        = { dimension → value }；dimension 用户预定义，value 类型为 string 或 number
@@ -60,6 +61,7 @@ TextLinkSpan = { start, end, target }    显示文字只来自所属文字对象
 - **笔记就是文本框 annotation**：文本框的内容即笔记，且它本身也能打 tag。没有独立的 note 字段。
 - **tag 可贴在两个层级**：整张 Entry（entryTags），或某个具体 annotation（annotation.tags）。
 - **所有对象与 annotation 的 geometry 用 page 像素坐标**；截图只是页面里的 image object。V1 仍只处理静态截图，不绑定价格 / 时间轴。
+- **图层只组织页面绘制顺序，不是分类**：截图和 annotation 各自属于一个 journal 全局 `CanvasLayer`；图层不进入 tag/group、SavedView、Annotation-Tag Index 或统计。结构标题、白页、标题带与分隔线是页面结构，不属于用户图层。
 - **Entry 与 annotation 都是稳定的内部链接目标**：右键可把由对象类型 + immutable id 组成的内部地址复制到系统剪贴板；改标题、日期、文字或位置不改变地址。可编辑文字（结构性标题与文本框 annotation）用字符区间承载 0..n 个内部超链接，点击后定位到目标 Entry 或 annotation。
 
 ## 5. 分组标签（Group / Tag）模型
@@ -104,6 +106,22 @@ TextLinkSpan = { start, end, target }    显示文字只来自所属文字对象
 - **文字编辑语义**：link mark 跟随字符而不是另存一份显示文字。局部删除只缩短链接区间，剩余字符仍可点击；整段链接字符全部删除后 link mark 才消失。区间内部输入的新字符继承该链接，区间边界外输入不继承；相邻同目标区间自动合并，区间永不重叠。文字、区间与 target 在同一 undo/redo 快照中恢复。
 - **解析与断链**：新建 / 修改链接时必须通过 shared parser 校验；地址的 `journalId` 与当前 journal 不同，或 target 当前不存在时，不能保存并在 Link 字段就地说明。目标后来被删除时，已有 `textLinks` 仍可正常 autosave / 重开，不被静默删除；点击显示「目标已不存在」，仍可编辑或取消链接。首版只接受上述内部地址，不执行外部 URL、文件路径或任意协议。
 
+## 5.3 图层与页面绘制顺序
+
+图层是一套 **journal 全局、用户命名、已用顺序受保护**的页面绘制层次，用来让文字框、分析线、入场标记、大区域框等单对象 stamp 无论按什么取用顺序，都能落到稳定的视觉深度。系统不按对象类型、颜色或尺寸猜图层，也不支持组合 stamp。
+
+- **基层是永久下界，已用层顺序受保护**：每个 journal 恒有一个稳定 id 的系统基层；基层永远是最下层，不可删除、不可重排，显示名可改。新图层创建在当前最高层之上；尚未被任何 Entry 页面对象或 stamp 使用的用户层可在图层管理中拖到任意两层之间，方便建库初期整理。层一旦被使用就不再提供拖动入口；main process 提交时重新计算全 journal 使用情况，并拒绝改变基层或任意已用层之间的相对顺序。移动空层只更新图层目录的 `sort`，不读取后重写任何 Entry/stamp `objects[]`，因此既有对象的 paint order 与视觉遮挡关系完全不变。
+- **一个对象，一个归属**：每个页面截图与 annotation 都有一个 `layerId`。每枚 stamp 也是单个对象；它在 stamp strip 中的 `layerId` 只表示拖到页面后的**目标图层**，不改变 stamp 在条中的可见位置或命中顺序。页面结构标题与非持久化 chrome 不进入图层。
+- **唯一绘制真相**：完整的页面 `canvas_json.objects[]` 仍按从底到顶保存最终 paint order；过滤掉结构标题后的**可排列对象子序列**等于「基层内部顺序 + 各上层内部顺序」，同层对象在该子序列中连续。结构标题保留在完整数组中的固定位置，不参与任何图层重排。`layerId` 表示对象归属与插入边界，不另存 numeric `zIndex`。缩略图与 AI 视觉证据都只按已提交的完整 `objects[]` 渲染，不建立第二套排序。
+- **统一插入规则**：每张新粘贴、拖入或导入的截图都进入**基层最上面**，第一张与后续截图完全同一机制；截图落地后可像普通页面对象一样调整层级。用户手画的新 annotation 进入**当前最高图层的最上面**，确保刚画出的内容立即可见；若 journal 只有基层，则进入基层最上面。页面内复制 annotation 时保留源图层并进入该层最上面。stamp 副本进入其目标图层最上面；页面对象移入 stamp strip 时保留原 `layerId`，作为该 stamp 日后的目标图层。
+- **右键先说明归属，再给高频动作**：右键页面对象时，菜单顶部先以不可点击的信息行显示「隶属图层 + 当前图层名」。一级排列只保留「挪上 / 挪下」（即同层上移一位 / 下移一位）；本层置顶 / 置底、上移 / 下移图层、绝对置顶 / 置底收进末尾「其他选项」二级菜单，并只显示当前可执行项。Ribbon Arrange 仍保留八个直接按钮，供连续编辑时快速使用。
+- **Stamp 条只配置归属**：stamp strip 不提供层内前后移动或跨层排列命令。Palette 锁定时 stamp 是只可拖出复制的库内容，不开放右键编辑；解锁后右键 stamp，顶部明确显示当前「隶属图层」，并提供「选择图层 · 当前层名」二级菜单，当前层带勾，选择其他层只改变这枚 stamp 日后落地的目标层，不改变它在 strip 中的位置。Annotation Ribbon 的 Target layer 选择器与该菜单读取/写入同一个 `layerId`。主页面才提供对象排列。
+- **主页面的层内排列**：单选对象可「层内上移一位 / 层内下移一位 / 本层置顶 / 本层置底」，这些命令只改变本层内部顺序，不改变 `layerId`。到达边界时命令禁用且不产生 history/save。多选对象只有在全部属于同一图层时才可使用层内排列，并保持选中对象的原相对顺序。
+- **主页面的跨层排列**：单选对象可「上移图层」（进入紧邻上层最下面）、「下移图层」（进入紧邻下层最上面）、「置于最顶部」（进入最高图层最上面）和「置于最底部」（进入基层最下面）。不提供任意「移到图层…」菜单；多选时所有跨层排列均禁用。截图可执行这些命令。锁定对象仍可通过右键排列；锁定只禁止点选、拖动、缩放与误删，不冻结绘制顺序。
+- **删除图层 = 向下合并且视觉不变**：用户图层删除后，该层在所有 Entry 中的页面对象整体并入紧邻下方图层，该层的 stamp 目标也改为紧邻下方图层。被删除层原本就在目标层正上方，因此只改变 `layerId`、绝不重排 `objects[]`，删除前后每张页面与 stamp strip 的视觉顺序完全一致。删除空层同样需要确认；基层永不可删除。
+- **删除是严重且不可撤销的 journal 级操作**：删除前显示被影响的 Entry、页面对象与 stamp 数量、明确目标下方图层，并警告原图层结构无法恢复；确认动作命名为「删除并合并」。它不进入当前 Entry 的画布 undo。main process 必须先校验全部受影响文档，再在一个 SQLite transaction 中原子更新图层目录、所有受影响 Entry 与 stamp library；任一 JSON 无法安全解析或任一步失败则全部回滚，对象内容不丢失。
+- **数据保护与迁移**：从既有 journal 升级时追加 forward migration，先创建基层，再把所有既有截图、annotation 与旧 stamp 归入基层，同时保持每份 `objects[]` 的原顺序、几何、id、tag、result、`tjTextLinks` 与图片引用完全不变；结构标题不写 `layerId`。迁移前自动备份、损坏 JSON 使整次迁移回滚，golden-DB fixture 必须包含真实 stamp 数据并证明升级前后绘制顺序不变。
+
 ## 6. 视图 = 同一份产物的多种渲染（按 group / tag 浏览）
 
 不再有"两份图"，也不再有"专门的 Setup 视角"；只有**一份 Entry，按不同 group/tag 浏览时的不同渲染**：
@@ -121,6 +139,7 @@ TextLinkSpan = { start, end, target }    显示文字只来自所属文字对象
 以下为当前目标态选择的**单一机制**（不是可选分支）：
 
 - **白页 + 静态截图对象 + page 像素坐标**：V1 的 review surface 是固定尺寸白页，页面可放一张或多张静态截图；截图与 annotation 都以 page-pixel geometry 存储，不绑定价格 / 时间轴。
+- **用户定义图层 + 固定基层**：图层是 journal 全局的页面绘制结构，不是 tag；基层永久最底，已被页面对象或 stamp 使用的层保持相对顺序，只有完全空的用户层可在建库时插入其他层之间。截图统一进入基层最上面，手绘进入最高层最上面，stamp 按自身目标图层落地；页面数组顺序仍是缩略图与 AI 视觉证据的唯一绘制真相。
 - **笔记就是可打 tag 的文本框 annotation**：没有独立的 entry / marker note 字段。
 - **没有特殊标注类型**：任意 annotation 都可带 group 下的 tag；"setup 高亮"只是"被 tag 的 annotation 在浏览该 tag 时高亮"的一个实例，必须 general 化，不特判。
 - **高亮 = 对带该 tag 的 annotation 短暂高亮**（不缩放视口、不持久淡化），在 render 期计算，不落库。
@@ -140,7 +159,7 @@ TextLinkSpan = { start, end, target }    显示文字只来自所属文字对象
 ## 8. MVP 范围
 
 1. Ingest：粘贴/导入一张截图，创建一个 Entry。
-2. Canvas 标注：基础绘图原语（线、框、箭头、水平线、文字、自由手绘）+ PPT 级样式（描边/填充/透明度）；**用户自建的可复用图章库**（自己设计并保存组件，系统不预置固定几个）。
+2. Canvas 标注：基础绘图原语（线、框、箭头、水平线、文字、自由手绘）+ PPT 级样式（描边/填充/透明度）+ journal 全局图层管理与主页面排列；**用户自建的可复用图章库**（自己设计并保存单对象 stamp、为其指定目标图层，系统不预置固定几个）。
 3. 给任意 annotation（框 / 文本框 / …）打 group 下的 tag、并可给它设一个可选的 typed `result`（多维、每维 string 或 number、维度用户预定义）；笔记就是文本框 annotation。每个 Entry / annotation 都可复制稳定内部地址；可编辑文字区间可创建、打开、编辑、取消内部超链接，并完整参与文字删除与 undo/redo。
 4. Entry 级 group 标签（贴整张图；`date` 为结构性 group）。
 5. Tag & query 引擎：布尔组合查询、每个 tag 的自动计数、保存为视图。

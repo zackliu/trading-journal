@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import type {
   ArchivedResults,
   ArchivedVocab,
+  CanvasLayer,
   EntrySummary,
   InternalLinkTarget,
   Result,
@@ -43,11 +44,12 @@ import {
   type Bucket,
   type GroupBrowserHandle,
 } from './shell/GroupBrowser';
-import { Icon } from './shell/icons';
+import { Icon, type IconName } from './shell/icons';
 import { Ribbon, type RibbonTab, type StatsPeriod } from './shell/Ribbon';
 import { SettingsDialog } from './shell/SettingsDialog';
 import { ResultSettingsDialog } from './shell/ResultSettingsDialog';
 import { GeneralSettingsDialog } from './shell/GeneralSettingsDialog';
+import { LayersDialog } from './shell/LayersDialog';
 import { SetupGate } from './shell/SetupGate';
 import { ViewBuilder } from './shell/ViewBuilder';
 import { StatusBar } from './shell/StatusBar';
@@ -70,7 +72,22 @@ const DEFAULT_STYLE: DrawStyle = {
   fontSize: 22,
   bold: false,
 };
-const EMPTY_EDITOR: EditorState = { canUndo: false, canRedo: false, dirty: false, hasSelection: false };
+const EMPTY_EDITOR: EditorState = {
+  canUndo: false,
+  canRedo: false,
+  dirty: false,
+  hasSelection: false,
+  arrange: {
+    localForward: false,
+    localBackward: false,
+    localFront: false,
+    localBack: false,
+    layerUp: false,
+    layerDown: false,
+    absoluteTop: false,
+    absoluteBottom: false,
+  },
+};
 const EMPTY_QUERY: ViewQuery = { entry: [], annotation: [], results: [] };
 const EMPTY_BUCKETS: Bucket[] = [];
 const WHEEL_GESTURE_IDLE_MS = 400;
@@ -246,6 +263,7 @@ export function App(): JSX.Element {
   const [entryMetadataLoadedId, setEntryMetadataLoadedId] = useState<string | null>(null);
   const [selectedAnnotation, setSelectedAnnotation] = useState<AnnotationSelection | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showLayers, setShowLayers] = useState(false);
   const [showGeneral, setShowGeneral] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
@@ -298,12 +316,15 @@ export function App(): JSX.Element {
   const [dimensions, setDimensions] = useState<ResultDimensionView[]>([]);
   const [archivedResults, setArchivedResults] = useState<ArchivedResults>({ dimensions: [], values: [] });
   const [stampLocked, setStampLocked] = useState(true);
+  const [canvasLayers, setCanvasLayers] = useState<CanvasLayer[]>([]);
+  const [editorRevision, setEditorRevision] = useState(0);
   const controllerRef = useRef<CanvasController | null>(null);
   const pendingSelectRef = useRef<string | null>(null);
   const styleRef = useRef(style);
   const saveRunningRef = useRef<Promise<SaveOutcome> | null>(null);
   const saveAgainRef = useRef(false);
   const stampLockedRef = useRef(stampLocked);
+  const canvasLayersRef = useRef(canvasLayers);
   const selectedEntryIdRef = useRef(selectedEntryId);
   const wheelGestureRef = useRef<{ lastAt: number; direction: 1 | -1 | 0; navigated: boolean }>({
     lastAt: 0,
@@ -433,6 +454,13 @@ export function App(): JSX.Element {
     setSavedViews(await window.api.listSavedViews());
   }, []);
 
+  const refreshCanvasLayers = useCallback(async (): Promise<CanvasLayer[]> => {
+    const next = await window.api.listCanvasLayers();
+    setCanvasLayers(next);
+    controllerRef.current?.setLayers(next);
+    return next;
+  }, []);
+
   const importCurrentViewIntoStats = useCallback(() => {
     const entry = copyPredicates(filter.entry);
     const annotation = copyPredicates(filter.annotation);
@@ -479,6 +507,7 @@ export function App(): JSX.Element {
     void refreshDimensions();
     void refreshGroups();
     void refreshSavedViews();
+    void refreshCanvasLayers();
     window.api
       .ping()
       .then((res: PingResult) => {
@@ -491,7 +520,7 @@ export function App(): JSX.Element {
         setStoreHealth('error');
         setStoreLabel('unavailable');
       });
-  }, [workspaceReady, refresh, refreshDimensions, refreshGroups, refreshSavedViews]);
+  }, [workspaceReady, refresh, refreshDimensions, refreshGroups, refreshSavedViews, refreshCanvasLayers]);
 
   useEffect(() => {
     setStatsConfig((current) => {
@@ -737,6 +766,9 @@ export function App(): JSX.Element {
     stampLockedRef.current = stampLocked;
     controllerRef.current?.setPaletteLocked(stampLocked);
   }, [stampLocked]);
+  useEffect(() => {
+    canvasLayersRef.current = canvasLayers;
+  }, [canvasLayers]);
   useEffect(() => {
     selectedEntryIdRef.current = selectedEntryId;
     setActiveTab((current) => (current === 'Stats' ? current : selectedEntryId ? 'Draw' : 'Home'));
@@ -1476,6 +1508,18 @@ export function App(): JSX.Element {
     controller.onSelectionStyle(setSelectionStyle);
     controller.onContext((r) => {
       const items: MenuItem[] = [];
+      const currentLayer = r.layerId
+        ? canvasLayersRef.current.find((layer) => layer.id === r.layerId) ?? null
+        : null;
+      if (currentLayer) {
+        items.push({
+          label: '隶属图层',
+          detail: currentLayer.name,
+          icon: 'layers',
+          info: true,
+          testId: 'menu-layer-info',
+        });
+      }
       if (r.textLink?.target) {
         const link = r.textLink;
         items.push({
@@ -1504,13 +1548,67 @@ export function App(): JSX.Element {
           onClick: () => void openTextLinkDialog(r.textLink as TextLinkContext),
         });
       }
-      if (r.annotation) {
+      if (r.annotation && !r.annotation.isStamp) {
         const annotationId = r.annotation.id;
         items.push({
           label: 'Copy link',
           icon: 'link',
           testId: 'menu-copy-link',
           onClick: () => void copyInternalLink({ kind: 'annotation', id: annotationId }),
+        });
+      }
+      if (r.isStamp && r.annotation) {
+        const stampId = r.annotation.id;
+        items.push({
+          label: '选择图层',
+          detail: currentLayer?.name,
+          icon: 'layers',
+          testId: 'menu-stamp-layer',
+          items: [...canvasLayersRef.current].reverse().map((layer) => ({
+            label: layer.name,
+            active: layer.id === r.layerId,
+            testId: `menu-stamp-layer-${layer.id}`,
+            onClick: () => controllerRef.current?.setStampTargetLayer(stampId, layer.id),
+          })),
+        });
+      }
+      const arrangeItems: Array<{
+        enabled: boolean;
+        label: string;
+        testId: string;
+        icon: IconName;
+        action: Parameters<CanvasController['arrangeContext']>[0];
+      }> = [
+        { enabled: r.arrange.localForward, label: '挪上', testId: 'menu-layer-forward', icon: 'stepfront', action: 'forward' },
+        { enabled: r.arrange.localBackward, label: '挪下', testId: 'menu-layer-backward', icon: 'stepback', action: 'backward' },
+        { enabled: r.arrange.localFront, label: '移至本图层最前', testId: 'menu-layer-front', icon: 'layerfront', action: 'layer-front' },
+        { enabled: r.arrange.localBack, label: '移至本图层最后', testId: 'menu-layer-back', icon: 'layerback', action: 'layer-back' },
+        { enabled: r.arrange.layerUp, label: '移到上一图层', testId: 'menu-layer-up', icon: 'layerup', action: 'layer-up' },
+        { enabled: r.arrange.layerDown, label: '移到下一图层', testId: 'menu-layer-down', icon: 'layerdown', action: 'layer-down' },
+        { enabled: r.arrange.absoluteTop, label: '移至所有内容最前', testId: 'menu-absolute-front', icon: 'allfront', action: 'top' },
+        { enabled: r.arrange.absoluteBottom, label: '移至所有内容最后', testId: 'menu-absolute-back', icon: 'allback', action: 'bottom' },
+      ];
+      for (const item of arrangeItems.slice(0, 2)) {
+        if (!item.enabled) continue;
+        items.push({
+          label: item.label,
+          icon: item.icon,
+          testId: item.testId,
+          onClick: () => controllerRef.current?.arrangeContext(item.action),
+        });
+      }
+      const otherArrange: MenuItem[] = arrangeItems.slice(2).filter((item) => item.enabled).map((item) => ({
+        label: item.label,
+        icon: item.icon,
+        testId: item.testId,
+        onClick: () => controllerRef.current?.arrangeContext(item.action),
+      }));
+      if (otherArrange.length > 0) {
+        items.push({
+          label: '其他选项',
+          icon: 'layers',
+          testId: 'menu-other-arrange',
+          items: otherArrange,
         });
       }
       if (r.isLocked) {
@@ -1520,16 +1618,6 @@ export function App(): JSX.Element {
           testId: 'menu-unlock',
           onClick: () => controllerRef.current?.unlockContext(),
         });
-        items.push({
-          label: 'Bring to front',
-          icon: 'front',
-          onClick: () => controllerRef.current?.bringContextToFront(),
-        });
-        items.push({
-          label: 'Send to back',
-          icon: 'sendtoback',
-          onClick: () => controllerRef.current?.sendContextToBack(),
-        });
       } else if (r.hasSelection) {
         if (r.isImage) {
           items.push({
@@ -1538,16 +1626,6 @@ export function App(): JSX.Element {
             onClick: () => controllerRef.current?.fitActiveToCanvas(),
           });
         }
-        items.push({
-          label: 'Bring to front',
-          icon: 'front',
-          onClick: () => controllerRef.current?.bringToFront(),
-        });
-        items.push({
-          label: 'Send to back',
-          icon: 'sendtoback',
-          onClick: () => controllerRef.current?.sendToBack(),
-        });
         items.push({
           label: 'Lock',
           icon: 'lock',
@@ -1791,6 +1869,32 @@ export function App(): JSX.Element {
     await refreshGroups();
   }, [refreshGroups]);
 
+  const onCreateCanvasLayer = useCallback(async (name: string) => {
+    await window.api.createCanvasLayer(name);
+    await refreshCanvasLayers();
+  }, [refreshCanvasLayers]);
+
+  const onRenameCanvasLayer = useCallback(async (id: string, name: string) => {
+    await window.api.renameCanvasLayer(id, name);
+    await refreshCanvasLayers();
+  }, [refreshCanvasLayers]);
+
+  const onReorderCanvasLayers = useCallback(async (ids: string[]) => {
+    await window.api.reorderCanvasLayers(ids);
+    await refreshCanvasLayers();
+  }, [refreshCanvasLayers]);
+
+  const onDeleteCanvasLayer = useCallback(async (id: string) => {
+    controllerRef.current?.commitTextEditing();
+    const outcome = await saveNow();
+    if (outcome === 'failed') throw new Error('Save the current review before deleting a canvas layer.');
+    await window.api.deleteCanvasLayerAndMerge(id);
+    controllerRef.current = null;
+    loadedEntryIdRef.current = null;
+    await refreshCanvasLayers();
+    setEditorRevision((revision) => revision + 1);
+  }, [refreshCanvasLayers, saveNow]);
+
   const onEditorLoaded = useCallback((entryId: string) => {
     setLoadError(null); // a successful (re)load clears any earlier load-failure notice
     loadedEntryIdRef.current = entryId;
@@ -1879,6 +1983,7 @@ export function App(): JSX.Element {
         style={selectionStyle ?? style}
         canUndo={editorState.canUndo}
         canRedo={editorState.canRedo}
+        arrange={editorState.arrange}
         onNew={() => void createNew()}
         onDeleteReview={() => {
           if (selectedEntryId) setConfirmDelete(selectedEntryId);
@@ -1889,6 +1994,12 @@ export function App(): JSX.Element {
         onUndo={() => void controllerRef.current?.undo().then(() => saveNow())}
         onRedo={() => void controllerRef.current?.redo().then(() => saveNow())}
         onDeleteSelected={() => controllerRef.current?.deleteSelected()}
+        onMoveForward={() => controllerRef.current?.moveForward()}
+        onMoveBackward={() => controllerRef.current?.moveBackward()}
+        onBringToLayerFront={() => controllerRef.current?.bringToLayerFront()}
+        onSendToLayerBack={() => controllerRef.current?.sendToLayerBack()}
+        onMoveLayerUp={() => controllerRef.current?.moveLayerUp()}
+        onMoveLayerDown={() => controllerRef.current?.moveLayerDown()}
         onBringToFront={() => controllerRef.current?.bringToFront()}
         onSendToBack={() => controllerRef.current?.sendToBack()}
         onFitToCanvas={() => controllerRef.current?.fitActiveToCanvas()}
@@ -1904,6 +2015,14 @@ export function App(): JSX.Element {
         onToggleEntryTag={onToggleEntryTag}
         onToggleAnnotationTag={onToggleAnnotationTag}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenLayers={() => setShowLayers(true)}
+        canvasLayers={canvasLayers}
+        onSetStampTargetLayer={(layerId) => {
+          const selected = selectedAnnotationRef.current;
+          if (!selected?.isStamp) return;
+          controllerRef.current?.setStampTargetLayer(selected.id, layerId);
+          setSelectedAnnotation({ ...selected, layerId });
+        }}
         onOpenResultSettings={() => setShowResultSettings(true)}
         onOpenGeneral={() => setShowGeneral(true)}
         resultDimensions={dimensions}
@@ -2048,7 +2167,7 @@ export function App(): JSX.Element {
               </div>
             ) : (
               <CanvasEditor
-                key={selectedEntryId}
+                key={`${selectedEntryId}:${editorRevision}`}
                 entryId={selectedEntryId}
                 onReady={onReady}
                 onLoaded={onEditorLoaded}
@@ -2137,6 +2256,17 @@ export function App(): JSX.Element {
           onPurgeGroup={(id) => void onPurgeGroup(id)}
           onPurgeValue={(gid, val) => void onPurgeValue(gid, val)}
           onClose={() => setShowSettings(false)}
+        />
+      ) : null}
+      {showLayers ? (
+        <LayersDialog
+          layers={canvasLayers}
+          onCreate={onCreateCanvasLayer}
+          onRename={onRenameCanvasLayer}
+          onReorder={onReorderCanvasLayers}
+          onInspectDelete={(id) => window.api.inspectCanvasLayerDeletion(id)}
+          onDelete={onDeleteCanvasLayer}
+          onClose={() => setShowLayers(false)}
         />
       ) : null}
       {showViewBuilder ? (

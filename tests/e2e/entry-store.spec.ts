@@ -140,3 +140,51 @@ test('the store rejects a malformed create-entry payload at the boundary', async
   // A non-kebab tag group is rejected before any write happens.
   expect(errorMessage).not.toBe('');
 });
+
+test('the store rejects a drawable canvas object without a layer id', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  const errorMessage = await page.evaluate(() =>
+    (globalThis as unknown as { api: { createEntry(i: unknown): Promise<unknown> } }).api
+      .createEntry({
+        canvasJson: JSON.stringify({ version: '6', objects: [{ type: 'Rect', width: 20, height: 20 }] }),
+        entryTags: [],
+        annotations: [],
+      })
+      .then(
+        () => '',
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      ),
+  );
+  await app.close();
+
+  expect(errorMessage).toContain('drawable canvas objects must have a layer id');
+});
+
+test('the store rejects unknown layer ids and persisted structural canvas objects', async () => {
+  const dataDir = tempDataDir();
+  const { app, page } = await launchApp(dataDir);
+
+  const invoke = (canvasJson: string): Promise<string> =>
+    page.evaluate((json) =>
+      (globalThis as unknown as { api: { createEntry(i: unknown): Promise<unknown> } }).api
+        .createEntry({ canvasJson: json, entryTags: [], annotations: [] })
+        .then(
+          () => '',
+          (err: unknown) => (err instanceof Error ? err.message : String(err)),
+        ),
+    canvasJson);
+
+  await expect(invoke(JSON.stringify({ objects: [{ type: 'Rect', tjLayerId: 'missing-layer' }] }))).resolves.toContain(
+    'unknown layer',
+  );
+  await expect(invoke(JSON.stringify({ objects: [{ type: 'Rect', tjChrome: true }] }))).resolves.toContain(
+    'canvas chrome cannot be persisted',
+  );
+  await expect(
+    invoke(JSON.stringify({ objects: [{ type: 'TextBoxAnnotation', tjRole: 'title', tjLayerId: 'base' }] })),
+  ).resolves.toContain('structural title cannot belong to a layer');
+
+  await app.close();
+});

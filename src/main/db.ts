@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { stripLegacyCanvasLinksJson } from './legacyLinksMigration';
+import { assignBaseCanvasLayerJson } from './canvasLayersMigration';
+import { BASE_CANVAS_LAYER_ID } from '../shared/domain';
 
 export { LegacyLinksMigrationError } from './legacyLinksMigration';
 
@@ -34,9 +36,10 @@ export class JournalTooNewError extends Error {
   }
 }
 
-// Ordered migrations. Index i migrates schema version i -> i+1, wrapped in a transaction together with
-// the user_version bump. APPEND-ONLY (v0.1.0+ data contract): never edit, reorder, or remove an
-// existing migration, and a migration must preserve/transform existing rows — never drop user data.
+// Ordered migrations. Index i migrates schema version i -> i+1. All versions pending for one open are
+// applied in ONE transaction together with every user_version bump, so a late failure rolls the whole
+// chain back to the exact starting schema. APPEND-ONLY (v0.1.0+ data contract): never edit, reorder,
+// or remove an existing migration, and a migration must preserve/transform existing rows — never drop data.
 const MIGRATIONS: Array<(db: Db) => void> = [
   migration001Initial,
   migration002StampLibrary,
@@ -47,6 +50,7 @@ const MIGRATIONS: Array<(db: Db) => void> = [
   migration007SoftDelete,
   migration008SchemaMeta,
   migration009TextLinks,
+  migration010CanvasLayers,
 ];
 
 /**
@@ -56,38 +60,96 @@ const MIGRATIONS: Array<(db: Db) => void> = [
  */
 export function openDatabase(sqlitePath: string): OpenedDb {
   const preexisting = existsSync(sqlitePath);
+  if (preexisting) assertJournalNotTooNew(sqlitePath);
+
   const db: Db = new Database(sqlitePath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
 
-  const current = db.pragma('user_version', { simple: true }) as number;
-  if (current > MIGRATIONS.length) {
+    const current = db.pragma('user_version', { simple: true }) as number;
+    if (preexisting && current < MIGRATIONS.length) {
+      backupBeforeMigration(db, sqlitePath, current);
+    }
+
+    runMigrations(db);
+    const userVersion = db.pragma('user_version', { simple: true }) as number;
+    return { db, userVersion };
+  } catch (error) {
     db.close();
-    throw new JournalTooNewError(current, MIGRATIONS.length);
+    throw error;
   }
-  if (preexisting && current < MIGRATIONS.length) {
-    backupBeforeMigration(db, sqlitePath, current);
-  }
+}
 
-  runMigrations(db);
-  const userVersion = db.pragma('user_version', { simple: true }) as number;
-  return { db, userVersion };
+/** Refuse a newer journal through a read-only probe before any write-capable PRAGMA can run. */
+function assertJournalNotTooNew(sqlitePath: string): void {
+  const walPath = `${sqlitePath}-wal`;
+  const shmPath = `${sqlitePath}-shm`;
+  const hadWal = existsSync(walPath);
+  const hadShm = existsSync(shmPath);
+  const probe: Db = new Database(sqlitePath, { readonly: true, fileMustExist: true });
+  try {
+    const current = probe.pragma('user_version', { simple: true }) as number;
+    if (current > MIGRATIONS.length) throw new JournalTooNewError(current, MIGRATIONS.length);
+  } finally {
+    probe.close();
+    if (!hadWal && existsSync(walPath) && statSync(walPath).size === 0) rmSync(walPath, { force: true });
+    if (!hadShm && !existsSync(walPath)) rmSync(shmPath, { force: true });
+  }
 }
 
 /** Snapshot the journal file before a migration runs, keeping the most recent MAX_BACKUPS copies. */
 function backupBeforeMigration(db: Db, sqlitePath: string, fromVersion: number): void {
   // Flush any WAL frames into the main file so a plain copy is a complete, consistent snapshot.
-  db.pragma('wal_checkpoint(TRUNCATE)');
+  const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+    busy: number;
+    log: number;
+    checkpointed: number;
+  }>;
+  const result = checkpoint[0];
+  if (!result || result.busy !== 0 || result.log !== result.checkpointed) {
+    throw new Error('Trading Journal could not create a complete pre-migration snapshot because the journal is busy.');
+  }
   const dir = join(dirname(sqlitePath), 'backups');
   mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  copyFileSync(sqlitePath, join(dir, `app-v${fromVersion}-${stamp}.sqlite`));
+  const target = join(dir, `app-v${fromVersion}-${stamp}.sqlite`);
+  const temporary = `${target}.tmp`;
+  rmSync(temporary, { force: true });
+  try {
+    copyFileSync(sqlitePath, temporary);
+    verifyMigrationBackup(temporary, fromVersion);
+    renameSync(temporary, target);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
 
   const snapshots = readdirSync(dir)
     .filter((name) => name.startsWith('app-v') && name.endsWith('.sqlite'))
     .sort();
   for (const old of snapshots.slice(0, Math.max(0, snapshots.length - MAX_BACKUPS))) {
     rmSync(join(dir, old), { force: true });
+  }
+}
+
+function verifyMigrationBackup(path: string, expectedVersion: number): void {
+  const walPath = `${path}-wal`;
+  const shmPath = `${path}-shm`;
+  const backup: Db = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const check = backup.pragma('quick_check') as Array<{ quick_check: string }>;
+    if (check.length !== 1 || check[0].quick_check !== 'ok') {
+      throw new Error('Trading Journal created an invalid pre-migration snapshot. The journal was not migrated.');
+    }
+    const version = backup.pragma('user_version', { simple: true }) as number;
+    if (version !== expectedVersion) {
+      throw new Error('Trading Journal created a pre-migration snapshot with the wrong schema version.');
+    }
+  } finally {
+    backup.close();
+    if (existsSync(walPath) && statSync(walPath).size === 0) rmSync(walPath, { force: true });
+    if (!existsSync(walPath)) rmSync(shmPath, { force: true });
   }
 }
 
@@ -105,14 +167,15 @@ export function stampAppVersion(db: Db, appVersion: string): void {
 
 function runMigrations(db: Db): void {
   const current = db.pragma('user_version', { simple: true }) as number;
-  for (let version = current; version < MIGRATIONS.length; version += 1) {
-    const migrate = MIGRATIONS[version];
-    const apply = db.transaction(() => {
+  if (current >= MIGRATIONS.length) return;
+  const apply = db.transaction(() => {
+    for (let version = current; version < MIGRATIONS.length; version += 1) {
+      const migrate = MIGRATIONS[version];
       migrate(db);
       db.pragma(`user_version = ${version + 1}`);
-    });
-    apply();
-  }
+    }
+  });
+  apply();
 }
 
 function migration001Initial(db: Db): void {
@@ -275,7 +338,7 @@ function retireLegacyLinks(db: Db): void {
   // to discard only those retired edges; migration backup retains the exact pre-migration database.
   db.prepare("UPDATE annotations SET links = '[]' WHERE links != '[]'").run();
 
-  const entries = db.prepare('SELECT id, canvas_json FROM entries').all() as Array<{
+  const entries = db.prepare('SELECT id, canvas_json FROM entries').iterate() as IterableIterator<{
     id: string;
     canvas_json: string;
   }>;
@@ -313,6 +376,48 @@ function migration009TextLinks(db: Db): void {
     CREATE INDEX idx_text_links_target ON text_links(target_kind, target_id);
   `);
   db.prepare('INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)').run('journal_id', randomUUID());
+}
+
+function migration010CanvasLayers(db: Db): void {
+  db.exec(`
+    CREATE TABLE canvas_layers (
+      id      TEXT PRIMARY KEY,
+      name    TEXT NOT NULL,
+      sort    INTEGER NOT NULL UNIQUE,
+      is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1))
+    );
+
+    CREATE UNIQUE INDEX idx_canvas_layers_one_base ON canvas_layers(is_base) WHERE is_base = 1;
+  `);
+  db.prepare('INSERT INTO canvas_layers (id, name, sort, is_base) VALUES (?, ?, 0, 1)').run(
+    BASE_CANVAS_LAYER_ID,
+    '基层',
+  );
+
+  const readEntries = db.prepare(
+    'SELECT rowid, id, canvas_json FROM entries WHERE rowid > ? ORDER BY rowid LIMIT 100',
+  );
+  const updateEntry = db.prepare('UPDATE entries SET canvas_json = ? WHERE id = ?');
+  let cursor = 0;
+  while (true) {
+    const entries = readEntries.all(cursor) as Array<{ rowid: number; id: string; canvas_json: string }>;
+    if (entries.length === 0) break;
+    for (const entry of entries) {
+      const upgraded = assignBaseCanvasLayerJson(entry.canvas_json, `Entry ${entry.id}`);
+      if (upgraded.changed) updateEntry.run(upgraded.json, entry.id);
+    }
+    cursor = entries[entries.length - 1].rowid;
+  }
+
+  const stamp = db.prepare('SELECT canvas_json FROM stamp_library WHERE id = 1').get() as
+    | { canvas_json: string }
+    | undefined;
+  if (stamp) {
+    const upgraded = assignBaseCanvasLayerJson(stamp.canvas_json, 'stamp library');
+    if (upgraded.changed) {
+      db.prepare('UPDATE stamp_library SET canvas_json = ? WHERE id = 1').run(upgraded.json);
+    }
+  }
 }
 
 export function getJournalId(db: Db): string {

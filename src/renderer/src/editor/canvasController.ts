@@ -11,7 +11,15 @@ import {
   type TPointerEvent,
   type TPointerEventInfo,
 } from 'fabric';
-import type { Annotation, InternalLinkTarget, Result, Tag, TextLinkSpan } from '../../../shared/domain';
+import {
+  BASE_CANVAS_LAYER_ID,
+  type Annotation,
+  type CanvasLayer,
+  type InternalLinkTarget,
+  type Result,
+  type Tag,
+  type TextLinkSpan,
+} from '../../../shared/domain';
 import {
   removeTextLinkTarget,
   setTextLinkTarget,
@@ -60,13 +68,38 @@ export interface EditorState {
   canRedo: boolean;
   dirty: boolean;
   hasSelection: boolean;
+  arrange: ArrangeState;
 }
+
+export interface ArrangeState {
+  localForward: boolean;
+  localBackward: boolean;
+  localFront: boolean;
+  localBack: boolean;
+  layerUp: boolean;
+  layerDown: boolean;
+  absoluteTop: boolean;
+  absoluteBottom: boolean;
+}
+
+const NO_ARRANGE: ArrangeState = {
+  localForward: false,
+  localBackward: false,
+  localFront: false,
+  localBack: false,
+  layerUp: false,
+  layerDown: false,
+  absoluteTop: false,
+  absoluteBottom: false,
+};
 
 /** The selected annotation data shown by the contextual ribbon. */
 export interface AnnotationSelection {
   id: string;
   tags: Tag[];
   result: Result;
+  layerId: string;
+  isStamp: boolean;
 }
 
 /** A right-click on the canvas, asking the shell to open the canvas context menu. */
@@ -76,6 +109,9 @@ export interface CanvasContextRequest {
   hasSelection: boolean;
   isImage: boolean;
   isLocked: boolean;
+  layerId: string | null;
+  isStamp: boolean;
+  arrange: ArrangeState;
   /** The right-clicked taggable annotation, or null for a screenshot / empty space. */
   annotation: AnnotationSelection | null;
   textLink: TextLinkContext | null;
@@ -187,6 +223,7 @@ export class CanvasController {
   private zoom = 1;
   private fitMode = true;
   private paletteLocked = true;
+  private layers: CanvasLayer[] = [{ id: BASE_CANVAS_LAYER_ID, name: '基层', isBase: true }];
   private dragHome: { obj: FabricObject; left: number; top: number; region: Region } | null = null;
   private didMove = false;
   // A locked-palette drag pulls out a translucent COPY (the original stays put) that lands solid on the page.
@@ -260,6 +297,7 @@ export class CanvasController {
       const path = (e as unknown as { path?: FabricObject }).path;
       if (path) {
         ensureAnnotation(path);
+        this.insertAtLayer(path, this.highestLayerId(), 'top');
         this.pushHistory();
       }
     });
@@ -366,6 +404,100 @@ export class CanvasController {
   /** Which region a scene x-coordinate falls in (page on the left, stamp strip on the right). */
   private regionAt(x: number): Region {
     return x >= this.pageW + GAP / 2 ? 'strip' : 'page';
+  }
+
+  setLayers(layers: CanvasLayer[]): void {
+    if (layers.length === 0 || !layers[0].isBase || layers[0].id !== BASE_CANVAS_LAYER_ID) {
+      throw new Error('canvas layer directory is missing its permanent base layer');
+    }
+    this.layers = layers.map((layer) => ({ ...layer }));
+  }
+
+  private highestLayerId(): string {
+    return this.layers[this.layers.length - 1].id;
+  }
+
+  private layerRank(id: string | undefined): number {
+    const rank = this.layers.findIndex((layer) => layer.id === id);
+    if (rank < 0) throw new Error(`canvas object references an unknown layer: ${id ?? '(missing)'}`);
+    return rank;
+  }
+
+  private isPageDrawable(obj: FabricObject): boolean {
+    return !isChrome(obj) && !isGhost(obj) && !isTitle(obj) && this.regionOf(obj) === 'page';
+  }
+
+  private pageDrawables(): FabricObject[] {
+    return this.canvas.getObjects().filter((object) => this.isPageDrawable(object));
+  }
+
+  /** Reorder only the slots occupied by page drawables; title/chrome/strip objects keep their slots. */
+  private applyPageDrawableOrder(order: FabricObject[]): void {
+    const all = this.canvas.getObjects();
+    const current = all.filter((object) => this.isPageDrawable(object));
+    if (order.length !== current.length || order.some((object) => !current.includes(object))) {
+      throw new Error('invalid page drawable order');
+    }
+    const slots = all.flatMap((object, index) => (this.isPageDrawable(object) ? [index] : []));
+    order.forEach((object, index) => this.canvas.moveObjectTo(object, slots[index]));
+  }
+
+  private insertAtLayer(obj: FabricObject, layerId: string, placement: 'top' | 'bottom'): void {
+    const rank = this.layerRank(layerId);
+    tjMeta(obj).tjLayerId = layerId;
+    if (!this.canvas.getObjects().includes(obj)) this.canvas.add(obj);
+    const order = this.pageDrawables().filter((object) => object !== obj);
+    let index: number;
+    if (placement === 'top') {
+      const firstHigher = order.findIndex((object) => this.layerRank(tjMeta(object).tjLayerId) > rank);
+      index = firstHigher < 0 ? order.length : firstHigher;
+    } else {
+      const firstSameOrHigher = order.findIndex((object) => this.layerRank(tjMeta(object).tjLayerId) >= rank);
+      index = firstSameOrHigher < 0 ? order.length : firstSameOrHigher;
+    }
+    order.splice(index, 0, obj);
+    this.applyPageDrawableOrder(order);
+  }
+
+  private arrangeObjects(objects: FabricObject[]): ArrangeState {
+    if (objects.length === 0 || objects.some((object) => !this.isPageDrawable(object))) return NO_ARRANGE;
+    const layerIds = new Set(objects.map((object) => tjMeta(object).tjLayerId));
+    const sameLayer = layerIds.size === 1;
+    const selected = new Set(objects);
+    let localForward = false;
+    let localBackward = false;
+    let localFront = false;
+    let localBack = false;
+    if (sameLayer) {
+      const layerId = tjMeta(objects[0]).tjLayerId;
+      this.layerRank(layerId);
+      const members = this.pageDrawables().filter((object) => tjMeta(object).tjLayerId === layerId);
+      const selectedIndexes = members.flatMap((object, index) => (selected.has(object) ? [index] : []));
+      localForward = selectedIndexes.some((index) => index < members.length - 1 && !selected.has(members[index + 1]));
+      localBackward = selectedIndexes.some((index) => index > 0 && !selected.has(members[index - 1]));
+      const count = selectedIndexes.length;
+      localFront = members.slice(-count).some((object) => !selected.has(object));
+      localBack = members.slice(0, count).some((object) => !selected.has(object));
+    }
+    if (objects.length !== 1) {
+      return { localForward, localBackward, localFront, localBack, layerUp: false, layerDown: false, absoluteTop: false, absoluteBottom: false };
+    }
+    const rank = this.layerRank(tjMeta(objects[0]).tjLayerId);
+    const members = this.pageDrawables();
+    return {
+      localForward,
+      localBackward,
+      localFront,
+      localBack,
+      layerUp: rank < this.layers.length - 1,
+      layerDown: rank > 0,
+      absoluteTop: objects[0] !== members[members.length - 1],
+      absoluteBottom: objects[0] !== members[0],
+    };
+  }
+
+  private activeArrangeObjects(): FabricObject[] {
+    return this.canvas.getActiveObjects().filter((object) => this.isPageDrawable(object));
   }
 
   /**
@@ -512,8 +644,7 @@ export class CanvasController {
       // Fresh page but a cover exists: materialise it as the base image.
       const img = await FabricImage.fromURL(coverUrl);
       this.placeContained(img, true);
-      this.canvas.add(img);
-      this.canvas.sendObjectToBack(img);
+      this.insertAtLayer(img, BASE_CANVAS_LAYER_ID, 'top');
     }
 
     this.ensureTitleBox();
@@ -635,8 +766,7 @@ export class CanvasController {
     }
     const isFirst = this.canvas.getObjects().every((o) => !(o instanceof FabricImage));
     this.placeContained(img, isFirst);
-    this.canvas.add(img);
-    if (isFirst) this.canvas.sendObjectToBack(img);
+    this.insertAtLayer(img, BASE_CANVAS_LAYER_ID, 'top');
     this.applyTool('select');
     this.canvas.setActiveObject(img);
     this.canvas.requestRenderAll();
@@ -663,20 +793,36 @@ export class CanvasController {
     this.pushHistory();
   }
 
+  moveForward(): void {
+    this.moveSelectionWithinLayer('forward');
+  }
+
+  moveBackward(): void {
+    this.moveSelectionWithinLayer('backward');
+  }
+
+  bringToLayerFront(): void {
+    this.moveSelectionWithinLayer('front');
+  }
+
+  sendToLayerBack(): void {
+    this.moveSelectionWithinLayer('back');
+  }
+
+  moveLayerUp(): void {
+    this.moveSingleAcrossLayers(1, 'bottom');
+  }
+
+  moveLayerDown(): void {
+    this.moveSingleAcrossLayers(-1, 'top');
+  }
+
   bringToFront(): void {
-    const obj = this.canvas.getActiveObject();
-    if (!obj) return;
-    this.canvas.bringObjectToFront(obj);
-    this.canvas.requestRenderAll();
-    this.pushHistory();
+    this.moveSingleAbsolute('top');
   }
 
   sendToBack(): void {
-    const obj = this.canvas.getActiveObject();
-    if (!obj) return;
-    this.canvas.sendObjectToBack(obj);
-    this.canvas.requestRenderAll();
-    this.pushHistory();
+    this.moveSingleAbsolute('bottom');
   }
 
   /** Lock the active object: it can no longer be selected / moved / resized, only right-clicked. */
@@ -701,16 +847,92 @@ export class CanvasController {
     this.pushHistory();
   }
 
-  bringContextToFront(): void {
-    if (!this.contextTarget) return;
-    this.canvas.bringObjectToFront(this.contextTarget);
-    this.canvas.requestRenderAll();
-    this.pushHistory();
+  arrangeContext(action: 'forward' | 'backward' | 'layer-front' | 'layer-back' | 'layer-up' | 'layer-down' | 'top' | 'bottom'): void {
+    const target = this.contextTarget;
+    if (!target || !this.isPageDrawable(target)) return;
+    if (action === 'forward' || action === 'backward' || action === 'layer-front' || action === 'layer-back') {
+      const op = action === 'layer-front' ? 'front' : action === 'layer-back' ? 'back' : action;
+      this.moveWithinLayer([target], op);
+      return;
+    }
+    if (action === 'layer-up' || action === 'layer-down') {
+      this.moveAcrossLayers(target, action === 'layer-up' ? 1 : -1, action === 'layer-up' ? 'bottom' : 'top');
+      return;
+    }
+    this.moveAbsolute(target, action);
   }
 
-  sendContextToBack(): void {
-    if (!this.contextTarget) return;
-    this.canvas.sendObjectToBack(this.contextTarget);
+  private moveSelectionWithinLayer(action: 'forward' | 'backward' | 'front' | 'back'): void {
+    this.moveWithinLayer(this.activeArrangeObjects(), action);
+  }
+
+  private moveWithinLayer(objects: FabricObject[], action: 'forward' | 'backward' | 'front' | 'back'): void {
+    const state = this.arrangeObjects(objects);
+    const allowed = action === 'forward' ? state.localForward : action === 'backward' ? state.localBackward : action === 'front' ? state.localFront : state.localBack;
+    if (!allowed) return;
+    const layerId = tjMeta(objects[0]).tjLayerId;
+    const selected = new Set(objects);
+    const order = this.pageDrawables();
+    const slots = order.flatMap((object, index) => (tjMeta(object).tjLayerId === layerId ? [index] : []));
+    const members = slots.map((index) => order[index]);
+    let arranged: FabricObject[];
+    if (action === 'front') arranged = [...members.filter((object) => !selected.has(object)), ...members.filter((object) => selected.has(object))];
+    else if (action === 'back') arranged = [...members.filter((object) => selected.has(object)), ...members.filter((object) => !selected.has(object))];
+    else {
+      arranged = [...members];
+      if (action === 'forward') {
+        for (let index = arranged.length - 2; index >= 0; index -= 1) {
+          if (selected.has(arranged[index]) && !selected.has(arranged[index + 1])) {
+            [arranged[index], arranged[index + 1]] = [arranged[index + 1], arranged[index]];
+          }
+        }
+      } else {
+        for (let index = 1; index < arranged.length; index += 1) {
+          if (selected.has(arranged[index]) && !selected.has(arranged[index - 1])) {
+            [arranged[index], arranged[index - 1]] = [arranged[index - 1], arranged[index]];
+          }
+        }
+      }
+    }
+    slots.forEach((slot, index) => {
+      order[slot] = arranged[index];
+    });
+    this.commitPageOrder(order);
+  }
+
+  private moveSingleAcrossLayers(delta: -1 | 1, placement: 'top' | 'bottom'): void {
+    const objects = this.activeArrangeObjects();
+    if (objects.length !== 1) return;
+    this.moveAcrossLayers(objects[0], delta, placement);
+  }
+
+  private moveAcrossLayers(obj: FabricObject, delta: -1 | 1, placement: 'top' | 'bottom'): void {
+    const state = this.arrangeObjects([obj]);
+    if ((delta === 1 && !state.layerUp) || (delta === -1 && !state.layerDown)) return;
+    const rank = this.layerRank(tjMeta(obj).tjLayerId);
+    this.insertAtLayer(obj, this.layers[rank + delta].id, placement);
+    this.commitCurrentOrder();
+  }
+
+  private moveSingleAbsolute(placement: 'top' | 'bottom'): void {
+    const objects = this.activeArrangeObjects();
+    if (objects.length !== 1) return;
+    this.moveAbsolute(objects[0], placement);
+  }
+
+  private moveAbsolute(obj: FabricObject, placement: 'top' | 'bottom'): void {
+    const state = this.arrangeObjects([obj]);
+    if ((placement === 'top' && !state.absoluteTop) || (placement === 'bottom' && !state.absoluteBottom)) return;
+    this.insertAtLayer(obj, placement === 'top' ? this.highestLayerId() : BASE_CANVAS_LAYER_ID, placement);
+    this.commitCurrentOrder();
+  }
+
+  private commitPageOrder(order: FabricObject[]): void {
+    this.applyPageDrawableOrder(order);
+    this.commitCurrentOrder();
+  }
+
+  private commitCurrentOrder(): void {
     this.canvas.requestRenderAll();
     this.pushHistory();
   }
@@ -1165,7 +1387,7 @@ export class CanvasController {
 
     if (this.tool === 'text') {
       const tb = this.makeTextBox(p.x, p.y);
-      this.canvas.add(tb);
+      this.insertAtLayer(tb, this.highestLayerId(), 'top');
       this.applyTool('select');
       this.canvas.setActiveObject(tb);
       this.newTextBox = tb;
@@ -1212,6 +1434,8 @@ export class CanvasController {
 
   private onRightClick(opt: TPointerEventInfo<TPointerEvent>, e: MouseEvent): void {
     const target = opt.target ?? null;
+    const targetIsStamp = target !== null && isAnnotation(target) && this.regionOf(target) === 'strip';
+    if (targetIsStamp && this.paletteLocked) return;
     this.contextTarget = target;
     const textLink = target instanceof TextBoxAnnotation ? this.textContextAtPointer(target, opt.e) : null;
     const locked = target ? isLocked(target) : false;
@@ -1225,8 +1449,11 @@ export class CanvasController {
       hasSelection: target !== null || this.canvas.getActiveObjects().length > 0,
       isImage: target instanceof FabricImage,
       isLocked: locked,
+      layerId: target ? (tjMeta(target).tjLayerId ?? null) : null,
+      isStamp: targetIsStamp,
+      arrange: target ? this.arrangeObjects([target]) : this.arrangeObjects(this.activeArrangeObjects()),
       annotation:
-        target && isAnnotation(target) && this.regionOf(target) === 'page' ? this.readAnnotation(target) : null,
+        target && isAnnotation(target) ? this.readAnnotation(target) : null,
       textLink,
     });
   }
@@ -1326,6 +1553,7 @@ export class CanvasController {
       const rect = draft as Rect;
       if ((rect.width ?? 0) >= MIN_DRAG || (rect.height ?? 0) >= MIN_DRAG) {
         ensureAnnotation(rect);
+        tjMeta(rect).tjLayerId = this.highestLayerId();
         created = rect;
       } else {
         this.canvas.remove(rect);
@@ -1333,17 +1561,19 @@ export class CanvasController {
     } else if (this.tool === 'mm') {
       // A measured move is never discarded — a bare click keeps a min-width flat line you can pull open.
       ensureAnnotation(draft);
+      tjMeta(draft).tjLayerId = this.highestLayerId();
       created = draft;
     } else {
       // line / hline / arrow: swap the preview for an endpoint-editable segment.
       this.canvas.remove(draft);
       if (Math.hypot(this.endX - this.startX, this.endY - this.startY) >= MIN_DRAG) {
         created = this.makeSegment(this.startX, this.startY, this.endX, this.endY, this.tool === 'arrow');
-        this.canvas.add(created);
+        this.insertAtLayer(created, this.highestLayerId(), 'top');
       }
     }
 
     if (created) {
+      this.insertAtLayer(created, tjMeta(created).tjLayerId ?? this.highestLayerId(), 'top');
       // PPT-style: finishing a shape returns to select so any object is movable on hover.
       this.applyTool('select');
       this.canvas.setActiveObject(created);
@@ -1375,6 +1605,9 @@ export class CanvasController {
     // dragged onto the page MOVES out of the palette, a drawing dragged into the strip becomes a
     // stamp, and a same-region drag just rearranges — all kept exactly where they were dropped.
 
+    if (home.region === 'strip' && end === 'page') {
+      this.insertAtLayer(obj, tjMeta(obj).tjLayerId ?? this.highestLayerId(), 'top');
+    }
     obj.setCoords();
     this.canvas.requestRenderAll();
     this.pushHistory();
@@ -1450,7 +1683,7 @@ export class CanvasController {
   /** Add a freshly-built object to the page, select it, and record one history step. */
   private placeNew(obj: FabricObject): void {
     obj.setCoords();
-    this.canvas.add(obj);
+    this.insertAtLayer(obj, tjMeta(obj).tjLayerId ?? this.highestLayerId(), 'top');
     this.applyTool('select');
     this.canvas.setActiveObject(obj);
     this.canvas.requestRenderAll();
@@ -1522,6 +1755,7 @@ export class CanvasController {
       }
     }
     this.newTextBox = null;
+    this.emitSelectionStyle();
   }
 
   private freezeTextLinkRange(
@@ -1603,7 +1837,18 @@ export class CanvasController {
       id: a.tjId as string,
       tags: (a.tjTags ?? []).map((t) => ({ group: t.group, value: t.value })),
       result: { ...(a.tjResult ?? {}) },
+      layerId: a.tjLayerId ?? BASE_CANVAS_LAYER_ID,
+      isStamp: this.regionOf(obj) === 'strip',
     };
+  }
+
+  setStampTargetLayer(id: string, layerId: string): void {
+    this.layerRank(layerId);
+    const obj = this.canvas.getObjects().find((object) => tjMeta(object).tjId === id);
+    if (!obj || this.regionOf(obj) !== 'strip') return;
+    tjMeta(obj).tjLayerId = layerId;
+    this.pushHistory();
+    this.emitSelection();
   }
 
   /** Select an annotation by id (following a link); false if it is not on this page. */
@@ -1771,6 +2016,7 @@ export class CanvasController {
       canRedo: this.histIndex < this.history.length - 1,
       dirty: this.isDirty(),
       hasSelection: this.canvas.getActiveObjects().length > 0,
+      arrange: this.arrangeObjects(this.activeArrangeObjects()),
     });
     this.emitSelection();
     this.emitSelectionStyle();

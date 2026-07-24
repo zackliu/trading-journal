@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchApp, store } from './electronApp';
+import { BASE_CANVAS_LAYER_ID } from '../../src/shared/domain';
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'tj-slice6-'));
@@ -421,6 +422,7 @@ test('opening a review from a value bucket keeps the highlight derived, never pe
     stroke: '#f85149',
     strokeWidth: 3,
     tjId: 'r1',
+    tjLayerId: BASE_CANVAS_LAYER_ID,
     tjTags: [{ group: 'setup', value: 'h2' }],
   };
   const canvasJson = JSON.stringify({ version: '6', tjPage: { width: 2500, height: 1600 }, objects: [rect] });

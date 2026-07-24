@@ -13,6 +13,7 @@ import type {
   AiVisualEvidenceManifest,
 } from '../../src/shared/aiAccess';
 import type { IpcApi } from '../../src/shared/ipc';
+import { BASE_CANVAS_LAYER_ID } from '../../src/shared/domain';
 import { launchApp, store } from './electronApp';
 
 type WindowWithApi = { api: IpcApi };
@@ -47,6 +48,7 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
           scaleX: 1,
           scaleY: 1,
           strokeWidth: 0,
+          tjLayerId: BASE_CANVAS_LAYER_ID,
         },
         {
           type: 'Rect',
@@ -62,11 +64,13 @@ test('AI Access exposes the current journal through a secured read-only MCP sess
           stroke: '#c026a3',
           strokeWidth: 4,
           tjId: 'ann-1',
+          tjLayerId: BASE_CANVAS_LAYER_ID,
           tjTags: [{ group: 'setup', value: 'breakout' }],
         },
         {
           type: 'TextBoxAnnotation',
           tjId: 'ann-note',
+          tjLayerId: BASE_CANVAS_LAYER_ID,
           text: 'Bull spike, then deep pullback',
           tjTextLinks: [
             { start: 0, end: 10, target: { kind: 'annotation', id: 'ann-1' } },
@@ -662,8 +666,9 @@ test('visual evidence preserves duplicate cropped screenshot instances and refus
           strokeWidth: 2,
           fill: 'transparent',
           tjId: 'arrow',
+          tjLayerId: BASE_CANVAS_LAYER_ID,
         },
-        { type: 'Path', left: 10, top: 10, width: 20, height: 20, path: [['M', 0, 0], ['L', 20, 20]], tjId: 'freehand' },
+        { type: 'Path', left: 10, top: 10, width: 20, height: 20, path: [['M', 0, 0], ['L', 20, 20]], tjId: 'freehand', tjLayerId: BASE_CANVAS_LAYER_ID },
       ],
     }),
     entryTags: [{ group: 'date', value: '2026-07-11' }],
@@ -912,6 +917,7 @@ function imageObject(hash: string, left: number, cropX: number): Record<string, 
     scaleX: 1,
     scaleY: 1,
     strokeWidth: 0,
+    tjLayerId: BASE_CANVAS_LAYER_ID,
   };
 }
 
@@ -928,6 +934,7 @@ function annotationRect(id: string, left: number): Record<string, unknown> {
     stroke: '#c026a3',
     strokeWidth: 2,
     tjId: id,
+    tjLayerId: BASE_CANVAS_LAYER_ID,
   };
 }
 

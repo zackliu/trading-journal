@@ -40,12 +40,17 @@ export function CanvasEditor({ entryId, onReady, onLoaded, onLoadError, onWheelN
 
     void (async () => {
       try {
-        const [entry, lib] = await Promise.all([window.api.getEntry(entryId), window.api.getStampLibrary()]);
+        const [entry, lib, layers] = await Promise.all([
+          window.api.getEntry(entryId),
+          window.api.getStampLibrary(),
+          window.api.listCanvasLayers(),
+        ]);
         if (disposed) return;
         if (!entry) {
           onLoadError?.('This review could not be found.');
           return;
         }
+        controller.setLayers(layers);
         await controller.loadEntry(
           entry.canvasJson,
           entry.image ? `tj-image://${entry.image.hash}` : null,

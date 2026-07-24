@@ -47,6 +47,7 @@ config.disableStyleCopyPaste = true;
 /** Extra object properties persisted in canvas JSON (Fabric drops unknown keys otherwise). */
 export const TJ_PROPS = [
   'tjLocked',
+  'tjLayerId',
   'boxStroke',
   'boxStrokeWidth',
   'boxFill',
@@ -75,6 +76,7 @@ export interface TjMeta {
   tjResult?: Result;
   tjTextLinks?: TextLinkSpan[];
   tjLocked?: boolean;
+  tjLayerId?: string;
   tjChrome?: boolean;
   tjGhost?: boolean;
   /** Structural role marker; `'title'` = the review's title text box (not a queryable annotation). */

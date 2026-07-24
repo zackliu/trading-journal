@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchApp, store } from './electronApp';
+import { BASE_CANVAS_LAYER_ID } from '../../src/shared/domain';
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'tj-stamp-'));
@@ -93,6 +94,7 @@ async function seedStamp(
         stroke: '#f85149',
         strokeWidth: 3,
         tjId: 'seed-stamp',
+        tjLayerId: BASE_CANVAS_LAYER_ID,
         tjTags: [tag],
         ...extra,
       },
@@ -285,7 +287,13 @@ test('a system-clipboard screenshot out-ranks an earlier copied drawing (recency
 
 /** Seed the strip with arbitrary annotation objects (e.g. line stamps), then reload. */
 async function seedLibraryObjects(page: Page, objects: Record<string, unknown>[]): Promise<void> {
-  await store.saveStampLibrary(page, JSON.stringify({ version: '6', objects }));
+  await store.saveStampLibrary(
+    page,
+    JSON.stringify({
+      version: '6',
+      objects: objects.map((object) => ({ tjLayerId: BASE_CANVAS_LAYER_ID, ...object })),
+    }),
+  );
   await page.reload();
   await page.waitForLoadState('domcontentloaded');
   await page.waitForTimeout(400);
